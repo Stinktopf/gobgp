@@ -40,6 +40,7 @@ const (
 	BPR_UNKNOWN BestPathReason = iota
 	BPR_DISABLED
 	BPR_ONLY_PATH
+	BPR_OPERA
 	BPR_REACHABLE_NEXT_HOP
 	BPR_HIGHEST_WEIGHT
 	BPR_LOCAL_PREF
@@ -59,6 +60,7 @@ var BestPathReasonStringMap = map[BestPathReason]string{
 	BPR_UNKNOWN:            "Unknown",
 	BPR_DISABLED:           "Bestpath selection disabled",
 	BPR_ONLY_PATH:          "Only Path",
+	BPR_OPERA:              "OPERA L-relation",
 	BPR_REACHABLE_NEXT_HOP: "Reachable Next Hop",
 	BPR_HIGHEST_WEIGHT:     "Highest Weight",
 	BPR_LOCAL_PREF:         "Local Pref",
@@ -600,9 +602,11 @@ func compareByOpera(path1, path2 *Path) *Path {
 	}
 
 	if isBetterOperaPath(path1, path2) {
-		return path1 // new path, only if better
+		fmt.Printf("NEW PATH IS BETTER\n")
+		return path1
 	}
-	return path2 // exisiting path, if better or equal
+	fmt.Printf("OLD PATH IS BETTER\n")
+	return path2
 }
 
 func compareByLocalPref(path1, path2 *Path) *Path {

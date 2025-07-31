@@ -1,0 +1,28 @@
+version: "3"
+services:
+  router_a:
+    build: .
+    container_name: gobgp_1
+    command: ["gobgpd", "-f", "conf1.conf"]
+    environment:
+      - GOBGP_OPERA_ENABLED=true
+    networks:
+      labnet:
+        ipv4_address: 10.0.0.2
+
+  router_b:
+    build: .
+    container_name: gobgp_2
+    command: ["gobgpd", "-f", "conf2.conf"]
+    environment:
+      - GOBGP_OPERA_ENABLED=true
+    networks:
+      labnet:
+        ipv4_address: 10.0.0.3
+
+networks:
+  labnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.0.0/24

@@ -595,18 +595,22 @@ func compareByReachableNexthop(path1, path2 *Path) *Path {
 }
 
 func compareByOpera(path1, path2 *Path) *Path {
-	//	Compares given paths using the OPERA L-relation.
-
 	if !isOperaEnabled() {
 		return nil
 	}
 
 	if isBetterOperaPath(path1, path2) {
-		fmt.Printf("NEW PATH IS BETTER\n")
+		fmt.Println("OPERA: new path is better")
 		return path1
 	}
-	fmt.Printf("OLD PATH IS BETTER\n")
-	return path2
+	if isBetterOperaPath(path2, path1) {
+		fmt.Println("OPERA: existing path is better")
+		return path2
+	}
+
+	best, _ := compareByRouterID(path1, path2)
+	fmt.Println("OPERA: Tie-break by Router ID")
+	return best
 }
 
 func compareByLocalPref(path1, path2 *Path) *Path {

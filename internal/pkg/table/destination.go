@@ -352,22 +352,23 @@ func (dest *Destination) insertSort(newPath *Path) {
 		//is assumed to be in descending order: most preferred to least.
 		//
 		//	Best path processing will involve following steps:
-		//	1.  Select a path with a reachable next hop.
-		//	2.  Select the path with the highest weight.
-		//	3.  If path weights are the same, select the path with the highest
+		//  1. Select a path based on the OPERA L-relation
+		//	2.  Select a path with a reachable next hop.
+		//	3.  Select the path with the highest weight.
+		//	4.  If path weights are the same, select the path with the highest
 		//	local preference value.
-		//	4.  Prefer locally originated routes (network routes, redistributed
+		//	5.  Prefer locally originated routes (network routes, redistributed
 		//	routes, or aggregated routes) over received routes.
-		//	5.  Select the route with the shortest AS-path length.
-		//	6.  If all paths have the same AS-path length, select the path based
+		//	6.  Select the route with the shortest AS-path length.
+		//	7.  If all paths have the same AS-path length, select the path based
 		//	on origin: IGP is preferred over EGP; EGP is preferred over
 		//	Incomplete.
-		//	7.  If the origins are the same, select the path with lowest MED
+		//	8.  If the origins are the same, select the path with lowest MED
 		//	value.
-		//	8.  If the paths have the same MED values, select the path learned
+		//	9.  If the paths have the same MED values, select the path learned
 		//	via EBGP over one learned via IBGP.
-		//	9.  Select the route with the lowest IGP cost to the next hop.
-		//	10. Select the route received from the peer with the lowest BGP
+		//	10.  Select the route with the lowest IGP cost to the next hop.
+		//	11. Select the route received from the peer with the lowest BGP
 		//	router ID.
 		//
 		//	Returns None if best-path among given paths cannot be computed else best
@@ -376,6 +377,12 @@ func (dest *Destination) insertSort(newPath *Path) {
 		//
 		path1 := newPath
 		path2 := dest.knownPathList[i]
+
+		if b := compareByOpera(path1, path2); b == path1 {
+			return true
+		} else if b == path2 {
+			return false
+		}
 
 		if b := compareByLLGRStaleCommunity(path1, path2); b == path1 {
 			return true
@@ -583,6 +590,19 @@ func compareByReachableNexthop(path1, path2 *Path) *Path {
 	}
 
 	return nil
+}
+
+func compareByOpera(path1, path2 *Path) *Path {
+	//	Compares given paths using the OPERA L-relation.
+
+	if !isOperaEnabled() {
+		return nil
+	}
+
+	if isBetterOperaPath(path1, path2) {
+		return path1 // new path, only if better
+	}
+	return path2 // exisiting path, if better or equal
 }
 
 func compareByLocalPref(path1, path2 *Path) *Path {

@@ -173,6 +173,9 @@ func NewBgpServer(opt ...ServerOption) *BgpServer {
 			}
 		}()
 	}
+
+	table.InitOperaFromEnv()
+
 	return s
 }
 

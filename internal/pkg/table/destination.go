@@ -595,22 +595,31 @@ func compareByReachableNexthop(path1, path2 *Path) *Path {
 }
 
 func compareByOpera(path1, path2 *Path) *Path {
-	if !isOperaEnabled() {
+	if !IsOperaEnabled() {
 		return nil
 	}
 
 	if isBetterOperaPath(path1, path2) {
-		fmt.Println("OPERA: new path is better")
 		return path1
 	}
 	if isBetterOperaPath(path2, path1) {
-		fmt.Println("OPERA: existing path is better")
+
 		return path2
 	}
 
-	best, _ := compareByRouterID(path1, path2)
-	fmt.Println("OPERA: Tie-break by Router ID")
-	return best
+	if best, _ := compareByRouterID(path1, path2); best != nil {
+		return best
+	}
+
+	if best := compareByNeighborAddress(path1, path2); best != nil {
+		return best
+	}
+
+	if best := compareByAge(path1, path2); best != nil {
+		return best
+	}
+
+	return path1
 }
 
 func compareByLocalPref(path1, path2 *Path) *Path {

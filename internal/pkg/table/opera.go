@@ -39,25 +39,77 @@ func SetOperaMode(mode OperaMode) {
 	operaConfig.mode = mode
 }
 
+func IsOperaEnabled() bool {
+	return getOperaMode() == OperaEnabled
+}
+
+func GetOperaType(p *Path) string {
+	if HasOperaPath(p, 100) {
+		return "highbw"
+	}
+	if HasOperaPath(p, 200) {
+		return "lowlat"
+	}
+	return "standard"
+}
+
+func HasOperaPath(path *Path, suffix uint16) bool {
+	asList := path.GetAsList()
+	if len(asList) == 0 {
+		return false
+	}
+
+	communities := path.GetCommunities()
+
+	asToSuffix := make(map[uint32]map[uint16]bool)
+	for _, c := range communities {
+		asn := c >> 16
+		suf := uint16(c & 0xFFFF)
+
+		if _, exists := asToSuffix[asn]; !exists {
+			asToSuffix[asn] = make(map[uint16]bool)
+		}
+		asToSuffix[asn][suf] = true
+	}
+
+	for _, asn := range asList {
+		if suffixes, ok := asToSuffix[asn]; !ok || !suffixes[suffix] {
+			return false
+		}
+	}
+
+	return true
+}
+
 func getOperaMode() OperaMode {
 	return operaConfig.mode
 }
 
-func isOperaEnabled() bool {
-	return getOperaMode() == OperaEnabled
-}
-
 func isBetterOperaPath(newPath, existingPath *Path) bool {
+	if newPath == nil || existingPath == nil {
+		return false
+	}
+
 	newPathLength := newPath.GetAsPathLen()
 	existingPathLength := existingPath.GetAsPathLen()
 	if newPathLength != existingPathLength {
 		return newPathLength < existingPathLength
 	}
 
-	newSegments := newPath.GetAsPath().Value
-	existingSegments := existingPath.GetAsPath().Value
+	newAsPath := newPath.GetAsPath()
+	existingAsPath := existingPath.GetAsPath()
+	if newAsPath == nil || existingAsPath == nil {
+		return false
+	}
+
+	newSegments := newAsPath.Value
+	existingSegments := existingAsPath.Value
 
 	for segmentIndex := 0; segmentIndex < len(newSegments); segmentIndex++ {
+		if segmentIndex >= len(existingSegments) {
+			break
+		}
+
 		newASList := newSegments[segmentIndex].GetAS()
 		existingASList := existingSegments[segmentIndex].GetAS()
 
@@ -73,7 +125,6 @@ func isBetterOperaPath(newPath, existingPath *Path) bool {
 				return newASNumber < existingASNumber
 			}
 		}
-
 	}
 
 	return false

@@ -1431,6 +1431,36 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 						})
 				}
 			}
+
+			if table.IsOperaEnabled() && len(bestList) > 1 {
+				typeSeen := make(map[string]bool)
+				filtered := make([]*table.Path, 0, len(bestList))
+				toWithdraw := make([]*table.Path, 0)
+
+				for _, p := range bestList {
+					if p.IsWithdraw || p.IsNexthopInvalid {
+						filtered = append(filtered, p)
+						continue
+					}
+					pt := table.GetOperaType(p)
+					if !typeSeen[pt] {
+						filtered = append(filtered, p)
+						typeSeen[pt] = true
+					} else {
+						if targetPeer.hasPathAlreadyBeenSent(p) {
+							toWithdraw = append(toWithdraw, p.Clone(true))
+						}
+					}
+				}
+
+				bestList = filtered
+
+				if len(toWithdraw) > 0 {
+					targetPeer.updateRoutes(toWithdraw...)
+					bestList = append(bestList, toWithdraw...)
+				}
+			}
+
 			if needToAdvertise(targetPeer) && len(bestList) > 0 {
 				sendfsmOutgoingMsg(targetPeer, bestList, nil, false)
 			}

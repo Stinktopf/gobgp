@@ -67,10 +67,10 @@ sudo docker exec -it gobgp_2 gobgp neighbor
 Inject a route into Router A and verify propagation to Router B:
 
 ```bash
-sudo docker exec -it gobgp_1 gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254 aspath 65001,65000
+sudo docker exec -it gobgp_1 gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254 aspath 65000
 sudo docker exec -it gobgp_1 gobgp global rib
 sudo docker exec -it gobgp_2 gobgp global rib
-sudo docker exec -it gobgp_1 gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254 aspath 65001,65000,64999 identifier 2```
+sudo docker exec -it gobgp_1 gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254 aspath 65000,64999 identifier 2```
 
 ## Show RIB on Both Routers
 

@@ -35,6 +35,18 @@ services:
       labnet:
         ipv4_address: 10.0.0.4
 
+  router_d:
+    build: .
+    container_name: gobgp_4
+    command: ["gobgpd", "-f", "/etc/gobgp/gobgp.conf"]
+    environment:
+      - GOBGP_OPERA_ENABLED=true
+    volumes:
+      - ./conf4.conf:/etc/gobgp/gobgp.conf
+    networks:
+      labnet:
+        ipv4_address: 10.0.0.5
+
 networks:
   labnet:
     driver: bridge

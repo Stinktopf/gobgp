@@ -24,7 +24,6 @@ sudo docker exec -it gobgp_4 gobgp neighbor
 ```bash
 sudo docker exec -it gobgp_1 gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254 identifier 1
 sudo docker exec -it gobgp_1 gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254 aspath 64000 community 64000:100
-sudo docker exec -it gobgp_1 gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254 aspath 64500 identifier 1
 ```
 
 ## Show RIB on All Routers

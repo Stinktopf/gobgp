@@ -2,7 +2,7 @@
 
 ## Docker
 
-Build and start two connected GoBGP routers:
+Build and start four connected GoBGP routers:
 
 ```bash
 sudo docker-compose up --build -d
@@ -19,7 +19,7 @@ sudo docker exec -it gobgp_3 gobgp neighbor
 sudo docker exec -it gobgp_4 gobgp neighbor
 ```
 
-## Inject Route in Router A
+## Inject Route in Router 1
 
 ```bash
 sudo docker exec -it gobgp_1 gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254 identifier 1
@@ -27,7 +27,7 @@ sudo docker exec -it gobgp_1 gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.
 sudo docker exec -it gobgp_1 gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254 aspath 64500 identifier 1
 ```
 
-## Show RIB on Both Routers
+## Show RIB on All Routers
 
 ```bash
 sudo docker exec -it gobgp_1 gobgp global rib
@@ -42,6 +42,15 @@ One can observe that the **HIGH-BANDWITH** and **STANDARD** routes come over **R
 
 ```bash
 sudo docker exec -it gobgp_1 gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254 aspath 64500 identifier 1
+```
+
+## Show RIB on All Routers
+
+```bash
+sudo docker exec -it gobgp_1 gobgp global rib
+sudo docker exec -it gobgp_2 gobgp global rib
+sudo docker exec -it gobgp_3 gobgp global rib
+sudo docker exec -it gobgp_4 gobgp global rib
 ```
 
 One can observe that the **HIGH-BANDWITH** route comes over R2 and **LOW-LATENCY** and **STANDARD** routes come over **R3** to **R4**.

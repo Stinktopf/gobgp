@@ -1347,6 +1347,11 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 			return family
 		}()
 		if targetPeer.isAddPathSendEnabled(f) {
+			if table.IsOperaEnabled() {
+				s.propagateOperaUpdates(rib, targetPeer, dsts, f)
+				continue
+			}
+
 			// in case of multiple paths to the same destination, we need to
 			// filter the paths before counting the number of paths to be sent.
 			if newPath.IsWithdraw {
@@ -1432,35 +1437,6 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 				}
 			}
 
-			if table.IsOperaEnabled() && len(bestList) > 1 {
-				typeSeen := make(map[string]bool)
-				filtered := make([]*table.Path, 0, len(bestList))
-				toWithdraw := make([]*table.Path, 0)
-
-				for _, p := range bestList {
-					if p.IsWithdraw || p.IsNexthopInvalid {
-						filtered = append(filtered, p)
-						continue
-					}
-					pt := table.GetOperaType(p)
-					if !typeSeen[pt] {
-						filtered = append(filtered, p)
-						typeSeen[pt] = true
-					} else {
-						if targetPeer.hasPathAlreadyBeenSent(p) {
-							toWithdraw = append(toWithdraw, p.Clone(true))
-						}
-					}
-				}
-
-				bestList = filtered
-
-				if len(toWithdraw) > 0 {
-					targetPeer.updateRoutes(toWithdraw...)
-					bestList = append(bestList, toWithdraw...)
-				}
-			}
-
 			if needToAdvertise(targetPeer) && len(bestList) > 0 {
 				sendfsmOutgoingMsg(targetPeer, bestList, nil, false)
 			}
@@ -1484,6 +1460,101 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 				sendfsmOutgoingMsg(targetPeer, paths, nil, false)
 			}
 		}
+	}
+}
+
+func asPath(p *table.Path) string {
+	l := p.GetAsList()
+	if len(l) == 0 {
+		return "<EMPTY>"
+	}
+	s := make([]string, len(l))
+	for i, as := range l {
+		s[i] = fmt.Sprintf("%d", as)
+	}
+	return strings.Join(s, " ")
+}
+
+func (s *BgpServer) propagateOperaUpdates(
+	rib *table.TableManager,
+	peer *peer,
+	dsts []*table.Update,
+	f bgp.Family,
+) {
+	if !table.IsOperaEnabled() {
+		return
+	}
+	toID := peer.ID()
+	neigh := net.ParseIP(peer.fsm.pConf.Config.NeighborAddress)
+	out := make([]*table.Path, 0, len(dsts)*4)
+
+	for _, d := range dsts {
+
+		limit := int(peer.getAddPathSendMax(f))
+		if limit == 0 || limit > 3 {
+			limit = 3
+		}
+		best := map[string]*table.Path{}
+
+		for _, p := range d.KnownPathList {
+			if len(best) == limit || p.IsWithdraw || p.IsNexthopInvalid {
+				continue
+			}
+			if src := p.GetSource(); src != nil && src.Address != nil &&
+				neigh != nil && src.Address.Equal(neigh) {
+				continue
+			}
+			if _, ok := best[table.GetOperaType(p)]; !ok {
+				best[table.GetOperaType(p)] = p
+			}
+		}
+
+		for _, old := range d.OldKnownPathList {
+			if !peer.hasPathAlreadyBeenSent(old) {
+				continue
+			}
+			cls := table.GetOperaType(old)
+			if nb, ok := best[cls]; !ok || !old.Equal(nb) {
+				w := old.Clone(true)
+				peer.updateRoutes(w)
+				if fp := s.filterpath(peer, w, old); fp != nil {
+					out = append(out, fp)
+					fmt.Printf("[OPERA] WITHDRAWN ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n", w.GetPrefix(), asPath(w), toID, table.GetOperaType(w))
+				} else {
+					fmt.Printf("[OPERA] FILTERED WITDRAW OF ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n", w.GetPrefix(), asPath(w), toID, table.GetOperaType(w))
+				}
+			}
+		}
+
+		for _, p := range best {
+			if peer.hasPathAlreadyBeenSent(p) {
+				continue
+			}
+			peer.updateRoutes(p)
+			if fp := s.filterpath(peer, p, nil); fp != nil {
+				out = append(out, fp)
+				fmt.Printf("[OPERA] ANNOUNCED ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n", p.GetPrefix(), asPath(p), toID, table.GetOperaType(p))
+			} else {
+				fmt.Printf("[OPERA] FILTERED ANNOUNCEMENT OF ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n", p.GetPrefix(), asPath(p), toID, table.GetOperaType(p))
+			}
+		}
+
+		if len(d.KnownPathList) > 0 {
+			if dest := rib.GetDestination(d.KnownPathList[0]); dest != nil {
+				keep := make(map[table.PathLocalKey]struct{}, len(d.KnownPathList))
+				for _, p := range d.KnownPathList {
+					keep[p.GetLocalKey()] = struct{}{}
+				}
+				dest.ClearKnownPathList(func(p *table.Path) bool {
+					_, ok := keep[p.GetLocalKey()]
+					return ok
+				})
+			}
+		}
+	}
+
+	if len(out) > 0 && needToAdvertise(peer) {
+		sendfsmOutgoingMsg(peer, out, nil, false)
 	}
 }
 

@@ -20,18 +20,10 @@ func InitOperaFromEnv() {
 	val := os.Getenv("GOBGP_OPERA_ENABLED")
 	if val == "1" || val == "true" {
 		SetOperaMode(OperaEnabled)
-		fmt.Println("OPERA is ENABLED")
-		fmt.Println("To disable OPERA, unset GOBGP_OPERA_ENABLED or set it to 0 or false.")
-		fmt.Println("Windows CMD: set GOBGP_OPERA_ENABLED=0")
-		fmt.Println("PowerShell:  $env:GOBGP_OPERA_ENABLED=\"0\"")
-		fmt.Println("Linux/macOS: export GOBGP_OPERA_ENABLED=false")
+		fmt.Println("[OPERA] ALTERNATIVE PATH SELECTION ENABLED")
 	} else {
 		SetOperaMode(OperaDisabled)
-		fmt.Println("OPERA is DISABLED")
-		fmt.Println("To enable OPERA, set GOBGP_OPERA_ENABLED=1 or true.")
-		fmt.Println("Windows CMD: set GOBGP_OPERA_ENABLED=1")
-		fmt.Println("PowerShell:  $env:GOBGP_OPERA_ENABLED=\"1\"")
-		fmt.Println("Linux/macOS: export GOBGP_OPERA_ENABLED=true")
+		fmt.Println("[OPERA] ALTERNATIVE PATH SELECTION DISABLED")
 	}
 }
 
@@ -45,12 +37,12 @@ func IsOperaEnabled() bool {
 
 func GetOperaType(p *Path) string {
 	if HasOperaPath(p, 100) {
-		return "highbw"
+		return "HIGH-BANDWIDTH"
 	}
 	if HasOperaPath(p, 200) {
-		return "lowlat"
+		return "LOW-LATENCY"
 	}
-	return "standard"
+	return "STANDARD"
 }
 
 func HasOperaPath(path *Path, suffix uint16) bool {

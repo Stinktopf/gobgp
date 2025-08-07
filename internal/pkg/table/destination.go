@@ -199,6 +199,22 @@ func (dd *Destination) GetKnownPathList(id string, as uint32) []*Path {
 	return list
 }
 
+func (dd *Destination) ClearKnownPathList(needed func(*Path) bool) {
+	if dd == nil {
+		return
+	}
+	if dd.knownPathList == nil {
+		return
+	}
+	pruned := make([]*Path, 0, len(dd.knownPathList))
+	for _, p := range dd.knownPathList {
+		if needed(p) {
+			pruned = append(pruned, p)
+		}
+	}
+	dd.knownPathList = pruned
+}
+
 func getBestPath(id string, as uint32, pathList []*Path) *Path {
 	for _, p := range pathList {
 		if rsFilter(id, as, p) {

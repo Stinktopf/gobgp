@@ -36,7 +36,7 @@ sudo docker exec -it gobgp_4 gobgp global rib
 ```
 
 
-One can observe that a **HIGH-BANDWITH** route comes over R2 and a **LOW-LATENCY** and a **STANDARD** route come over **R3** to **R4**.
+One can observe that a **HIGH-BANDWIDTH** route comes over R2 and a **LOW-LATENCY** and a **STANDARD** route come over **R3** to **R4**.
 
 ## Adjust Route in Router A
 
@@ -53,7 +53,7 @@ sudo docker exec -it gobgp_3 gobgp global rib
 sudo docker exec -it gobgp_4 gobgp global rib
 ```
 
-One can observe that a **HIGH-BANDWITH** and a **STANDARD** route come over **R2** and a **LOW-LATENCY** and a **STANDARD** route come over **R3** to **R4**.
+One can observe that a **HIGH-BANDWIDTH** and a **STANDARD** route come over **R2** and a **LOW-LATENCY** and a **STANDARD** route come over **R3** to **R4**.
 
 ## Clear RIB
 

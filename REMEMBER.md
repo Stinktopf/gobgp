@@ -63,3 +63,11 @@ sudo docker exec -it gobgp_2 gobgp global rib -a ipv4 del all
 sudo docker exec -it gobgp_3 gobgp global rib -a ipv4 del all
 sudo docker exec -it gobgp_4 gobgp global rib -a ipv4 del all
 ```
+
+## Minikube
+
+```bash
+minikube image build -t gobgp:dev .
+helm upgrade --install gobgp-lab gobgp-lab -n gobgp-lab --create-namespace
+helm uninstall gobgp-lab -n gobgp-lab
+```

@@ -1,0 +1,15 @@
+{{- range $name, $r := .Values.routers }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+spec:
+  clusterIP: None
+  selector:
+    app: {{ $name }}
+  ports:
+    - name: ipapi
+      port: 8080
+      targetPort: ipapi
+---
+{{- end }}

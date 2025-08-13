@@ -190,7 +190,7 @@
             <input id="nAsn" type="number" placeholder="65001"/>
         </div>
         <div style="flex:1">
-            <label>routerId (IPv4)</label>
+            <label>Router IPv4</label>
             <input id="nRid" type="text" placeholder="1.1.1.1"/>
         </div>
     </div>
@@ -213,7 +213,7 @@
     </div>
     <div class="row">
         <div style="flex:1">
-            <label>communitiesAddTags (both directions)</label>
+            <label>Tags</label>
             <input id="eComms" type="text" placeholder="100,200"/>
         </div>
     </div>
@@ -359,6 +359,56 @@
         return getCurrentMaxAsn() + 1;
     }
 
+    function ipIndexToOctets(idx) {
+        const perA = 256 * 254;
+        const a = Math.floor(idx / perA);
+        const remA = idx % perA;
+        const b = Math.floor(remA / 254);
+        const c = (remA % 254) + 1;
+        return { a, b, c };
+    }
+
+    function octetsToIpIndex(a, b, c) {
+        if (a < 0 || a > 255 || b < 0 || b > 255 || c < 1 || c > 254) return null;
+        return (a * 256 * 254) + (b * 254) + (c - 1);
+    }
+
+    function ipIndexToString(idx) {
+        const { a, b, c } = ipIndexToOctets(idx);
+        return `10.${a}.${b}.${c}`;
+    }
+
+    function parse10BlockIp(ip) {
+        const m = /^10\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip || "");
+        if (!m) return null;
+        const a = Number(m[1]), b = Number(m[2]), c = Number(m[3]);
+        if (Number.isNaN(a) || Number.isNaN(b) || Number.isNaN(c)) return null;
+        if (a < 0 || a > 255 || b < 0 || b > 255 || c < 1 || c > 254) return null;
+        return { a, b, c };
+    }
+
+    function getCurrentMax10BlockIndex() {
+        let maxIdx = -1;
+        cytoscapeGraph.nodes().forEach(node => {
+            const rid = (node.data('routerId') || '').trim();
+            const oct = parse10BlockIp(rid);
+            if (!oct) return;
+            const idx = octetsToIpIndex(oct.a, oct.b, oct.c);
+            if (idx !== null && idx > maxIdx) maxIdx = idx;
+        });
+        return maxIdx;
+    }
+
+    function generateNextRouterIp() {
+        const MAX = 256 * 256 * 254;
+        const nextIdx = getCurrentMax10BlockIndex() + 1;
+        if (nextIdx >= MAX) {
+            alert('No free 10/8 hosts available.');
+            return '10.0.0.1';
+        }
+        return ipIndexToString(nextIdx);
+    }
+
     const EditHistory = (function () {
         const MAX_SNAPSHOTS = 50;
         let undoSnapshots = [], redoSnapshots = [], isRestoring = false;
@@ -422,7 +472,14 @@
         EditHistory.push();
         const id = generateNextRouterName();
         const asn = generateNextAsn();
-        const node = cytoscapeGraph.add({data: {id: id, asn: asn, routerId: '10.0.0.' + id.split('-')[1]}, position});
+        const node = cytoscapeGraph.add({
+            data: {
+                id: id,
+                asn: asn,
+                routerId: generateNextRouterIp()
+            },
+            position
+        });
         applyNodeLabelFromAsn(node);
         cytoscapeGraph.$(':selected').unselect();
         node.select();

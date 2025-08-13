@@ -1,0 +1,811 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Routinator</title>
+
+    <script src="https://unpkg.com/cytoscape@3.27.0/dist/cytoscape.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+
+    <style>
+        :root {
+            --text: #e6e9ee;
+            --bg-ink: #0a1027;
+            --grad-a: #60a5fa;
+            --grad-b: #a78bfa;
+            --grad-c: #22d3ee;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            height: 100%;
+        }
+
+        body {
+            margin: 0;
+            color: var(--text);
+            font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+            background: radial-gradient(50vmax 35vmax at 10% 12%, rgba(96, 165, 250, .18), transparent 60%), radial-gradient(45vmax 35vmax at 90% 18%, rgba(167, 139, 250, .18), transparent 60%), radial-gradient(42vmax 32vmax at 78% 82%, rgba(34, 211, 238, .18), transparent 60%), linear-gradient(135deg, #0a1027 0%, #0c1838 50%, #0a1027 100%);
+            background-repeat: no-repeat;
+        }
+
+        #cy {
+            position: fixed;
+            inset: 0;
+        }
+
+        .toolbar, .editor, .btn {
+            backdrop-filter: blur(14px) saturate(140%);
+            -webkit-backdrop-filter: blur(14px) saturate(140%);
+        }
+
+        .toolbar {
+            position: fixed;
+            left: 14px;
+            top: 14px;
+            display: flex;
+            gap: 8px;
+            z-index: 5;
+            background: linear-gradient(180deg, rgba(255, 255, 255, .06), rgba(255, 255, 255, .02)) padding-box, linear-gradient(135deg, rgba(96, 165, 250, .45), rgba(167, 139, 250, .45)) border-box;
+            border: 1px solid transparent;
+            border-radius: 16px;
+            padding: 8px;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, .35);
+        }
+
+        .btn {
+            border: 1px solid transparent;
+            border-radius: 12px;
+            cursor: pointer;
+            width: 38px;
+            height: 38px;
+            display: grid;
+            place-items: center;
+            background: linear-gradient(180deg, rgba(255, 255, 255, .10), rgba(255, 255, 255, .05)) padding-box, linear-gradient(135deg, rgba(96, 165, 250, .65), rgba(34, 211, 238, .65)) border-box;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, .25);
+            transition: transform .15s ease, box-shadow .15s ease;
+            color: var(--text);
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 28px rgba(0, 0, 0, .35);
+        }
+
+        .btn svg {
+            width: 18px;
+            height: 18px;
+            display: block;
+        }
+
+        .editor {
+            position: fixed;
+            min-width: 260px;
+            max-width: 340px;
+            z-index: 6;
+            display: none;
+            padding: 12px 12px 10px;
+            background: linear-gradient(180deg, rgba(255, 255, 255, .06), rgba(255, 255, 255, .02)) padding-box, linear-gradient(135deg, rgba(96, 165, 250, .45), rgba(167, 139, 250, .45)) border-box;
+            border: 1px solid transparent;
+            border-radius: 16px;
+            box-shadow: 0 16px 50px rgba(0, 0, 0, .40);
+        }
+
+        .editor h3 {
+            margin: 0 0 8px;
+            font-size: 13px;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+            background: linear-gradient(90deg, var(--grad-a), var(--grad-b), var(--grad-c));
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+
+        .row {
+            display: flex;
+            gap: 8px;
+        }
+
+        label {
+            display: block;
+            font-size: 12px;
+            color: #c9d3e8;
+            margin: 6px 0 4px;
+        }
+
+        input[type="text"], input[type="number"] {
+            width: 100%;
+            padding: 9px 12px;
+            border-radius: 12px;
+            background: rgba(16, 24, 48, .65);
+            border: 1px solid rgba(255, 255, 255, .18);
+            color: var(--text);
+            font-size: 14px;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: rgba(255, 255, 255, .36);
+            box-shadow: 0 0 0 4px rgba(96, 165, 250, .22);
+        }
+
+        .editor .actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .btn.reset {
+            background: linear-gradient(180deg, rgba(255, 255, 255, .08), rgba(255, 255, 255, .03)) padding-box, linear-gradient(135deg, rgba(167, 139, 250, .5), rgba(96, 165, 250, .5)) border-box;
+            width: auto;
+            height: auto;
+            padding: 8px 10px;
+        }
+    </style>
+</head>
+<body>
+<div id="cy"></div>
+
+<div class="toolbar">
+    <button id="layoutBtn" class="btn" title="Auto layout" aria-label="Auto layout">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+             stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="7" rx="1.5"></rect>
+            <rect x="14" y="3" width="7" height="7" rx="1.5"></rect>
+            <rect x="3" y="14" width="7" height="7" rx="1.5"></rect>
+            <rect x="14" y="14" width="7" height="7" rx="1.5"></rect>
+        </svg>
+    </button>
+    <button id="importBtn" class="btn" title="Import values.yaml" aria-label="Import values.yaml">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+             stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <path d="M12 3v12"></path>
+            <path d="M7 8l5-5 5 5"></path>
+        </svg>
+    </button>
+    <button id="downloadBtn" class="btn" title="Download values.yaml" aria-label="Download values.yaml">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+             stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <path d="M12 3v12"></path>
+            <path d="M17 10l-5 5-5-5"></path>
+        </svg>
+    </button>
+    <input id="importInput" type="file" accept=".yaml,.yml" style="display:none"/>
+</div>
+
+<div id="nodeEditor" class="editor">
+    <h3>Router</h3>
+    <label>Name</label>
+    <input id="nName" type="text" placeholder="router-a"/>
+    <div class="row">
+        <div style="flex:1">
+            <label>ASN</label>
+            <input id="nAsn" type="number" placeholder="65001"/>
+        </div>
+        <div style="flex:1">
+            <label>routerId (IPv4)</label>
+            <input id="nRid" type="text" placeholder="1.1.1.1"/>
+        </div>
+    </div>
+    <div class="actions">
+        <button id="nReset" class="btn reset">Reset</button>
+    </div>
+</div>
+
+<div id="edgeEditor" class="editor">
+    <h3>Edge</h3>
+    <div class="row">
+        <div style="flex:1">
+            <label>Router A</label>
+            <input id="eA" type="text" disabled/>
+        </div>
+        <div style="flex:1">
+            <label>Router B</label>
+            <input id="eB" type="text" disabled/>
+        </div>
+    </div>
+    <div class="row">
+        <div style="flex:1">
+            <label>communitiesAddTags (both directions)</label>
+            <input id="eComms" type="text" placeholder="100,200"/>
+        </div>
+    </div>
+    <div class="actions">
+        <button id="eReset" class="btn reset">Reset</button>
+    </div>
+</div>
+
+<script>
+    const cytoscapeGraph = cytoscape({
+        container: document.getElementById('cy'),
+        boxSelectionEnabled: true,
+        selectionType: 'additive',
+        style: [
+            {
+                selector: 'node',
+                style: {
+                    'label': 'data(label)',
+                    'font-size': 12,
+                    'color': '#ffffff',
+                    'text-valign': 'center',
+                    'text-halign': 'center',
+                    'background-opacity': 0,
+                    'border-color': 'rgba(255,255,255,.95)',
+                    'border-width': 3,
+                    'width': 62,
+                    'height': 62
+                }
+            },
+            {
+                selector: 'edge',
+                style: {
+                    'width': 3,
+                    'curve-style': 'straight',
+                    'line-fill': 'linear-gradient',
+                    'line-gradient-stop-colors': '#60a5fa #a78bfa #22d3ee',
+                    'line-gradient-stop-positions': '0 50% 100%',
+                    'line-cap': 'round',
+                    'opacity': 0.95,
+                    'label': 'data(label)',
+                    'color': '#ffffff',
+                    'font-size': 12,
+                    'font-weight': 700,
+                    'text-rotation': 'autorotate'
+                }
+            },
+            {selector: 'node:selected', style: {'border-color': '#8ab4ff', 'border-width': 5}},
+            {
+                selector: 'edge:selected',
+                style: {'width': 5, 'opacity': 1, 'line-gradient-stop-colors': '#8ab4ff #60a5fa #a78bfa'}
+            }
+        ],
+        elements: [],
+        layout: {name: 'cose', animate: false}
+    });
+
+    const getElement = (id) => document.getElementById(id);
+    const nodeEditorPanel = getElement('nodeEditor');
+    const edgeEditorPanel = getElement('edgeEditor');
+
+    (function () {
+        if (typeof window.__BGP_SHIFT_DOWN__ === 'undefined') window.__BGP_SHIFT_DOWN__ = false;
+
+        function setShiftPressed(isPressed) {
+            window.__BGP_SHIFT_DOWN__ = !!isPressed;
+        }
+
+        const graphContainer = cytoscapeGraph.container();
+        window.addEventListener('keydown', (event) => {
+            if (event.key === 'Shift') setShiftPressed(true);
+        });
+        window.addEventListener('keyup', (event) => {
+            if (event.key === 'Shift') setShiftPressed(false);
+        });
+        graphContainer.addEventListener('mousedown', (event) => {
+            if (event.shiftKey) setShiftPressed(true);
+        });
+        graphContainer.addEventListener('pointerdown', (event) => {
+            if (event.shiftKey) setShiftPressed(true);
+        });
+        ['mouseup', 'pointerup', 'mouseleave'].forEach(type => graphContainer.addEventListener(type, () => setShiftPressed(false)));
+    })();
+
+    (function () {
+        try {
+            const collectionProto = Object.getPrototypeOf(cytoscapeGraph.collection());
+            if (collectionProto && !collectionProto.nonempty) {
+                collectionProto.nonempty = function () {
+                    return this.length > 0;
+                };
+            }
+        } catch (_) {
+        }
+    })();
+
+    function parseCommunityTags(input) {
+        if (!input) return [];
+        return input.split(',').map(x => x.trim()).filter(Boolean).map(Number).filter(n => !Number.isNaN(n));
+    }
+
+    function buildUndirectedPairId(idA, idB) {
+        const sorted = [idA, idB].sort();
+        return sorted[0] + '__UND__' + sorted[1];
+    }
+
+    function applyNodeLabelFromAsn(node) {
+        const asn = Number(node.data('asn'));
+        node.data('label', Number.isNaN(asn) ? '' : String(asn));
+    }
+
+    function applyEdgeLabelFromCommunities(edge) {
+        const tags = (edge.data('communitiesAddTags') || []);
+        edge.data('label', tags.length ? '[' + tags.join(',') + ']' : '');
+    }
+
+    function runAutolayout() {
+        cytoscapeGraph.layout({name: 'cose', animate: false, fit: true}).run();
+    }
+
+    function getModelCenter() {
+        const rect = cytoscapeGraph.container().getBoundingClientRect();
+        const pan = cytoscapeGraph.pan();
+        const zoom = cytoscapeGraph.zoom();
+        return {x: (rect.width / 2 - pan.x) / zoom, y: (rect.height / 2 - pan.y) / zoom};
+    }
+
+    function generateNextRouterName() {
+        let index = 1;
+        while (cytoscapeGraph.getElementById('router-' + index).nonempty()) index++;
+        return 'router-' + index;
+    }
+
+    function getCurrentMaxAsn() {
+        let maxAsn = 64999;
+        cytoscapeGraph.nodes().forEach(node => {
+            const asn = Number(node.data('asn'));
+            if (!Number.isNaN(asn) && asn > maxAsn) maxAsn = asn;
+        });
+        return maxAsn;
+    }
+
+    function generateNextAsn() {
+        return getCurrentMaxAsn() + 1;
+    }
+
+    const EditHistory = (function () {
+        const MAX_SNAPSHOTS = 50;
+        let undoSnapshots = [], redoSnapshots = [], isRestoring = false;
+
+        function takeSnapshot() {
+            return {
+                elements: cytoscapeGraph.elements().map(el => el.json()),
+                zoom: cytoscapeGraph.zoom(),
+                pan: cytoscapeGraph.pan()
+            };
+        }
+
+        function restoreSnapshot(snapshot) {
+            if (!snapshot) return;
+            isRestoring = true;
+            try {
+                commitEditorsAndClose();
+                cytoscapeGraph.elements().remove();
+                cytoscapeGraph.add(snapshot.elements);
+                cytoscapeGraph.zoom(snapshot.zoom || 1);
+                cytoscapeGraph.pan(snapshot.pan || {x: 0, y: 0});
+                cytoscapeGraph.nodes().forEach(applyNodeLabelFromAsn);
+                cytoscapeGraph.edges().forEach(applyEdgeLabelFromCommunities);
+            } finally {
+                isRestoring = false;
+            }
+        }
+
+        function push() {
+            if (isRestoring) return;
+            undoSnapshots.push(takeSnapshot());
+            if (undoSnapshots.length > MAX_SNAPSHOTS) undoSnapshots.shift();
+            redoSnapshots.length = 0;
+        }
+
+        function undo() {
+            if (undoSnapshots.length === 0) return;
+            const current = takeSnapshot();
+            const previous = undoSnapshots.pop();
+            redoSnapshots.push(current);
+            restoreSnapshot(previous);
+        }
+
+        function redo() {
+            if (redoSnapshots.length === 0) return;
+            const current = takeSnapshot();
+            const next = redoSnapshots.pop();
+            undoSnapshots.push(current);
+            restoreSnapshot(next);
+        }
+
+        return {
+            push, undo, redo, clear() {
+                undoSnapshots = [];
+                redoSnapshots = [];
+            }
+        };
+    })();
+
+    function addNodeAtPosition(position) {
+        EditHistory.push();
+        const id = generateNextRouterName();
+        const asn = generateNextAsn();
+        const node = cytoscapeGraph.add({data: {id: id, asn: asn, routerId: '10.0.0.' + id.split('-')[1]}, position});
+        applyNodeLabelFromAsn(node);
+        cytoscapeGraph.$(':selected').unselect();
+        node.select();
+        return node;
+    }
+
+    function addNodeAtCenter() {
+        return addNodeAtPosition(getModelCenter());
+    }
+
+    function addOrEnsureUndirectedEdge(idA, idB) {
+        if (!idA || !idB || idA === idB) return null;
+        const a = [idA, idB].sort()[0], b = [idA, idB].sort()[1];
+        const edgeId = buildUndirectedPairId(a, b);
+        let edge = cytoscapeGraph.getElementById(edgeId);
+        if (edge.nonempty()) {
+            if (!edge.data('source') || !edge.data('target')) edge.data({source: a, target: b});
+            if (!edge.data('a') || !edge.data('b')) edge.data({a: a, b: b});
+            applyEdgeLabelFromCommunities(edge);
+            return edge;
+        }
+        EditHistory.push();
+        edge = cytoscapeGraph.add({
+            data: {id: edgeId, a: a, b: b, source: a, target: b, communitiesAddTags: []},
+            group: 'edges'
+        });
+        applyEdgeLabelFromCommunities(edge);
+        return edge;
+    }
+
+    function renameNode(oldId, newId) {
+        if (oldId === newId) return cytoscapeGraph.getElementById(oldId);
+        if (!newId || cytoscapeGraph.getElementById(newId).nonempty()) {
+            alert('Invalid or duplicate name.');
+            return cytoscapeGraph.getElementById(oldId);
+        }
+        const oldNode = cytoscapeGraph.getElementById(oldId);
+        const newData = Object.assign({}, oldNode.data(), {id: newId});
+        const position = oldNode.position();
+        const classes = oldNode.classes();
+        const connectedEdges = oldNode.connectedEdges().map(edge => ({
+            id: edge.id(),
+            a: edge.data('a'),
+            b: edge.data('b'),
+            comms: (edge.data('communitiesAddTags') || []).slice()
+        }));
+        oldNode.remove();
+        const newNode = cytoscapeGraph.add({data: newData, position: position, classes: classes.join(' ')});
+        connectedEdges.forEach(edgeInfo => {
+            const newA = edgeInfo.a === oldId ? newId : edgeInfo.a;
+            const newB = edgeInfo.b === oldId ? newId : edgeInfo.b;
+            const edge = addOrEnsureUndirectedEdge(newA, newB);
+            edge.data('communitiesAddTags', edgeInfo.comms || []);
+            applyEdgeLabelFromCommunities(edge);
+        });
+        applyNodeLabelFromAsn(newNode);
+        return newNode;
+    }
+
+    let editingNode = null, nodeEditorSnapshot = null;
+    let editingEdge = null, edgeEditorSnapshot = null;
+
+    function openNodeEditor(node) {
+        editingEdge = null;
+        edgeEditorPanel.style.display = 'none';
+        editingNode = node;
+        nodeEditorSnapshot = {id: node.id(), asn: node.data('asn'), routerId: node.data('routerId')};
+        getElement('nName').value = nodeEditorSnapshot.id;
+        getElement('nAsn').value = nodeEditorSnapshot.asn || '';
+        getElement('nRid').value = nodeEditorSnapshot.routerId || '';
+        positionEditorForNode(node);
+        nodeEditorPanel.style.display = 'block';
+    }
+
+    function openEdgeEditor(edge) {
+        editingNode = null;
+        nodeEditorPanel.style.display = 'none';
+        const a = edge.data('a'), b = edge.data('b');
+        editingEdge = edge;
+        edgeEditorSnapshot = {a: a, b: b, comms: (edge.data('communitiesAddTags') || []).slice()};
+        getElement('eA').value = a;
+        getElement('eB').value = b;
+        getElement('eComms').value = (edgeEditorSnapshot.comms || []).join(',');
+        positionEditorForEdge(edge);
+        edgeEditorPanel.style.display = 'block';
+    }
+
+    function commitNodeEditor() {
+        if (!editingNode || nodeEditorPanel.style.display === 'none') return;
+        const name = getElement('nName').value.trim();
+        const asn = Number(getElement('nAsn').value);
+        const routerId = getElement('nRid').value.trim();
+        if (!name) {
+            alert('Name must not be empty.');
+            return;
+        }
+        if (Number.isNaN(asn)) {
+            alert('ASN must be a number.');
+            return;
+        }
+        EditHistory.push();
+        const updatedNode = renameNode(editingNode.id(), name);
+        updatedNode.data({asn: asn, routerId: routerId});
+        applyNodeLabelFromAsn(updatedNode);
+        editingNode = null;
+        nodeEditorPanel.style.display = 'none';
+    }
+
+    function commitEdgeEditor() {
+        if (!editingEdge || edgeEditorPanel.style.display === 'none') return;
+        EditHistory.push();
+        const communities = parseCommunityTags(getElement('eComms').value);
+        editingEdge.data({communitiesAddTags: communities});
+        applyEdgeLabelFromCommunities(editingEdge);
+        editingEdge = null;
+        edgeEditorPanel.style.display = 'none';
+    }
+
+    getElement('nReset').onclick = function () {
+        if (!editingNode) return;
+        getElement('nName').value = nodeEditorSnapshot.id;
+        getElement('nAsn').value = nodeEditorSnapshot.asn || '';
+        getElement('nRid').value = nodeEditorSnapshot.routerId || '';
+    };
+
+    getElement('eReset').onclick = function () {
+        if (!editingEdge) return;
+        getElement('eComms').value = (edgeEditorSnapshot.comms || []).join(',');
+    };
+
+    function commitEditorsAndClose() {
+        commitNodeEditor();
+        commitEdgeEditor();
+    }
+
+    function toRenderedPositionFromModel(modelPosition) {
+        const zoom = cytoscapeGraph.zoom(), pan = cytoscapeGraph.pan();
+        return {left: modelPosition.x * zoom + pan.x, top: modelPosition.y * zoom + pan.y};
+    }
+
+    function positionEditorForNode(node) {
+        const rendered = toRenderedPositionFromModel(node.position());
+        nodeEditorPanel.style.left = (rendered.left + 20) + 'px';
+        nodeEditorPanel.style.top = (rendered.top + 20) + 'px';
+    }
+
+    function positionEditorForEdge(edge) {
+        const midpoint = edge.midpoint();
+        const rendered = toRenderedPositionFromModel(midpoint);
+        edgeEditorPanel.style.left = (rendered.left + 20) + 'px';
+        edgeEditorPanel.style.top = (rendered.top + 20) + 'px';
+    }
+
+    cytoscapeGraph.on('tap', (event) => {
+        if (event.target === cytoscapeGraph) {
+            commitEditorsAndClose();
+            cytoscapeGraph.$(':selected').unselect();
+        }
+    });
+
+    cytoscapeGraph.on('tap', 'node, edge', (event) => {
+        const element = event.target;
+        const nativeEvent = event.originalEvent || {};
+        const toggleSelection = (window.__BGP_SHIFT_DOWN__ === true) || !!nativeEvent.shiftKey || !!nativeEvent.ctrlKey || !!nativeEvent.metaKey;
+        if (toggleSelection) {
+            if (element.selected()) element.unselect(); else element.select();
+            return;
+        }
+        cytoscapeGraph.$(':selected').unselect();
+        element.select();
+        if (element.isNode && element.isNode()) openNodeEditor(element);
+        else if (element.isEdge && element.isEdge()) openEdgeEditor(element);
+    });
+
+    cytoscapeGraph.on('cxttap', 'node, edge', (event) => {
+        const element = event.target;
+        if (element.selected()) element.unselect(); else element.select();
+    });
+
+    cytoscapeGraph.on('position pan zoom', function () {
+        if (editingNode) positionEditorForNode(editingNode);
+        if (editingEdge) positionEditorForEdge(editingEdge);
+    });
+
+    let isDraggingNode = false, hasPushedDuringDrag = false;
+    cytoscapeGraph.on('grab', 'node', () => {
+        isDraggingNode = true;
+        hasPushedDuringDrag = false;
+    });
+    cytoscapeGraph.on('position', 'node', () => {
+        if (isDraggingNode && !hasPushedDuringDrag) {
+            EditHistory.push();
+            hasPushedDuringDrag = true;
+        }
+    });
+    cytoscapeGraph.on('free', 'node', () => {
+        isDraggingNode = false;
+        hasPushedDuringDrag = false;
+    });
+
+    function createSelectionOrderManager() {
+        let orderedSelectedIds = [];
+        cytoscapeGraph.on('select', 'node', function (event) {
+            const id = event.target.id();
+            const index = orderedSelectedIds.indexOf(id);
+            if (index >= 0) orderedSelectedIds.splice(index, 1);
+            orderedSelectedIds.push(id);
+            if (orderedSelectedIds.length > 10) orderedSelectedIds.shift();
+        });
+        cytoscapeGraph.on('unselect', 'node', function (event) {
+            const id = event.target.id();
+            const index = orderedSelectedIds.indexOf(id);
+            if (index >= 0) orderedSelectedIds.splice(index, 1);
+        });
+        return {
+            lastTwo() {
+                const selected = cytoscapeGraph.$('node:selected');
+                if (selected.length < 2) return null;
+                const inOrder = orderedSelectedIds.filter(id => selected.getElementById(id).nonempty());
+                if (inOrder.length >= 2) return [inOrder[inOrder.length - 2], inOrder[inOrder.length - 1]];
+                return [selected[0].id(), selected[1].id()];
+            }
+        };
+    }
+
+    const selectionOrder = createSelectionOrderManager();
+
+    document.addEventListener('keydown', function (event) {
+        const activeTag = (document.activeElement && document.activeElement.tagName) || '';
+        if (activeTag === 'INPUT') return;
+
+        if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z') {
+            event.preventDefault();
+            EditHistory.undo();
+            return;
+        }
+        if ((event.ctrlKey || event.metaKey) && (event.key.toLowerCase() === 'y' || (event.shiftKey && event.key.toLowerCase() === 'z'))) {
+            event.preventDefault();
+            EditHistory.redo();
+            return;
+        }
+
+        if (event.key === '+' || event.key === '=' || event.code === 'NumpadAdd') {
+            event.preventDefault();
+            const selected = cytoscapeGraph.$('node:selected');
+            if (selected.length >= 2) {
+                const ids = selectionOrder.lastTwo();
+                if (ids) {
+                    const edge = addOrEnsureUndirectedEdge(ids[0], ids[1]);
+                    edge.select();
+                }
+            } else if (selected.length === 1) {
+                const node = selected[0];
+                const position = {x: node.position('x') + 120, y: node.position('y')};
+                addNodeAtPosition(position);
+            } else {
+                addNodeAtCenter();
+            }
+        }
+
+        if (event.key === '-' || event.code === 'NumpadSubtract' || event.key === 'Delete' || event.key === 'Backspace') {
+            event.preventDefault();
+            const selection = cytoscapeGraph.$(':selected');
+            if (selection.nonempty()) {
+                EditHistory.push();
+                selection.remove();
+            }
+        }
+    });
+
+    function buildValuesObject() {
+        const image = {repository: 'gobgp', tag: 'dev', pullPolicy: 'IfNotPresent'};
+        const routers = {};
+        cytoscapeGraph.nodes().forEach(function (node) {
+            routers[node.id()] = {asn: Number(node.data('asn')), routerId: node.data('routerId'), neighbors: []};
+        });
+        const pushedPairs = new Set();
+        cytoscapeGraph.edges().forEach(function (edge) {
+            const a = edge.data('a'), b = edge.data('b');
+            if (!routers[a] || !routers[b]) return;
+            const key = buildUndirectedPairId(a, b);
+            if (pushedPairs.has(key)) return;
+            pushedPairs.add(key);
+            const comms = (edge.data('communitiesAddTags') || []).map(Number).filter(n => !Number.isNaN(n));
+            const asnA = Number(cytoscapeGraph.getElementById(a).data('asn'));
+            const asnB = Number(cytoscapeGraph.getElementById(b).data('asn'));
+            routers[a].neighbors.push({name: b, peerAs: asnB, communitiesAddTags: comms});
+            routers[b].neighbors.push({name: a, peerAs: asnA, communitiesAddTags: comms});
+        });
+        return {image: image, routers: routers};
+    }
+
+    function downloadValuesYaml() {
+        const values = buildValuesObject();
+        const valuesYaml = jsyaml.dump(values, {noRefs: true, lineWidth: 120});
+        const blob = new Blob([valuesYaml], {type: 'text/yaml'});
+        const anchor = document.createElement('a');
+        anchor.href = URL.createObjectURL(blob);
+        anchor.download = 'values.yaml';
+        anchor.click();
+        URL.revokeObjectURL(anchor.href);
+    }
+
+    function loadValuesObject(values) {
+        if (!values || typeof values !== 'object') {
+            alert('Invalid values.yaml');
+            return;
+        }
+        const routers = values.routers;
+        if (!routers || typeof routers !== 'object') {
+            alert('Field "routers" is missing in values.yaml');
+            return;
+        }
+
+        EditHistory.push();
+        commitEditorsAndClose();
+        cytoscapeGraph.elements().remove();
+
+        const names = Object.keys(routers);
+        names.forEach((name, idx) => {
+            const router = routers[name] || {};
+            const asn = Number(router.asn);
+            const routerId = (router.routerId || '').trim();
+            const position = {x: 140 + (idx % 5) * 160, y: 200 + Math.floor(idx / 5) * 120};
+            const node = cytoscapeGraph.add({
+                data: {id: name, asn: Number.isNaN(asn) ? null : asn, routerId: routerId},
+                position: position
+            });
+            applyNodeLabelFromAsn(node);
+        });
+
+        const pushedPairs = new Set();
+        Object.entries(routers).forEach(([aName, router]) => {
+            const neighbors = Array.isArray(router.neighbors) ? router.neighbors : [];
+            neighbors.forEach(nb => {
+                const bName = nb && nb.name;
+                if (!bName || !routers[bName]) return;
+                const key = buildUndirectedPairId(aName, bName);
+                if (pushedPairs.has(key)) return;
+                pushedPairs.add(key);
+
+                const commsA = (nb.communitiesAddTags || []).map(Number).filter(n => !Number.isNaN(n));
+                let commsB = [];
+                const neighborListB = Array.isArray(routers[bName].neighbors) ? routers[bName].neighbors : [];
+                const back = neighborListB.find(x => x && x.name === aName);
+                if (back && Array.isArray(back.communitiesAddTags)) commsB = back.communitiesAddTags.map(Number).filter(n => !Number.isNaN(n));
+                const union = Array.from(new Set([].concat(commsA, commsB)));
+
+                const edge = addOrEnsureUndirectedEdge(aName, bName);
+                if (edge) {
+                    edge.data('communitiesAddTags', union);
+                    applyEdgeLabelFromCommunities(edge);
+                }
+            });
+        });
+
+        runAutolayout();
+    }
+
+    getElement('layoutBtn').onclick = function () {
+        EditHistory.push();
+        runAutolayout();
+    };
+    getElement('downloadBtn').onclick = function () {
+        downloadValuesYaml();
+    };
+    getElement('importBtn').onclick = function () {
+        getElement('importInput').click();
+    };
+    getElement('importInput').addEventListener('change', async function (e) {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        try {
+            const text = await file.text();
+            const data = jsyaml.load(text);
+            loadValuesObject(data);
+        } catch (err) {
+            console.error(err);
+            alert('Failed to load values.yaml: ' + (err && err.message ? err.message : String(err)));
+        } finally {
+            e.target.value = '';
+        }
+    });
+</script>
+</body>
+</html>

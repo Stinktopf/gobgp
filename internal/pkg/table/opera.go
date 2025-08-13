@@ -51,6 +51,10 @@ func HasOperaPath(path *Path, suffix uint16) bool {
 		return false
 	}
 
+	if len(asList) == 1 {
+		return false
+	}
+
 	communities := path.GetCommunities()
 
 	asToSuffix := make(map[uint32]map[uint16]bool)
@@ -64,7 +68,7 @@ func HasOperaPath(path *Path, suffix uint16) bool {
 		asToSuffix[asn][suf] = true
 	}
 
-	for _, asn := range asList {
+	for _, asn := range asList[:len(asList)-1] {
 		if suffixes, ok := asToSuffix[asn]; !ok || !suffixes[suffix] {
 			return false
 		}

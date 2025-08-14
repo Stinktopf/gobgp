@@ -615,10 +615,10 @@ func compareByOpera(path1, path2 *Path) *Path {
 		return nil
 	}
 
-	if isBetterOperaPath(path1, path2) {
+	if IsBetterOperaPath(path1, path2) {
 		return path1
 	}
-	if isBetterOperaPath(path2, path1) {
+	if IsBetterOperaPath(path2, path1) {
 
 		return path2
 	}

@@ -2,48 +2,60 @@ image:
   repository: gobgp
   tag: dev
   pullPolicy: IfNotPresent
-
 routers:
-  router-a:
+  router-1:
+    asn: 65000
+    routerId: 10.0.0.1
+    neighbors:
+      - name: router-2
+        peerAs: 65001
+        communitiesAddTags:
+          - 5064
+      - name: router-3
+        peerAs: 65002
+        communitiesAddTags:
+          - 2565
+      - name: router-4
+        peerAs: 65003
+        communitiesAddTags:
+          - 3333
+  router-2:
     asn: 65001
-    routerId: 1.1.1.1
+    routerId: 10.0.0.2
     neighbors:
-      - name: router-b
+      - name: router-1
+        peerAs: 65000
+        communitiesAddTags:
+          - 5064
+      - name: router-3
         peerAs: 65002
-        communitiesAddTags: [100]
-      - name: router-c
-        peerAs: 65003
-        communitiesAddTags: [200]
-
-  router-b:
+        communitiesAddTags:
+          - 2565
+  router-3:
     asn: 65002
-    routerId: 2.2.2.2
+    routerId: 10.0.0.3
     neighbors:
-      - name: router-a
+      - name: router-1
+        peerAs: 65000
+        communitiesAddTags:
+          - 2565
+      - name: router-2
         peerAs: 65001
-        communitiesAddTags: [100]
-      - name: router-d
-        peerAs: 65004
-        communitiesAddTags: [100]
-
-  router-c:
-    asn: 65003
-    routerId: 3.3.3.3
-    neighbors:
-      - name: router-a
-        peerAs: 65001
-        communitiesAddTags: [200]
-      - name: router-d
-        peerAs: 65004
-        communitiesAddTags: [200]
-
-  router-d:
-    asn: 65004
-    routerId: 4.4.4.4
-    neighbors:
-      - name: router-b
-        peerAs: 65002
-        communitiesAddTags: [100]
-      - name: router-c
+        communitiesAddTags:
+          - 2565
+      - name: router-4
         peerAs: 65003
-        communitiesAddTags: [200]
+        communitiesAddTags:
+          - 3338
+  router-4:
+    asn: 65003
+    routerId: 10.0.0.4
+    neighbors:
+      - name: router-3
+        peerAs: 65002
+        communitiesAddTags:
+          - 3338
+      - name: router-1
+        peerAs: 65000
+        communitiesAddTags:
+          - 3333

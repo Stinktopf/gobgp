@@ -22,6 +22,7 @@ const (
 var operaConfig struct {
 	mode OperaMode
 	kind OperaKind
+	asn  uint32
 }
 
 func InitOperaFromEnv() {
@@ -40,6 +41,11 @@ func InitOperaFromEnv() {
 	default:
 		operaConfig.kind = OperaFuzzy
 		fmt.Println("[OPERA] MODE: FUZZY")
+	}
+	if v := os.Getenv("ASN"); v != "" {
+		var parsed uint64
+		fmt.Sscanf(v, "%d", &parsed)
+		operaConfig.asn = uint32(parsed)
 	}
 }
 
@@ -144,7 +150,7 @@ func IsBetterOperaPath(newPath, existingPath *Path) bool {
 
 func bitfieldMetrics(p *Path) (ok bool, minCapExp uint8, sumLatMs uint32) {
 	asList := p.GetAsList()
-	if len(asList) <= 1 {
+	if len(asList) == 0 {
 		return false, 0, 0
 	}
 	communities := p.GetCommunities()
@@ -156,9 +162,16 @@ func bitfieldMetrics(p *Path) (ok bool, minCapExp uint8, sumLatMs uint32) {
 		latMs := uint8(suf & 0xFF)
 		asToPairs[asn] = append(asToPairs[asn], [2]uint8{capExp, latMs})
 	}
+
+	checkAS := []uint32{}
+	if operaConfig.asn != 0 {
+		checkAS = append(checkAS, operaConfig.asn)
+	}
+	checkAS = append(checkAS, asList[:len(asList)-1]...)
+
 	minCap := uint8(255)
 	var sumLat uint32
-	for _, asn := range asList[:len(asList)-1] {
+	for _, asn := range checkAS {
 		pairs, ok := asToPairs[asn]
 		if !ok || len(pairs) == 0 {
 			return false, 0, 0

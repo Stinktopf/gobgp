@@ -10,15 +10,15 @@ routers:
       - name: router-2
         peerAs: 65001
         communitiesAddTags:
-          - 5064
-      - name: router-3
-        peerAs: 65002
-        communitiesAddTags:
-          - 2565
+          - 2815
       - name: router-4
         peerAs: 65003
         communitiesAddTags:
-          - 3333
+          - 4708
+      - name: router-3
+        peerAs: 65002
+        communitiesAddTags:
+          - 3338
   router-2:
     asn: 65001
     routerId: 10.0.0.2
@@ -26,11 +26,15 @@ routers:
       - name: router-1
         peerAs: 65000
         communitiesAddTags:
-          - 5064
+          - 2815
       - name: router-3
         peerAs: 65002
         communitiesAddTags:
-          - 2565
+          - 4101
+      - name: router-4
+        peerAs: 65003
+        communitiesAddTags:
+          - 4452
   router-3:
     asn: 65002
     routerId: 10.0.0.3
@@ -38,24 +42,20 @@ routers:
       - name: router-1
         peerAs: 65000
         communitiesAddTags:
-          - 2565
+          - 3338
       - name: router-2
         peerAs: 65001
         communitiesAddTags:
-          - 2565
-      - name: router-4
-        peerAs: 65003
-        communitiesAddTags:
-          - 3338
+          - 4101
   router-4:
     asn: 65003
     routerId: 10.0.0.4
     neighbors:
-      - name: router-3
-        peerAs: 65002
-        communitiesAddTags:
-          - 3338
       - name: router-1
         peerAs: 65000
         communitiesAddTags:
-          - 3333
+          - 4708
+      - name: router-2
+        peerAs: 65001
+        communitiesAddTags:
+          - 4452

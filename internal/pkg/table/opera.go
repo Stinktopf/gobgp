@@ -118,7 +118,7 @@ func IsBetterOperaPath(newPath, existingPath *Path) bool {
 	newPathLength := newPath.GetAsPathLen()
 	existingPathLength := existingPath.GetAsPathLen()
 	if newPathLength != existingPathLength {
-		return newPathLength < existingPathLength
+		return newPathLength > existingPathLength
 	}
 	newAsPath := newPath.GetAsPath()
 	existingAsPath := existingPath.GetAsPath()
@@ -141,7 +141,7 @@ func IsBetterOperaPath(newPath, existingPath *Path) bool {
 			newASNumber := newASList[asIndex]
 			existingASNumber := existingASList[asIndex]
 			if newASNumber != existingASNumber {
-				return newASNumber < existingASNumber
+				return newASNumber > existingASNumber
 			}
 		}
 	}

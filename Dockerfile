@@ -6,15 +6,17 @@ COPY . .
 RUN go build -o gobgpd ./cmd/gobgpd
 RUN go build -o gobgp  ./cmd/gobgp
 
-FROM debian:bookworm-slim
+FROM ghcr.io/astral-sh/uv:bookworm-slim
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 python3-pip curl iproute2 && \
-    pip install --break-system-packages fastapi uvicorn && \
+    apt-get install -y --no-install-recommends curl iproute2 && \
     rm -rf /var/lib/apt/lists/*
 
+ENV UV_SYSTEM_PYTHON=1
+WORKDIR /app
+COPY requirements.txt /app/requirements.txt
+RUN uv pip install --system --no-cache -r /app/requirements.txt
 COPY --from=build /app/gobgpd /usr/local/bin/
 COPY --from=build /app/gobgp  /usr/local/bin/
-
-COPY entrypoint.py /entrypoint.py
+COPY entrypoint.py /app/entrypoint.py
 EXPOSE 179 8080
-ENTRYPOINT ["python3", "/entrypoint.py"]
+ENTRYPOINT ["uv", "run", "/app/entrypoint.py"]

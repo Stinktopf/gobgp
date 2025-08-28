@@ -97,12 +97,12 @@ def write_initial_policies() -> None:
     os.makedirs(os.path.dirname(GOBGP_CONFIG_PATH), exist_ok=True)
     with open(GOBGP_CONFIG_PATH, "w") as config_file:
         config_file.write("\n".join(config_lines))
-    print(f"[Config] initial policies written to {GOBGP_CONFIG_PATH}", flush=True)
+    print(f"[CONFIG] initial policies written to {GOBGP_CONFIG_PATH}", flush=True)
 
 
 def start_gobgpd() -> None:
     global gobgpd_process
-    print(f"[Gobgpd] starting with {GOBGP_CONFIG_PATH}", flush=True)
+    print(f"[GOBGP] starting with {GOBGP_CONFIG_PATH}", flush=True)
     gobgpd_process = subprocess.Popen(["gobgpd", "-f", GOBGP_CONFIG_PATH])
 
 
@@ -118,20 +118,20 @@ def apply_neighbor_diff():
                 old_ip = ip
                 break
         if old_ip:
-            print(f"[Neighbor] DEL {old_ip} replaced by {new_ip} (ASN {data['peerAs']})", flush=True)
+            print(f"[NEIGHBOR] DEL {old_ip} replaced by {new_ip} (ASN {data['peerAs']})", flush=True)
             subprocess.run(["gobgp", "neighbor", "del", old_ip], check=True)
             active_neighbors.pop(old_ip, None)
 
     for name, data in desired.items():
         ip = data["ip"]
         if ip and ip not in active_neighbors:
-            print(f"[Neighbor] ADD {ip} (ASN {data['peerAs']})", flush=True)
+            print(f"[NEIGHBOR] ADD {ip} (ASN {data['peerAs']})", flush=True)
             subprocess.run(["gobgp", "neighbor", "add", ip, "as", str(data["peerAs"])], check=True)
             active_neighbors[ip] = data
 
     for ip in list(active_neighbors.keys()):
         if all(d["ip"] != ip for d in desired.values()):
-            print(f"[Neighbor] DEL {ip} (no longer desired)", flush=True)
+            print(f"[NEIGHBOR] DEL {ip} (ASN {data['peerAs']})", flush=True)
             subprocess.run(["gobgp", "neighbor", "del", ip], check=True)
             active_neighbors.pop(ip, None)
 
@@ -151,7 +151,7 @@ def neighbor_resolution_polling_loop() -> None:
                 previous_ip = neighbor_state_by_name[neighbor_name].get("ip")
                 if resolved_ip != previous_ip:
                     neighbor_state_by_name[neighbor_name]["ip"] = resolved_ip
-                    print(f"[State] {neighbor_name} IP changed: {previous_ip} -> {resolved_ip}", flush=True)
+                    print(f"[IP] {neighbor_name} Changed: {previous_ip} -> {resolved_ip}", flush=True)
                     has_changes = True
 
         if has_changes or is_first_run:

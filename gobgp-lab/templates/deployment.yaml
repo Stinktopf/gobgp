@@ -17,7 +17,6 @@ spec:
         - name: gobgp
           image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
-          command: ["python3", "/entrypoint.py"]
           env:
             - name: POD_NAMESPACE
               valueFrom:

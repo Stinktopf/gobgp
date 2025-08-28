@@ -6,17 +6,16 @@ COPY . .
 RUN go build -o gobgpd ./cmd/gobgpd
 RUN go build -o gobgp  ./cmd/gobgp
 
-FROM ghcr.io/astral-sh/uv:bookworm-slim
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl iproute2 && \
     rm -rf /var/lib/apt/lists/*
 
-ENV UV_SYSTEM_PYTHON=1
 WORKDIR /app
-COPY requirements.txt /app/requirements.txt
-RUN uv pip install --system --no-cache -r /app/requirements.txt
+COPY pyproject.toml uv.lock* ./
+RUN uv sync --frozen --no-cache --no-editable
 COPY --from=build /app/gobgpd /usr/local/bin/
 COPY --from=build /app/gobgp  /usr/local/bin/
-COPY entrypoint.py /app/entrypoint.py
+COPY entrypoint.py .
 EXPOSE 179 8080
-ENTRYPOINT ["uv", "run", "/app/entrypoint.py"]
+ENTRYPOINT ["uv", "run", "entrypoint.py"]

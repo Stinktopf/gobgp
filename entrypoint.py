@@ -20,7 +20,6 @@ NEIGHBORS_JSON_RAW = os.environ["NEIGHBORS_JSON"]
 GOBGP_CONFIG_PATH = "/etc/gobgp/gobgp.conf"
 
 neighbor_state_by_name: Dict[str, Dict[str, Any]] = {}
-active_neighbors: Dict[str, Dict[str, Any]] = {}
 gobgpd_process: Optional[subprocess.Popen] = None
 neighbor_state_lock = threading.Lock()
 
@@ -48,9 +47,12 @@ def resolve_neighbor_ip_address(neighbor_name: str) -> Optional[str]:
         return None
 
 
-def write_initial_policies() -> None:
+def write_gobgp_config_file() -> None:
+    with neighbor_state_lock:
+        neighbors_snapshot = {name: data.copy() for name, data in neighbor_state_by_name.items()}
+
     tags_by_peer_asn: Dict[int, Set[int]] = {}
-    for neighbor_data in NEIGHBOR_TEMPLATE.values():
+    for neighbor_data in neighbors_snapshot.values():
         tags_by_peer_asn.setdefault(neighbor_data["peerAs"], set()).update(neighbor_data.get("tags", []))
 
     peer_asns_with_tags = sorted(asn for asn, tags in tags_by_peer_asn.items() if tags)
@@ -69,12 +71,14 @@ def write_initial_policies() -> None:
     ]
 
     for peer_asn in peer_asns_with_tags:
-        tag_set = tags_by_peer_asn[peer_asn]
         config_lines += [
             "[[defined-sets.bgp-defined-sets.as-path-sets]]",
             f'  as-path-set-name = "from-as{peer_asn}"',
             f'  as-path-list = ["^{peer_asn}$", "^{peer_asn}_"]',
             "",
+        ]
+        tag_set = tags_by_peer_asn[peer_asn]
+        config_lines += [
             "[[policy-definitions]]",
             f'  name = "tag-from-as{peer_asn}"',
             "  [[policy-definitions.statements]]",
@@ -94,54 +98,55 @@ def write_initial_policies() -> None:
             "",
         ]
 
+    for neighbor_name, neighbor_data in neighbors_snapshot.items():
+        ip_address = neighbor_data.get("ip")
+        if not ip_address:
+            continue
+        peer_asn = neighbor_data["peerAs"]
+        is_passive_mode = "true" if peer_asn > LOCAL_ASN else "false"
+
+        config_lines += [
+            "[[neighbors]]",
+            "  [neighbors.config]",
+            f'    neighbor-address = "{ip_address}"',
+            f"    peer-as = {peer_asn}",
+            "  [neighbors.transport.config]",
+            f"    passive-mode = {is_passive_mode}",
+            "  [neighbors.add-paths.config]",
+            "    receive = true",
+            "    send-max = 3",
+            "  [[neighbors.afi-safis]]",
+            "    [neighbors.afi-safis.config]",
+            '      afi-safi-name = "ipv4-unicast"',
+            "",
+        ]
+
     os.makedirs(os.path.dirname(GOBGP_CONFIG_PATH), exist_ok=True)
     with open(GOBGP_CONFIG_PATH, "w") as config_file:
         config_file.write("\n".join(config_lines))
-    print(f"[CONFIG] initial policies written to {GOBGP_CONFIG_PATH}", flush=True)
+    print(f"[Config] written to {GOBGP_CONFIG_PATH}", flush=True)
 
 
-def start_gobgpd() -> None:
+def restart_gobgpd() -> None:
     global gobgpd_process
-    print(f"[GOBGP] starting with {GOBGP_CONFIG_PATH}", flush=True)
+    if gobgpd_process and gobgpd_process.poll() is None:
+        print("[Gobgpd] stopping old process", flush=True)
+        gobgpd_process.send_signal(signal.SIGTERM)
+        try:
+            gobgpd_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            print("[Gobgpd] SIGKILL old process", flush=True)
+            gobgpd_process.kill()
+            gobgpd_process.wait()
+    print(f"[Gobgpd] starting with {GOBGP_CONFIG_PATH}", flush=True)
     gobgpd_process = subprocess.Popen(["gobgpd", "-f", GOBGP_CONFIG_PATH])
-
-
-def apply_neighbor_diff():
-    global active_neighbors
-    desired = {name: data for name, data in neighbor_state_by_name.items() if data.get("ip")}
-
-    for name, data in desired.items():
-        new_ip = data["ip"]
-        old_ip = None
-        for ip, d in active_neighbors.items():
-            if d["peerAs"] == data["peerAs"] and ip != new_ip:
-                old_ip = ip
-                break
-        if old_ip:
-            print(f"[NEIGHBOR] DEL {old_ip} replaced by {new_ip} (ASN {data['peerAs']})", flush=True)
-            subprocess.run(["gobgp", "neighbor", "del", old_ip], check=True)
-            active_neighbors.pop(old_ip, None)
-
-    for name, data in desired.items():
-        ip = data["ip"]
-        if ip and ip not in active_neighbors:
-            print(f"[NEIGHBOR] ADD {ip} (ASN {data['peerAs']})", flush=True)
-            subprocess.run(["gobgp", "neighbor", "add", ip, "as", str(data["peerAs"])], check=True)
-            active_neighbors[ip] = data
-
-    for ip in list(active_neighbors.keys()):
-        if all(d["ip"] != ip for d in desired.values()):
-            print(f"[NEIGHBOR] DEL {ip} (ASN {data['peerAs']})", flush=True)
-            subprocess.run(["gobgp", "neighbor", "del", ip], check=True)
-            active_neighbors.pop(ip, None)
-
 
 
 def neighbor_resolution_polling_loop() -> None:
     with neighbor_state_lock:
         neighbor_state_by_name.update(NEIGHBOR_TEMPLATE)
 
-    is_first_run = True
+    is_first_render = True
     while True:
         has_changes = False
 
@@ -151,12 +156,16 @@ def neighbor_resolution_polling_loop() -> None:
                 previous_ip = neighbor_state_by_name[neighbor_name].get("ip")
                 if resolved_ip != previous_ip:
                     neighbor_state_by_name[neighbor_name]["ip"] = resolved_ip
-                    print(f"[IP] {neighbor_name} Changed: {previous_ip} -> {resolved_ip}", flush=True)
+                    print(f"[State] {neighbor_name} IP changed: {previous_ip} -> {resolved_ip}", flush=True)
                     has_changes = True
 
-        if has_changes or is_first_run:
-            apply_neighbor_diff()
-            is_first_run = False
+        if has_changes or is_first_render:
+            if any(neighbor.get("ip") for neighbor in neighbor_state_by_name.values()):
+                write_gobgp_config_file()
+                restart_gobgpd()
+                is_first_render = False
+            else:
+                print("[Config] skip render (no neighbor IPs yet)", flush=True)
 
         time.sleep(2)
 
@@ -200,8 +209,4 @@ def _shutdown(*_):
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
-
-    write_initial_policies()
-    start_gobgpd()
-
     uvicorn.run(app, host="0.0.0.0", port=8080)

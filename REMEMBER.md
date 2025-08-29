@@ -21,6 +21,12 @@ gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254
 gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254 aspath 64500 community 64500:200 identifier 1
 ```
 
+## Monitor
+
+```bash
+gobgp monitor global rib
+```
+
 ## Clear RIB
 
 ```bash

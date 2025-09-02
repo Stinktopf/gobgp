@@ -8,7 +8,7 @@ RUN go build -o gobgp  ./cmd/gobgp
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl iproute2 && \
+    apt-get install -y --no-install-recommends curl iproute2 tcpdump && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

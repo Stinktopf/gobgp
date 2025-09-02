@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import glob
 import json
 import os
 import signal
@@ -9,6 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Set
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 import uvicorn
 
 POD_IP = os.environ["POD_IP"]
@@ -18,9 +20,12 @@ KUBE_NAMESPACE = os.environ["POD_NAMESPACE"]
 NEIGHBORS_JSON_RAW = os.environ["NEIGHBORS_JSON"]
 
 GOBGP_CONFIG_PATH = "/etc/gobgp/gobgp.conf"
+PCAP_DIR = "/tmp/pcaps"
 
 neighbor_state_by_name: Dict[str, Dict[str, Any]] = {}
 gobgpd_process: Optional[subprocess.Popen] = None
+tcpdump_process: Optional[subprocess.Popen] = None
+current_pcap_file: Optional[str] = None
 neighbor_state_lock = threading.Lock()
 
 
@@ -41,7 +46,9 @@ NEIGHBOR_TEMPLATE = parse_neighbors_json(NEIGHBORS_JSON_RAW)
 def resolve_neighbor_ip_address(neighbor_name: str) -> Optional[str]:
     service_fqdn = f"{neighbor_name}.{KUBE_NAMESPACE}.svc"
     try:
-        ip_address = subprocess.check_output(["getent", "hosts", service_fqdn], text=True).split()[0]
+        ip_address = subprocess.check_output(
+            ["getent", "hosts", service_fqdn], text=True
+        ).split()[0]
         return ip_address
     except subprocess.CalledProcessError:
         return None
@@ -49,14 +56,20 @@ def resolve_neighbor_ip_address(neighbor_name: str) -> Optional[str]:
 
 def write_gobgp_config_file() -> None:
     with neighbor_state_lock:
-        neighbors_snapshot = {name: data.copy() for name, data in neighbor_state_by_name.items()}
+        neighbors_snapshot = {
+            name: data.copy() for name, data in neighbor_state_by_name.items()
+        }
 
     tags_by_peer_asn: Dict[int, Set[int]] = {}
     for neighbor_data in neighbors_snapshot.values():
-        tags_by_peer_asn.setdefault(neighbor_data["peerAs"], set()).update(neighbor_data.get("tags", []))
+        tags_by_peer_asn.setdefault(neighbor_data["peerAs"], set()).update(
+            neighbor_data.get("tags", [])
+        )
 
     peer_asns_with_tags = sorted(asn for asn, tags in tags_by_peer_asn.items() if tags)
-    import_policy_names = ", ".join([f'"tag-from-as{peer_asn}"' for peer_asn in peer_asns_with_tags])
+    import_policy_names = ", ".join(
+        [f'"tag-from-as{peer_asn}"' for peer_asn in peer_asns_with_tags]
+    )
 
     config_lines: List[str] = []
     config_lines += [
@@ -89,7 +102,9 @@ def write_gobgp_config_file() -> None:
             "    [policy-definitions.statements.actions]",
             '      route-disposition = "accept-route"',
         ]
-        communities_literal = ", ".join([f'"{LOCAL_ASN}:{tag}"' for tag in sorted(tag_set)])
+        communities_literal = ", ".join(
+            [f'"{LOCAL_ASN}:{tag}"' for tag in sorted(tag_set)]
+        )
         config_lines += [
             "    [policy-definitions.statements.actions.bgp-actions.set-community]",
             '      options = "add"',
@@ -156,7 +171,10 @@ def neighbor_resolution_polling_loop() -> None:
                 previous_ip = neighbor_state_by_name[neighbor_name].get("ip")
                 if resolved_ip != previous_ip:
                     neighbor_state_by_name[neighbor_name]["ip"] = resolved_ip
-                    print(f"[State] {neighbor_name} IP changed: {previous_ip} -> {resolved_ip}", flush=True)
+                    print(
+                        f"[State] {neighbor_name} IP changed: {previous_ip} -> {resolved_ip}",
+                        flush=True,
+                    )
                     has_changes = True
 
         if has_changes or is_first_render:
@@ -170,9 +188,36 @@ def neighbor_resolution_polling_loop() -> None:
         time.sleep(2)
 
 
+def start_tcpdump() -> (subprocess.Popen, str):
+    os.makedirs(PCAP_DIR, exist_ok=True)
+    pcap_file = os.path.join(PCAP_DIR, f"bgp-{int(time.time())}.pcap")
+    print(f"[tcpdump] start capture to {pcap_file}", flush=True)
+    proc = subprocess.Popen(
+        ["tcpdump", "-i", "any", "port", "179", "-w", pcap_file],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+    )
+    return proc, pcap_file
+
+
+def stop_tcpdump():
+    global tcpdump_process, current_pcap_file
+    if tcpdump_process and tcpdump_process.poll() is None:
+        tcpdump_process.terminate()
+        tcpdump_process.wait()
+        print(f"[tcpdump] stopped, file: {current_pcap_file}", flush=True)
+        fname = os.path.basename(current_pcap_file) if current_pcap_file else None
+        tcpdump_process = None
+        current_pcap_file = None
+        return fname
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    neighbor_polling_thread = threading.Thread(target=neighbor_resolution_polling_loop, daemon=True)
+    neighbor_polling_thread = threading.Thread(
+        target=neighbor_resolution_polling_loop, daemon=True
+    )
     neighbor_polling_thread.start()
     yield
     _shutdown()
@@ -195,8 +240,42 @@ def http_config():
         return {"error": "no config yet"}
 
 
+@app.post("/pcap/start")
+def http_start_pcap():
+    global tcpdump_process, current_pcap_file
+    if tcpdump_process and tcpdump_process.poll() is None:
+        return {"error": "capture already running"}
+    tcpdump_process, current_pcap_file = start_tcpdump()
+    return {"started": os.path.basename(current_pcap_file)}
+
+
+@app.post("/pcap/stop")
+def http_stop_pcap():
+    fname = stop_tcpdump()
+    if not fname:
+        return {"error": "no capture running"}
+    return {"stopped": fname}
+
+
+@app.get("/pcaps")
+def list_pcaps():
+    files = sorted(glob.glob(os.path.join(PCAP_DIR, "*.pcap")))
+    return {"files": [os.path.basename(f) for f in files]}
+
+
+@app.get("/pcaps/{filename}")
+def download_pcap(filename: str):
+    file_path = os.path.join(PCAP_DIR, filename)
+    if not os.path.exists(file_path):
+        return {"error": "file not found"}
+    return FileResponse(
+        path=file_path, filename=filename, media_type="application/vnd.tcpdump.pcap"
+    )
+
+
 def _shutdown(*_):
     global gobgpd_process
+    stop_tcpdump()
     if gobgpd_process and gobgpd_process.poll() is None:
         try:
             gobgpd_process.send_signal(signal.SIGTERM)

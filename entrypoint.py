@@ -9,7 +9,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Set
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
 from fastapi.responses import FileResponse
 import uvicorn
 
@@ -213,6 +213,17 @@ def stop_tcpdump():
     return None
 
 
+def run_gobgp(args: list[str], json_out: bool = False):
+    try:
+        cmd = ["gobgp"] + args
+        if json_out:
+            cmd.append("-j")
+        res = subprocess.run(cmd, text=True, capture_output=True, check=True)
+        return json.loads(res.stdout) if json_out else res.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        return {"error": e.stderr.strip() or str(e)}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     neighbor_polling_thread = threading.Thread(
@@ -271,6 +282,47 @@ def download_pcap(filename: str):
     return FileResponse(
         path=file_path, filename=filename, media_type="application/vnd.tcpdump.pcap"
     )
+
+
+@app.get("/neighbors")
+def http_neighbors():
+    return run_gobgp(["neighbor"], json_out=True)
+
+@app.get("/rib")
+def http_rib():
+    return run_gobgp(["global", "rib"], json_out=True)
+
+@app.get("/rib/count")
+def http_rib_count():
+    routes = run_gobgp(["global", "rib"], json_out=True)
+    if isinstance(routes, dict) and "error" in routes:
+        return routes
+    return {"count": len(routes)}
+
+@app.post("/rib/add")
+def http_rib_add(
+    prefix: str = Body(..., embed=True),
+    nexthop: str = Body(..., embed=True),
+    aspath: Optional[List[int]] = Body(None, embed=True),
+    community: Optional[str] = Body(None, embed=True),
+    identifier: Optional[int] = Body(None, embed=True),
+):
+    cmd = ["global", "rib", "add", prefix, "nexthop", nexthop]
+    if aspath:
+        cmd += ["aspath"] + [str(a) for a in aspath]
+    if community:
+        cmd += ["community", community]
+    if identifier:
+        cmd += ["identifier", str(identifier)]
+    return run_gobgp(cmd)
+
+@app.post("/rib/del")
+def http_rib_del(prefix: str = Body(..., embed=True)):
+    return run_gobgp(["global", "rib", "del", prefix])
+
+@app.delete("/rib")
+def http_rib_del_all():
+    return run_gobgp(["global", "rib", "del", "all"])
 
 
 def _shutdown(*_):

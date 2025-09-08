@@ -97,7 +97,7 @@ def convert(json_file: str, yaml_file: str):
 
 def main():
     if len(sys.argv) != 3:
-        print("Usage: apex <input.json> <output.yaml>")
+        print("Usage: convert <input.json> <output.yaml>")
         sys.exit(1)
     convert(sys.argv[1], sys.argv[2])
     print(f"Conversion completed → {sys.argv[2]}")

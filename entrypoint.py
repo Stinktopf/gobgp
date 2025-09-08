@@ -6,12 +6,15 @@ import signal
 import subprocess
 import threading
 import time
+import gzip
+import shutil
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Set
 
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, Body, UploadFile, File
 from fastapi.responses import FileResponse
 import uvicorn
+import requests
 
 POD_IP = os.environ["POD_IP"]
 LOCAL_ASN = int(os.environ["ASN"])
@@ -21,6 +24,7 @@ NEIGHBORS_JSON_RAW = os.environ["NEIGHBORS_JSON"]
 
 GOBGP_CONFIG_PATH = "/etc/gobgp/gobgp.conf"
 PCAP_DIR = "/tmp/pcaps"
+MRT_DIR = "/tmp/mrt"
 
 neighbor_state_by_name: Dict[str, Dict[str, Any]] = {}
 gobgpd_process: Optional[subprocess.Popen] = None
@@ -213,7 +217,7 @@ def stop_tcpdump():
     return None
 
 
-def run_gobgp(args: list[str], json_out: bool = False):
+def run_gobgp(args: List[str], json_out: bool = False):
     try:
         cmd = ["gobgp"] + args
         if json_out:
@@ -288,9 +292,16 @@ def download_pcap(filename: str):
 def http_neighbors():
     return run_gobgp(["neighbor"], json_out=True)
 
+
 @app.get("/rib")
 def http_rib():
     return run_gobgp(["global", "rib"], json_out=True)
+
+
+@app.get("/rib/summary")
+def http_rib_summary():
+    return run_gobgp(["global", "rib", "summary"], json_out=True)
+
 
 @app.get("/rib/count")
 def http_rib_count():
@@ -298,6 +309,7 @@ def http_rib_count():
     if isinstance(routes, dict) and "error" in routes:
         return routes
     return {"count": len(routes)}
+
 
 @app.post("/rib/add")
 def http_rib_add(
@@ -316,13 +328,113 @@ def http_rib_add(
         cmd += ["identifier", str(identifier)]
     return run_gobgp(cmd)
 
+
 @app.post("/rib/del")
 def http_rib_del(prefix: str = Body(..., embed=True)):
     return run_gobgp(["global", "rib", "del", prefix])
 
+
 @app.delete("/rib")
 def http_rib_del_all():
     return run_gobgp(["global", "rib", "del", "all"])
+
+
+@app.post("/mrt/upload")
+def http_mrt_upload(
+    file: UploadFile = File(...),
+    inject: bool = Body(False, embed=True),
+    count: Optional[int] = Body(None, embed=True),
+):
+    os.makedirs(MRT_DIR, exist_ok=True)
+    file_path = os.path.join(MRT_DIR, file.filename)
+    with open(file_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    if file_path.endswith(".gz"):
+        unzipped_path = file_path[:-3]
+        with gzip.open(file_path, "rb") as f_in:
+            with open(unzipped_path, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        os.remove(file_path)
+        file_path = unzipped_path
+
+    result = None
+    if inject:
+        args = ["mrt", "inject", "global", file_path]
+        if count is not None:
+            args.append(str(count))
+        result = run_gobgp(args)
+
+    return {"uploaded": os.path.basename(file_path), "injected": inject, "count": count, "inject_result": result}
+
+
+@app.post("/mrt/inject")
+def http_mrt_inject(
+    filename: str = Body(..., embed=True),
+    count: Optional[int] = Body(None, embed=True),
+):
+    file_path = os.path.join(MRT_DIR, filename)
+    if not os.path.exists(file_path):
+        return {"error": "file not found", "path": file_path}
+    args = ["mrt", "inject", "global", file_path]
+    if count is not None:
+        args.append(str(count))
+    result = run_gobgp(args)
+    return {"injected": filename, "count": count, "result": result}
+
+
+@app.get("/mrt")
+def http_mrt_list():
+    os.makedirs(MRT_DIR, exist_ok=True)
+    files = sorted(glob.glob(os.path.join(MRT_DIR, "*")))
+    return {"files": [os.path.basename(f) for f in files]}
+
+
+@app.delete("/mrt/{filename}")
+def http_mrt_delete(filename: str):
+    file_path = os.path.join(MRT_DIR, filename)
+    if not os.path.exists(file_path):
+        return {"error": "file not found"}
+    os.remove(file_path)
+    return {"deleted": filename}
+
+
+@app.delete("/mrt")
+def http_mrt_delete_all():
+    os.makedirs(MRT_DIR, exist_ok=True)
+    removed = []
+    for f in glob.glob(os.path.join(MRT_DIR, "*")):
+        os.remove(f)
+        removed.append(os.path.basename(f))
+    return {"deleted": removed}
+
+
+@app.post("/mrt/download")
+def http_mrt_download(
+    url: str = Body(..., embed=True),
+    inject: bool = Body(False, embed=True),
+    count: Optional[int] = Body(None, embed=True),
+):
+    os.makedirs(MRT_DIR, exist_ok=True)
+    filename = url.split("/")[-1]
+    file_path = os.path.join(MRT_DIR, filename)
+    try:
+        with requests.get(url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(file_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+    except Exception as e:
+        return {"error": str(e)}
+
+    result = None
+    if inject:
+        args = ["mrt", "inject", "global", file_path]
+        if count is not None:
+            args.append(str(count))
+        result = run_gobgp(args)
+
+    return {"downloaded": filename, "path": file_path, "injected": inject, "count": count, "inject_result": result}
 
 
 def _shutdown(*_):

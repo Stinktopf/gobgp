@@ -15,6 +15,8 @@ from fastapi import FastAPI, Body, UploadFile, File
 from fastapi.responses import FileResponse
 import uvicorn
 import requests
+import random
+import ipaddress
 
 POD_IP = os.environ["POD_IP"]
 LOCAL_ASN = int(os.environ["ASN"])
@@ -31,6 +33,12 @@ gobgpd_process: Optional[subprocess.Popen] = None
 tcpdump_process: Optional[subprocess.Popen] = None
 current_pcap_file: Optional[str] = None
 neighbor_state_lock = threading.Lock()
+
+noise_thread: Optional[threading.Thread] = None
+noise_stop_event = threading.Event()
+noise_config: Dict[str, Any] = {}
+noise_active_prefixes: Dict[str, float] = {}
+noise_lock = threading.Lock()
 
 
 def parse_neighbors_json(raw_json: str) -> Dict[str, Dict[str, Any]]:
@@ -226,6 +234,73 @@ def run_gobgp(args: List[str], json_out: bool = False):
         return json.loads(res.stdout) if json_out else res.stdout.strip()
     except subprocess.CalledProcessError as e:
         return {"error": e.stderr.strip() or str(e)}
+
+
+def realistic_prefixlen() -> int:
+    r = random.random()
+    if r < 0.6:
+        return 24
+    elif r < 0.8:
+        return random.choice([22, 23])
+    elif r < 0.95:
+        return random.choice([20, 21])
+    else:
+        return random.randint(16, 19)
+
+
+def _rand_subnet(start: int, end: int, active: dict) -> str:
+    for _ in range(1000):
+        plen = realistic_prefixlen()
+        size = 1 << (32 - plen)
+        base = random.randint(start // size, (end // size) - 1) * size
+        prefix = ipaddress.ip_network((base, plen))
+        if not any(prefix.overlaps(a) for a in active.keys()):
+            return str(prefix), prefix
+    return None, None
+
+
+def noise_worker():
+    global noise_config, noise_active_prefixes
+    PREFIX_BLOCK = int(noise_config.get("PREFIX_BLOCK", 0))
+    NUMBER_OF_BLOCKS = int(noise_config.get("NUMBER_OF_BLOCKS", 1))
+    rate = float(noise_config.get("rate", 1))
+    lifetime = float(noise_config.get("lifetime", 60))
+    jitter = float(noise_config.get("jitter", 0.5))
+    max_active = int(noise_config.get("max_active", 250))
+
+    total_space = 1 << 32
+    block_size = total_space // NUMBER_OF_BLOCKS
+    start = PREFIX_BLOCK * block_size
+    end = total_space if PREFIX_BLOCK == NUMBER_OF_BLOCKS - 1 else start + block_size
+
+    with noise_lock:
+        noise_active_prefixes.clear()
+
+    while not noise_stop_event.is_set():
+        now = time.time()
+        expired = []
+        with noise_lock:
+            expired = [p for p, exp in noise_active_prefixes.items() if exp <= now]
+        for prefix in expired:
+            run_gobgp(["global", "rib", "del", str(prefix)])
+            with noise_lock:
+                noise_active_prefixes.pop(prefix, None)
+
+        with noise_lock:
+            if len(noise_active_prefixes) < max_active:
+                prefix_str, prefix_obj = _rand_subnet(start, end, noise_active_prefixes)
+                if prefix_str:
+                    res = run_gobgp([
+                        "global", "rib", "add",
+                        prefix_str,
+                        "nexthop", POD_IP,
+                        "origin", "igp"
+                    ])
+                    if not isinstance(res, dict) or "error" not in res:
+                        delta = lifetime * (1 + random.uniform(-jitter, jitter))
+                        noise_active_prefixes[prefix_obj] = now + delta
+
+        noise_stop_event.wait(1.0 / rate)
 
 
 @asynccontextmanager
@@ -437,6 +512,43 @@ def http_mrt_download(
     return {"downloaded": filename, "path": file_path, "injected": inject, "count": count, "inject_result": result}
 
 
+@app.post("/noise/start")
+def http_noise_start(cfg: Dict[str, Any] = Body(...)):
+    global noise_thread, noise_config, noise_stop_event
+    if noise_thread and noise_thread.is_alive():
+        return {"error": "noise already running", "config": noise_config}
+    noise_config = cfg
+    noise_stop_event.clear()
+    noise_thread = threading.Thread(target=noise_worker, daemon=True)
+    noise_thread.start()
+    return {"started": True, "config": noise_config}
+
+
+@app.post("/noise/stop")
+def http_noise_stop():
+    global noise_thread, noise_stop_event, noise_active_prefixes
+    if not noise_thread or not noise_thread.is_alive():
+        return {"error": "noise not running"}
+    noise_stop_event.set()
+    noise_thread.join(timeout=2)
+
+    with noise_lock:
+        for prefix in list(noise_active_prefixes.keys()):
+            run_gobgp(["global", "rib", "del", str(prefix)])
+        noise_active_prefixes.clear()
+    return {"stopped": True, "cleaned": True}
+
+
+@app.get("/noise/status")
+def http_noise_status():
+    running = noise_thread is not None and noise_thread.is_alive()
+    return {
+        "running": running,
+        "config": noise_config if running else None,
+        "active_prefixes": [str(p) for p in noise_active_prefixes.keys()],
+    }
+
+
 def _shutdown(*_):
     global gobgpd_process
     stop_tcpdump()
@@ -446,6 +558,12 @@ def _shutdown(*_):
             gobgpd_process.wait(timeout=10)
         except Exception:
             pass
+
+    noise_stop_event.set()
+    with noise_lock:
+        for prefix in list(noise_active_prefixes.keys()):
+            run_gobgp(["global", "rib", "del", str(prefix)])
+        noise_active_prefixes.clear()
     raise SystemExit(0)
 
 

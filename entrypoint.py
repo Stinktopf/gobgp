@@ -587,7 +587,7 @@ class RibDelResult(BaseModel):
 
 
 class RibDelAllResult(BaseModel):
-    removed_owned: int = Field(..., ^Wexample=1200, description="Total removed paths that were locally injected")
+    removed_owned: int = Field(..., example=1200, description="Total removed paths that were locally injected")
     skipped_foreign: int = Field(..., example=340, description="Total paths skipped because they were learned from peers or CLI")
     remaining_paths: int = Field(..., example=340, description="Total remaining paths after deletion of owned paths")
 
@@ -614,8 +614,8 @@ tags_metadata = [
 ]
 
 app = FastAPI(
-    title="GoBGP Sidecar API",
-    description="HTTP status driven API with clear counters and typed request bodies",
+    title="GoBGP Lab API",
+    description="API for interacting with the GoBGP Lab",
     version="2.0.0",
     swagger_ui_parameters={
         "tryItOutEnabled": True,
@@ -725,10 +725,8 @@ def add_rib_entry(
         ...,
         example={
             "prefix": "203.0.113.0/24",
-            "next_hop": "10.0.0.10",
-            "as_path": [65010, 65020],
-            "community": "65000:100",
-            "identifier": 123456,
+            "next_hop": POD_IP,
+            "as_path": [],
         },
     )
 ):
@@ -793,10 +791,10 @@ def start_noise(
         example={
             "PREFIX_BLOCK": 0,
             "NUMBER_OF_BLOCKS": 4,
-            "rate": 20,
+            "rate": 1,
             "lifetime": 60,
             "jitter": 0.5,
-            "max_active": 1000,
+            "max_active": 100,
         },
     )
 ):

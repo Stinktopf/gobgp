@@ -16,6 +16,23 @@ COPY pyproject.toml uv.lock* ./
 RUN uv sync --frozen --no-cache --no-editable
 COPY --from=build /app/gobgpd /usr/local/bin/
 COPY --from=build /app/gobgp  /usr/local/bin/
+
 COPY entrypoint.py .
+COPY proto/ ./proto/
+COPY README.md ./
+
+RUN mkdir -p apipb
+
+RUN uv run --with grpcio-tools -m grpc_tools.protoc \
+    -I ./proto \
+    --python_out=./apipb \
+    --grpc_python_out=./apipb \
+    ./proto/api/*.proto && \
+    touch apipb/__init__.py && \
+    touch apipb/api/__init__.py && \
+    mkdir -p /app/api && \
+    cp -r apipb/api/* /app/api/ && \
+    touch /app/api/__init__.py
+
 EXPOSE 179 8080
 ENTRYPOINT ["uv", "run", "entrypoint.py"]

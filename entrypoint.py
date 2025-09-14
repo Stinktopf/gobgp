@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
 import glob
+import gzip
+import ipaddress
 import json
 import os
+import random
+import shutil
 import signal
 import subprocess
 import threading
 import time
-import gzip
-import shutil
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from fastapi import FastAPI, Body, UploadFile, File
-from fastapi.responses import FileResponse
-import uvicorn
+import grpc
 import requests
-import random
-import ipaddress
+import uvicorn
+from fastapi import Body, FastAPI, File, UploadFile
+from fastapi.responses import FileResponse
+from google.protobuf.json_format import MessageToDict
+
+from apipb.api import attribute_pb2 as attr_pb2
+from apipb.api import gobgp_pb2 as pb
+from apipb.api import gobgp_pb2_grpc as pb_grpc
+from apipb.api import common_pb2 as common_pb2
+from apipb.api import nlri_pb2 as nlri_pb2
 
 POD_IP = os.environ["POD_IP"]
 LOCAL_ASN = int(os.environ["ASN"])
@@ -27,6 +35,7 @@ NEIGHBORS_JSON_RAW = os.environ["NEIGHBORS_JSON"]
 GOBGP_CONFIG_PATH = "/etc/gobgp/gobgp.conf"
 PCAP_DIR = "/tmp/pcaps"
 MRT_DIR = "/tmp/mrt"
+GOBGP_API_ADDR = os.getenv("GOBGP_API_ADDR", "127.0.0.1:50051")
 
 neighbor_state_by_name: Dict[str, Dict[str, Any]] = {}
 gobgpd_process: Optional[subprocess.Popen] = None
@@ -37,8 +46,263 @@ neighbor_state_lock = threading.Lock()
 noise_thread: Optional[threading.Thread] = None
 noise_stop_event = threading.Event()
 noise_config: Dict[str, Any] = {}
-noise_active_prefixes: Dict[str, float] = {}
+noise_active_prefixes: Dict[ipaddress.IPv4Network, float] = {}
 noise_lock = threading.Lock()
+
+
+def _community_to_u32(comm: str) -> int:
+    left, right = comm.split(":")
+    return (int(left) << 16) | int(right)
+
+
+def _ipv4_family() -> common_pb2.Family:
+    return common_pb2.Family(
+        afi=common_pb2.Family.AFI_IP,
+        safi=common_pb2.Family.SAFI_UNICAST,
+    )
+
+
+def _nlri_prefix(prefix: str) -> nlri_pb2.NLRI:
+    net = ipaddress.ip_network(prefix, strict=False)
+    return nlri_pb2.NLRI(
+        prefix=nlri_pb2.IPAddressPrefix(
+            prefix_len=net.prefixlen,
+            prefix=str(net.network_address),
+        )
+    )
+
+
+class GoBGPRpc:
+    """Robust GoBGP gRPC wrapper with retries & 'wait_for_ready'."""
+
+    RETRYABLE = {
+        grpc.StatusCode.UNAVAILABLE,
+        grpc.StatusCode.UNKNOWN,
+        grpc.StatusCode.DEADLINE_EXCEEDED,
+    }
+
+    def __init__(self, target: Optional[str] = None, timeout: float = 5.0, retries: int = 3, backoff: float = 0.25):
+        self.target = target or GOBGP_API_ADDR
+        self.timeout = timeout
+        self.retries = retries
+        self.backoff = backoff
+
+        # Channel options: bigger messages, keepalive, allow pings without data
+        self.channel = grpc.insecure_channel(
+            self.target,
+            options=[
+                ("grpc.max_receive_message_length", 64 * 1024 * 1024),
+                ("grpc.max_send_message_length", 64 * 1024 * 1024),
+                ("grpc.keepalive_time_ms", 30_000),
+                ("grpc.keepalive_timeout_ms", 10_000),
+                ("grpc.http2.max_pings_without_data", 0),
+                ("grpc.keepalive_permit_without_calls", 1),
+            ],
+        )
+
+        # Prefer GoBgpServiceStub (v4), fallback if artifact exposes GobgpApiStub
+        if hasattr(pb_grpc, "GoBgpServiceStub"):
+            self.stub = pb_grpc.GoBgpServiceStub(self.channel)
+        elif hasattr(pb_grpc, "GobgpApiStub"):
+            self.stub = pb_grpc.GobgpApiStub(self.channel)
+        else:
+            raise RuntimeError("No matching GoBGP gRPC stub found")
+
+    def close(self):
+        try:
+            self.channel.close()
+        except Exception:
+            pass
+
+    # ---------- internal retry wrappers ----------
+    def _unary(self, method, request):
+        last_exc: Optional[grpc.RpcError] = None
+        for attempt in range(self.retries):
+            try:
+                return method(request, timeout=self.timeout, wait_for_ready=True)
+            except grpc.RpcError as e:
+                if e.code() in self.RETRYABLE and attempt < self.retries - 1:
+                    time.sleep(self.backoff * (2 ** attempt))
+                    continue
+                last_exc = e
+                break
+        raise last_exc  # type: ignore
+
+    def _stream_list(self, method, request):
+        last_exc: Optional[grpc.RpcError] = None
+        for attempt in range(self.retries):
+            try:
+                # Materialize stream to avoid mutating (delete) while iterating
+                return list(method(request, timeout=self.timeout, wait_for_ready=True))
+            except grpc.RpcError as e:
+                if e.code() in self.RETRYABLE and attempt < self.retries - 1:
+                    time.sleep(self.backoff * (2 ** attempt))
+                    continue
+                last_exc = e
+                break
+        raise last_exc  # type: ignore
+
+    # ---------- public API ----------
+    def neighbors(self):
+        try:
+            resps = self._stream_list(self.stub.ListPeer, pb.ListPeerRequest())
+            return [MessageToDict(resp.peer) for resp in resps]
+        except grpc.RpcError as e:
+            return {"error": f"{e.code().name}: {e.details()}"}
+
+    def list_rib_ipv4(self):
+        try:
+            req = pb.ListPathRequest(table_type=pb.TABLE_TYPE_GLOBAL, family=_ipv4_family())
+            resps = self._stream_list(self.stub.ListPath, req)
+            return [MessageToDict(r) for r in resps]
+        except grpc.RpcError as e:
+            return {"error": f"{e.code().name}: {e.details()}"}
+
+    def rib_summary_ipv4(self):
+        try:
+            req = pb.GetTableRequest(table_type=pb.TABLE_TYPE_GLOBAL, family=_ipv4_family())
+            resp = self._unary(self.stub.GetTable, req)
+            return {"num_destinations": resp.num_destination, "num_paths": resp.num_path}
+        except grpc.RpcError as e:
+            return {"error": f"{e.code().name}: {e.details()}"}
+
+    def rib_count_ipv4(self):
+        s = self.rib_summary_ipv4()
+        if "error" in s:
+            return s
+        return {"count": int(s.get("num_paths", 0))}
+
+    def add_route_ipv4(
+        self,
+        prefix: str,
+        nexthop: str,
+        aspath: Optional[List[int]] = None,
+        community: Optional[str] = None,
+        identifier: Optional[int] = None,
+    ):
+        try:
+            pattrs: List[attr_pb2.Attribute] = [
+                attr_pb2.Attribute(origin=attr_pb2.OriginAttribute(origin=0)),  # IGP
+                attr_pb2.Attribute(next_hop=attr_pb2.NextHopAttribute(next_hop=nexthop)),
+            ]
+            if aspath:
+                seg = attr_pb2.AsSegment(
+                    type=attr_pb2.AsSegment.TYPE_AS_SEQUENCE,
+                    numbers=[int(a) for a in aspath],
+                )
+                pattrs.append(attr_pb2.Attribute(as_path=attr_pb2.AsPathAttribute(segments=[seg])))
+            if community:
+                pattrs.append(
+                    attr_pb2.Attribute(
+                        communities=attr_pb2.CommunitiesAttribute(
+                            communities=[_community_to_u32(community)]
+                        )
+                    )
+                )
+
+            path = pb.Path(
+                nlri=_nlri_prefix(prefix),
+                pattrs=pattrs,
+                family=_ipv4_family(),
+            )
+            if identifier is not None:
+                path.identifier = int(identifier)
+
+            req = pb.AddPathRequest(table_type=pb.TABLE_TYPE_GLOBAL, path=path)
+            resp = self._unary(self.stub.AddPath, req)
+            return {"uuid": list(resp.uuid)}  # bytes -> list[int] for JSON
+        except grpc.RpcError as e:
+            return {"error": f"{e.code().name}: {e.details()}"}
+
+    def _paths_for_prefix(self, prefix: str) -> List[Tuple[str, pb.Path]]:
+        """Return list of (dest_prefix, Path) for an exact prefix."""
+        req = pb.ListPathRequest(
+            table_type=pb.TABLE_TYPE_GLOBAL,
+            family=_ipv4_family(),
+            prefixes=[
+                pb.TableLookupPrefix(
+                    prefix=prefix,
+                    type=pb.TableLookupPrefix.TYPE_EXACT,
+                )
+            ],
+        )
+        resps = self._stream_list(self.stub.ListPath, req)
+        out: List[Tuple[str, pb.Path]] = []
+        for resp in resps:
+            dest = resp.destination
+            for p in dest.paths:
+                out.append((dest.prefix, p))
+        return out
+
+    def del_route_ipv4(self, prefix: str):
+        try:
+            paths = self._paths_for_prefix(prefix)
+            if not paths:
+                return {"deleted": 0, "prefix": prefix, "note": "no matching paths"}
+
+            # Delete by UUID first (API-injected routes)
+            deleted_uuid = 0
+            for _, p in paths:
+                if p.uuid:
+                    self._unary(
+                        self.stub.DeletePath,
+                        pb.DeletePathRequest(table_type=pb.TABLE_TYPE_GLOBAL, uuid=p.uuid),
+                    )
+                    deleted_uuid += 1
+
+            if deleted_uuid:
+                return {"deleted": deleted_uuid, "prefix": prefix, "mode": "uuid"}
+
+            # Fallback: NLRI-based delete (not supported by all versions)
+            self._unary(
+                self.stub.DeletePath,
+                pb.DeletePathRequest(
+                    table_type=pb.TABLE_TYPE_GLOBAL,
+                    family=_ipv4_family(),
+                    path=pb.Path(nlri=_nlri_prefix(prefix), family=_ipv4_family()),
+                ),
+            )
+            return {"deleted": 1, "prefix": prefix, "mode": "nlri"}
+        except grpc.RpcError as e:
+            return {"error": f"{e.code().name}: {e.details()}"}
+
+    def del_all_routes_ipv4(self):
+        try:
+            # Collect all UUIDs first, then delete (avoid mutating while streaming)
+            req = pb.ListPathRequest(
+                table_type=pb.TABLE_TYPE_GLOBAL,
+                family=_ipv4_family(),
+            )
+            resps = self._stream_list(self.stub.ListPath, req)
+
+            uuids: List[bytes] = []
+            scanned = 0
+            for resp in resps:
+                dest = resp.destination
+                for p in dest.paths:
+                    scanned += 1
+                    if p.uuid:
+                        uuids.append(p.uuid)
+
+            deleted = 0
+            for u in uuids:
+                self._unary(
+                    self.stub.DeletePath,
+                    pb.DeletePathRequest(table_type=pb.TABLE_TYPE_GLOBAL, uuid=u),
+                )
+                deleted += 1
+
+            return {
+                "deleted": deleted,
+                "scanned_paths": scanned,
+                "mode": "uuid_only",
+                "note": "only API-injected paths are removed",
+            }
+        except grpc.RpcError as e:
+            return {"error": f"{e.code().name}: {e.details()}"}
+
+
+gobgp = GoBGPRpc()
 
 
 def parse_neighbors_json(raw_json: str) -> Dict[str, Dict[str, Any]]:
@@ -58,9 +322,7 @@ NEIGHBOR_TEMPLATE = parse_neighbors_json(NEIGHBORS_JSON_RAW)
 def resolve_neighbor_ip_address(neighbor_name: str) -> Optional[str]:
     service_fqdn = f"{neighbor_name}.{KUBE_NAMESPACE}.svc"
     try:
-        ip_address = subprocess.check_output(
-            ["getent", "hosts", service_fqdn], text=True
-        ).split()[0]
+        ip_address = subprocess.check_output(["getent", "hosts", service_fqdn], text=True).split()[0]
         return ip_address
     except subprocess.CalledProcessError:
         return None
@@ -68,20 +330,14 @@ def resolve_neighbor_ip_address(neighbor_name: str) -> Optional[str]:
 
 def write_gobgp_config_file() -> None:
     with neighbor_state_lock:
-        neighbors_snapshot = {
-            name: data.copy() for name, data in neighbor_state_by_name.items()
-        }
+        neighbors_snapshot = {name: data.copy() for name, data in neighbor_state_by_name.items()}
 
     tags_by_peer_asn: Dict[int, Set[int]] = {}
     for neighbor_data in neighbors_snapshot.values():
-        tags_by_peer_asn.setdefault(neighbor_data["peerAs"], set()).update(
-            neighbor_data.get("tags", [])
-        )
+        tags_by_peer_asn.setdefault(neighbor_data["peerAs"], set()).update(neighbor_data.get("tags", []))
 
     peer_asns_with_tags = sorted(asn for asn, tags in tags_by_peer_asn.items() if tags)
-    import_policy_names = ", ".join(
-        [f'"tag-from-as{peer_asn}"' for peer_asn in peer_asns_with_tags]
-    )
+    import_policy_names = ", ".join([f'"{f"tag-from-as{peer_asn}"}"' for peer_asn in peer_asns_with_tags])
 
     config_lines: List[str] = []
     config_lines += [
@@ -114,9 +370,7 @@ def write_gobgp_config_file() -> None:
             "    [policy-definitions.statements.actions]",
             '      route-disposition = "accept-route"',
         ]
-        communities_literal = ", ".join(
-            [f'"{LOCAL_ASN}:{tag}"' for tag in sorted(tag_set)]
-        )
+        communities_literal = ", ".join([f'"{LOCAL_ASN}:{tag}"' for tag in sorted(tag_set)])
         config_lines += [
             "    [policy-definitions.statements.actions.bgp-actions.set-community]",
             '      options = "add"',
@@ -131,7 +385,6 @@ def write_gobgp_config_file() -> None:
             continue
         peer_asn = neighbor_data["peerAs"]
         is_passive_mode = "true" if peer_asn > LOCAL_ASN else "false"
-
         config_lines += [
             "[[neighbors]]",
             "  [neighbors.config]",
@@ -149,8 +402,8 @@ def write_gobgp_config_file() -> None:
         ]
 
     os.makedirs(os.path.dirname(GOBGP_CONFIG_PATH), exist_ok=True)
-    with open(GOBGP_CONFIG_PATH, "w") as config_file:
-        config_file.write("\n".join(config_lines))
+    with open(GOBGP_CONFIG_PATH, "w") as f:
+        f.write("\n".join(config_lines))
     print(f"[Config] written to {GOBGP_CONFIG_PATH}", flush=True)
 
 
@@ -165,8 +418,8 @@ def restart_gobgpd() -> None:
             print("[Gobgpd] SIGKILL old process", flush=True)
             gobgpd_process.kill()
             gobgpd_process.wait()
-    print(f"[Gobgpd] starting with {GOBGP_CONFIG_PATH}", flush=True)
-    gobgpd_process = subprocess.Popen(["gobgpd", "-f", GOBGP_CONFIG_PATH])
+    print(f"[Gobgpd] starting with {GOBGP_CONFIG_PATH} (gRPC @ {GOBGP_API_ADDR})", flush=True)
+    gobgpd_process = subprocess.Popen(["gobgpd", "--api-hosts", GOBGP_API_ADDR, "-f", GOBGP_CONFIG_PATH])
 
 
 def neighbor_resolution_polling_loop() -> None:
@@ -176,31 +429,26 @@ def neighbor_resolution_polling_loop() -> None:
     is_first_render = True
     while True:
         has_changes = False
-
         for neighbor_name in list(neighbor_state_by_name.keys()):
             resolved_ip = resolve_neighbor_ip_address(neighbor_name)
             with neighbor_state_lock:
-                previous_ip = neighbor_state_by_name[neighbor_name].get("ip")
-                if resolved_ip != previous_ip:
+                prev_ip = neighbor_state_by_name[neighbor_name].get("ip")
+                if resolved_ip != prev_ip:
                     neighbor_state_by_name[neighbor_name]["ip"] = resolved_ip
-                    print(
-                        f"[State] {neighbor_name} IP changed: {previous_ip} -> {resolved_ip}",
-                        flush=True,
-                    )
+                    print(f"[State] {neighbor_name} IP changed: {prev_ip} -> {resolved_ip}", flush=True)
                     has_changes = True
 
         if has_changes or is_first_render:
-            if any(neighbor.get("ip") for neighbor in neighbor_state_by_name.values()):
+            if any(n.get("ip") for n in neighbor_state_by_name.values()):
                 write_gobgp_config_file()
                 restart_gobgpd()
                 is_first_render = False
             else:
                 print("[Config] skip render (no neighbor IPs yet)", flush=True)
-
         time.sleep(2)
 
 
-def start_tcpdump() -> (subprocess.Popen, str):
+def start_tcpdump() -> Tuple[subprocess.Popen, str]:
     os.makedirs(PCAP_DIR, exist_ok=True)
     pcap_file = os.path.join(PCAP_DIR, f"bgp-{int(time.time())}.pcap")
     print(f"[tcpdump] start capture to {pcap_file}", flush=True)
@@ -227,9 +475,7 @@ def stop_tcpdump():
 
 def run_gobgp(args: List[str], json_out: bool = False):
     try:
-        cmd = ["gobgp"] + args
-        if json_out:
-            cmd.append("-j")
+        cmd = ["gobgp"] + args + (["-j"] if json_out else [])
         res = subprocess.run(cmd, text=True, capture_output=True, check=True)
         return json.loads(res.stdout) if json_out else res.stdout.strip()
     except subprocess.CalledProcessError as e:
@@ -240,15 +486,14 @@ def realistic_prefixlen() -> int:
     r = random.random()
     if r < 0.6:
         return 24
-    elif r < 0.8:
+    if r < 0.8:
         return random.choice([22, 23])
-    elif r < 0.95:
+    if r < 0.95:
         return random.choice([20, 21])
-    else:
-        return random.randint(16, 19)
+    return random.randint(16, 19)
 
 
-def _rand_subnet(start: int, end: int, active: dict) -> str:
+def _rand_subnet(start: int, end: int, active: dict) -> Tuple[Optional[str], Optional[ipaddress.IPv4Network]]:
     for _ in range(1000):
         plen = realistic_prefixlen()
         size = 1 << (32 - plen)
@@ -278,11 +523,11 @@ def noise_worker():
 
     while not noise_stop_event.is_set():
         now = time.time()
-        expired = []
+
         with noise_lock:
             expired = [p for p, exp in noise_active_prefixes.items() if exp <= now]
         for prefix in expired:
-            run_gobgp(["global", "rib", "del", str(prefix)])
+            gobgp.del_route_ipv4(str(prefix))
             with noise_lock:
                 noise_active_prefixes.pop(prefix, None)
 
@@ -290,13 +535,8 @@ def noise_worker():
             if len(noise_active_prefixes) < max_active:
                 prefix_str, prefix_obj = _rand_subnet(start, end, noise_active_prefixes)
                 if prefix_str:
-                    res = run_gobgp([
-                        "global", "rib", "add",
-                        prefix_str,
-                        "nexthop", POD_IP,
-                        "origin", "igp"
-                    ])
-                    if not isinstance(res, dict) or "error" not in res:
+                    res = gobgp.add_route_ipv4(prefix_str, POD_IP)
+                    if isinstance(res, dict) and "error" not in res:
                         delta = lifetime * (1 + random.uniform(-jitter, jitter))
                         noise_active_prefixes[prefix_obj] = now + delta
 
@@ -305,10 +545,8 @@ def noise_worker():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    neighbor_polling_thread = threading.Thread(
-        target=neighbor_resolution_polling_loop, daemon=True
-    )
-    neighbor_polling_thread.start()
+    t = threading.Thread(target=neighbor_resolution_polling_loop, daemon=True)
+    t.start()
     yield
     _shutdown()
 
@@ -324,8 +562,8 @@ def http_ip():
 @app.get("/config")
 def http_config():
     try:
-        with open(GOBGP_CONFIG_PATH, "r") as config_file:
-            return {"config": config_file.read()}
+        with open(GOBGP_CONFIG_PATH, "r") as f:
+            return {"config": f.read()}
     except FileNotFoundError:
         return {"error": "no config yet"}
 
@@ -358,32 +596,27 @@ def download_pcap(filename: str):
     file_path = os.path.join(PCAP_DIR, filename)
     if not os.path.exists(file_path):
         return {"error": "file not found"}
-    return FileResponse(
-        path=file_path, filename=filename, media_type="application/vnd.tcpdump.pcap"
-    )
+    return FileResponse(path=file_path, filename=filename, media_type="application/vnd.tcpdump.pcap")
 
 
 @app.get("/neighbors")
 def http_neighbors():
-    return run_gobgp(["neighbor"], json_out=True)
+    return gobgp.neighbors()
 
 
 @app.get("/rib")
 def http_rib():
-    return run_gobgp(["global", "rib"], json_out=True)
+    return gobgp.list_rib_ipv4()
 
 
 @app.get("/rib/summary")
 def http_rib_summary():
-    return run_gobgp(["global", "rib", "summary"], json_out=True)
+    return gobgp.rib_summary_ipv4()
 
 
 @app.get("/rib/count")
 def http_rib_count():
-    routes = run_gobgp(["global", "rib"], json_out=True)
-    if isinstance(routes, dict) and "error" in routes:
-        return routes
-    return {"count": len(routes)}
+    return gobgp.rib_count_ipv4()
 
 
 @app.post("/rib/add")
@@ -394,24 +627,17 @@ def http_rib_add(
     community: Optional[str] = Body(None, embed=True),
     identifier: Optional[int] = Body(None, embed=True),
 ):
-    cmd = ["global", "rib", "add", prefix, "nexthop", nexthop]
-    if aspath:
-        cmd += ["aspath"] + [str(a) for a in aspath]
-    if community:
-        cmd += ["community", community]
-    if identifier:
-        cmd += ["identifier", str(identifier)]
-    return run_gobgp(cmd)
+    return gobgp.add_route_ipv4(prefix, nexthop, aspath, community, identifier)
 
 
 @app.post("/rib/del")
 def http_rib_del(prefix: str = Body(..., embed=True)):
-    return run_gobgp(["global", "rib", "del", prefix])
+    return gobgp.del_route_ipv4(prefix)
 
 
 @app.delete("/rib")
 def http_rib_del_all():
-    return run_gobgp(["global", "rib", "del", "all"])
+    return gobgp.del_all_routes_ipv4()
 
 
 @app.post("/mrt/upload")
@@ -427,9 +653,8 @@ def http_mrt_upload(
 
     if file_path.endswith(".gz"):
         unzipped_path = file_path[:-3]
-        with gzip.open(file_path, "rb") as f_in:
-            with open(unzipped_path, "wb") as f_out:
-                shutil.copyfileobj(f_in, f_out)
+        with gzip.open(file_path, "rb") as f_in, open(unzipped_path, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
         os.remove(file_path)
         file_path = unzipped_path
 
@@ -444,10 +669,7 @@ def http_mrt_upload(
 
 
 @app.post("/mrt/inject")
-def http_mrt_inject(
-    filename: str = Body(..., embed=True),
-    count: Optional[int] = Body(None, embed=True),
-):
+def http_mrt_inject(filename: str = Body(..., embed=True), count: Optional[int] = Body(None, embed=True)):
     file_path = os.path.join(MRT_DIR, filename)
     if not os.path.exists(file_path):
         return {"error": "file not found", "path": file_path}
@@ -531,10 +753,9 @@ def http_noise_stop():
         return {"error": "noise not running"}
     noise_stop_event.set()
     noise_thread.join(timeout=2)
-
     with noise_lock:
         for prefix in list(noise_active_prefixes.keys()):
-            run_gobgp(["global", "rib", "del", str(prefix)])
+            gobgp.del_route_ipv4(str(prefix))
         noise_active_prefixes.clear()
     return {"stopped": True, "cleaned": True}
 
@@ -558,12 +779,12 @@ def _shutdown(*_):
             gobgpd_process.wait(timeout=10)
         except Exception:
             pass
-
     noise_stop_event.set()
     with noise_lock:
         for prefix in list(noise_active_prefixes.keys()):
-            run_gobgp(["global", "rib", "del", str(prefix)])
+            gobgp.del_route_ipv4(str(prefix))
         noise_active_prefixes.clear()
+    gobgp.close()
     raise SystemExit(0)
 
 

@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import grpc
 import uvicorn
-from fastapi import Body, FastAPI, HTTPException, Response, status
+from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.responses import FileResponse
 from google.protobuf.json_format import MessageToDict
 from pydantic import BaseModel, Field
@@ -533,22 +533,9 @@ class NoiseConfig(BaseModel):
     PREFIX_BLOCK: int = Field(0, ge=0, example=0, description="Block index inside the full IPv4 space")
     NUMBER_OF_BLOCKS: int = Field(1, ge=1, example=4, description="Total number of blocks used to shard the IPv4 space")
     rate: float = Field(1.0, ge=0.01, example=20, description="Announcements per second")
-    lifetime: float = Field(60.0, ge=1.0, examxple=60, description="Lifetime in seconds for each announced prefix")
+    lifetime: float = Field(60.0, ge=1.0, example=60, description="Lifetime in seconds for each announced prefix")
     jitter: float = Field(0.5, ge=0.0, le=1.0, example=0.5, description="Relative lifetime variance from zero to one")
     max_active: int = Field(250, ge=1, example=1000, description="Maximum number of active prefixes at any time")
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "PREFIX_BLOCK": 0,
-                "NUMBER_OF_BLOCKS": 4,
-                "rate": 20,
-                "lifetime": 60,
-                "jitter": 0.5,
-                "max_active": 1000,
-            }
-        }
-    }
 
 
 class PcapStartResponse(BaseModel):
@@ -720,16 +707,7 @@ def get_rib_summary():
     summary="Add route",
     description="Adds a route to the IPv4 table",
 )
-def add_rib_entry(
-    body: RibAddRequest = Body(
-        ...,
-        example={
-            "prefix": "203.0.113.0/24",
-            "next_hop": POD_IP,
-            "as_path": [],
-        },
-    )
-):
+def add_rib_entry(body: RibAddRequest):
     try:
         ipaddress.ip_network(body.prefix, strict=False)
     except Exception:
@@ -748,15 +726,7 @@ def add_rib_entry(
     summary="Delete prefix",
     description="Deletes owned paths for the given prefix",
 )
-def delete_rib_prefix(
-    body: RibDelRequest = Body(
-        ...,
-        example={
-            "prefix": "203.0.113.0/24",
-            "identifier": 123456,
-        },
-    )
-):
+def delete_rib_prefix(body: RibDelRequest):
     try:
         ipaddress.ip_network(body.prefix, strict=False)
     except Exception:
@@ -785,19 +755,7 @@ def delete_all_rib():
     summary="Start noise",
     description="Starts route noise generation with the given parameters",
 )
-def start_noise(
-    cfg: NoiseConfig = Body(
-        ...,
-        example={
-            "PREFIX_BLOCK": 0,
-            "NUMBER_OF_BLOCKS": 4,
-            "rate": 1,
-            "lifetime": 60,
-            "jitter": 0.5,
-            "max_active": 100,
-        },
-    )
-):
+def start_noise(cfg: NoiseConfig):
     global noise_thread, noise_runtime_config, noise_stop_event
     if noise_thread and noise_thread.is_alive():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"error": "noise already running", "config": noise_runtime_config})

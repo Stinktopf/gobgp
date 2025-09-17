@@ -42,6 +42,8 @@ neighbor_state_lock = threading.Lock()
 
 noise_thread: Optional[threading.Thread] = None
 noise_stop_event = threading.Event()
+noise_pause_event = threading.Event()
+noise_pause_started_at: Optional[float] = None
 noise_runtime_config: Dict[str, Any] = {}
 noise_active_prefixes: Dict[ipaddress.IPv4Network, Tuple[float, int]] = {}
 noise_lock = threading.Lock()
@@ -54,7 +56,6 @@ def community_to_u32(community: str) -> int:
 
 def ipv4_family() -> common_pb2.Family:
     return common_pb2.Family(afi=common_pb2.Family.AFI_IP, safi=common_pb2.Family.SAFI_UNICAST)
-
 
 
 def nlri_from_prefix(prefix: str) -> nlri_pb2.NLRI:
@@ -492,6 +493,10 @@ def noise_worker():
     with noise_lock:
         noise_active_prefixes.clear()
     while not noise_stop_event.is_set():
+        if noise_pause_event.is_set():
+            noise_stop_event.wait(0.5)
+            continue
+
         now = time.time()
         with noise_lock:
             expired = [p for p, (exp, _) in noise_active_prefixes.items() if exp <= now]
@@ -509,7 +514,7 @@ def noise_worker():
                     if isinstance(res, dict) and "error" not in res:
                         delta = lifetime * (1 + random.uniform(-jitter, jitter))
                         noise_active_prefixes[prefix_obj] = (now + delta, ident)
-        noise_stop_event.wait(1.0 / rate)
+        noise_stop_event.wait(max(1.0 / rate, 0.01))
 
 
 class RibAddRequest(BaseModel):
@@ -558,8 +563,13 @@ class NoiseStopResponse(BaseModel):
     cleaned_count: int = Field(..., example=987, description="Number of prefixes removed on stop")
 
 
+class NoisePauseResponse(BaseModel):
+    paused: bool = Field(..., description="True if paused after the call; False if running")
+
+
 class NoiseStatus(BaseModel):
-    running: bool = Field(..., example=True, description="Indicates whether noise generation is active")
+    running: bool = Field(..., example=True, description="Indicates whether noise generation thread is alive")
+    paused: bool = Field(..., example=False, description="Indicates whether noise generation is paused")
     config: Optional[NoiseConfig] = None
     active_count: int = Field(..., example=123, description="Number of active prefixes currently held")
 
@@ -603,7 +613,7 @@ tags_metadata = [
 app = FastAPI(
     title="GoBGP Lab API",
     description="API for interacting with the GoBGP Lab",
-    version="2.0.0",
+    version="2.1.0",
     swagger_ui_parameters={
         "tryItOutEnabled": True,
         "defaultModelsExpandDepth": 1,
@@ -756,11 +766,13 @@ def delete_all_rib():
     description="Starts route noise generation with the given parameters",
 )
 def start_noise(cfg: NoiseConfig):
-    global noise_thread, noise_runtime_config, noise_stop_event
+    global noise_thread, noise_runtime_config, noise_stop_event, noise_pause_event, noise_pause_started_at
     if noise_thread and noise_thread.is_alive():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"error": "noise already running", "config": noise_runtime_config})
     noise_runtime_config = cfg.model_dump()
     noise_stop_event.clear()
+    noise_pause_event.clear()
+    noise_pause_started_at = None
     t = threading.Thread(target=noise_worker, daemon=True)
     t.start()
     globals()["noise_thread"] = t
@@ -783,12 +795,39 @@ def stop_noise():
     return NoiseStopResponse(cleaned_count=cleaned_count)
 
 
-@app.get("/noise/status", tags=["Noise"], response_model=NoiseStatus, status_code=status.HTTP_200_OK, summary="Noise status", description="Returns whether noise is running and the count of active prefixes")
+@app.post("/noise/pause", tags=["Noise"], response_model=NoisePauseResponse, status_code=status.HTTP_200_OK, summary="Pause noise", description="Pauses noise generation without withdrawing existing prefixes")
+def pause_noise():
+    global noise_thread, noise_pause_event, noise_pause_started_at
+    if not noise_thread or not noise_thread.is_alive():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="noise not running")
+    if not noise_pause_event.is_set():
+        noise_pause_started_at = time.time()
+        noise_pause_event.set()
+    return NoisePauseResponse(paused=True)
+
+
+@app.post("/noise/resume", tags=["Noise"], response_model=NoisePauseResponse, status_code=status.HTTP_200_OK, summary="Resume noise", description="Resumes noise generation and shifts expirations by pause duration")
+def resume_noise():
+    global noise_thread, noise_pause_event, noise_pause_started_at, noise_active_prefixes
+    if not noise_thread or not noise_thread.is_alive():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="noise not running")
+    if noise_pause_event.is_set():
+        paused_duration = max(0.0, time.time() - (noise_pause_started_at or time.time()))
+        with noise_lock:
+            for pfx, (exp, ident) in list(noise_active_prefixes.items()):
+                noise_active_prefixes[pfx] = (exp + paused_duration, ident)
+        noise_pause_event.clear()
+        noise_pause_started_at = None
+    return NoisePauseResponse(paused=False)
+
+
+@app.get("/noise/status", tags=["Noise"], response_model=NoiseStatus, status_code=status.HTTP_200_OK, summary="Noise status", description="Returns whether noise is running/paused and the count of active prefixes")
 def get_noise_status():
     running = noise_thread is not None and noise_thread.is_alive()
+    paused = noise_pause_event.is_set()
     with noise_lock:
         active_count = len(noise_active_prefixes)
-    return NoiseStatus(running=running, config=noise_runtime_config if running else None, active_count=active_count)
+    return NoiseStatus(running=running, paused=paused, config=noise_runtime_config if running else None, active_count=active_count)
 
 
 def shutdown(*_):

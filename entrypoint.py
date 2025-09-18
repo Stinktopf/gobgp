@@ -331,6 +331,8 @@ def resolve_neighbor_ip(service_name: str) -> Optional[str]:
 
 
 def write_gobgp_config_file() -> None:
+    GOBGP_OPERA_ENABLED = os.getenv("GOBGP_OPERA_ENABLED", "true").lower() == "true"
+
     with neighbor_state_lock:
         snapshot = {name: data.copy() for name, data in neighbor_state_by_service_name.items()}
     tags_by_peer_as: Dict[int, Set[int]] = {}
@@ -338,46 +340,56 @@ def write_gobgp_config_file() -> None:
         tags_by_peer_as.setdefault(data["peerAs"], set()).update(data.get("tags", []))
     peer_asns_with_tags = sorted(asn for asn, tags in tags_by_peer_as.items() if tags)
 
-    import_policy_names = ", ".join([f'"tag-from-as{asn}"' for asn in peer_asns_with_tags])
-
     lines: List[str] = []
     lines += [
         "[global.config]",
         f"  as = {LOCAL_ASN}",
         f'  router-id = "{ROUTER_ID}"',
         "",
-        "[global.apply-policy.config]",
-        f"  import-policy-list = [{import_policy_names}]",
-        '  default-import-policy = "accept-route"',
-        "",
     ]
-    for asn in peer_asns_with_tags:
+
+    if GOBGP_OPERA_ENABLED and peer_asns_with_tags:
+        import_policy_names = ", ".join([f'"tag-from-as{asn}"' for asn in peer_asns_with_tags])
         lines += [
-            "[[defined-sets.bgp-defined-sets.as-path-sets]]",
-            f'  as-path-set-name = "from-as{asn}"',
-            f'  as-path-list = ["^{asn}$", "^{asn}_"]',
+            "[global.apply-policy.config]",
+            f"  import-policy-list = [{import_policy_names}]",
+            '  default-import-policy = "accept-route"',
             "",
         ]
-        tag_set = tags_by_peer_as[asn]
+        for asn in peer_asns_with_tags:
+            lines += [
+                "[[defined-sets.bgp-defined-sets.as-path-sets]]",
+                f'  as-path-set-name = "from-as{asn}"',
+                f'  as-path-list = ["^{asn}$", "^{asn}_"]',
+                "",
+            ]
+            tag_set = tags_by_peer_as[asn]
+            lines += [
+                "[[policy-definitions]]",
+                f'  name = "tag-from-as{asn}"',
+                "  [[policy-definitions.statements]]",
+                f'    name = "tag-{LOCAL_ASN}-from-as{asn}"',
+                "    [policy-definitions.statements.conditions.bgp-conditions.match-as-path-set]",
+                f'      as-path-set = "from-as{asn}"',
+                '      match-set-options = "any"',
+                "    [policy-definitions.statements.actions]",
+                '      route-disposition = "accept-route"',
+            ]
+            communities_literal = ", ".join([f'"{LOCAL_ASN}:{tag}"' for tag in sorted(tag_set)])
+            lines += [
+                "    [policy-definitions.statements.actions.bgp-actions.set-community]",
+                '      options = "add"',
+                "      [policy-definitions.statements.actions.bgp-actions.set-community.set-community-method]",
+                f"        communities-list = [{communities_literal}]",
+                "",
+            ]
+    else:
         lines += [
-            "[[policy-definitions]]",
-            f'  name = "tag-from-as{asn}"',
-            "  [[policy-definitions.statements]]",
-            f'    name = "tag-{LOCAL_ASN}-from-as{asn}"',
-            "    [policy-definitions.statements.conditions.bgp-conditions.match-as-path-set]",
-            f'      as-path-set = "from-as{asn}"',
-            '      match-set-options = "any"',
-            "    [policy-definitions.statements.actions]",
-            '      route-disposition = "accept-route"',
-        ]
-        communities_literal = ", ".join([f'"{LOCAL_ASN}:{tag}"' for tag in sorted(tag_set)])
-        lines += [
-            "    [policy-definitions.statements.actions.bgp-actions.set-community]",
-            '      options = "add"',
-            "      [policy-definitions.statements.actions.bgp-actions.set-community.set-community-method]",
-            f"        communities-list = [{communities_literal}]",
+            "[global.apply-policy.config]",
+            '  default-import-policy = "accept-route"',
             "",
         ]
+
     for name, data in snapshot.items():
         ip_addr = data.get("ip")
         if not ip_addr:
@@ -393,12 +405,13 @@ def write_gobgp_config_file() -> None:
             f"    passive-mode = {passive_mode}",
             "  [neighbors.add-paths.config]",
             "    receive = true",
-            "    send-max = 3",
+            f"    send-max = {3 if GOBGP_OPERA_ENABLED else 1}",
             "  [[neighbors.afi-safis]]",
             "    [neighbors.afi-safis.config]",
             '      afi-safi-name = "ipv4-unicast"',
             "",
         ]
+
     os.makedirs(os.path.dirname(GOBGP_CONFIG_PATH), exist_ok=True)
     with open(GOBGP_CONFIG_PATH, "w") as f:
         f.write("\n".join(lines))

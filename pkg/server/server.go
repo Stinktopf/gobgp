@@ -1633,8 +1633,17 @@ func (s *BgpServer) propagateOperaUpdates(
 			announces = append(announces, p)
 		}
 
+		shouldAdv := needToAdvertise(peer)
+		toSend := make([]*table.Path, 0, len(withdraws)+len(announces))
 		if len(withdraws) > 0 {
-			sendfsmOutgoingMsg(peer, withdraws, nil, false)
+			toSend = append(toSend, withdraws...)
+		}
+		if shouldAdv && len(announces) > 0 {
+			toSend = append(toSend, announces...)
+		}
+
+		if len(toSend) > 0 {
+			sendfsmOutgoingMsg(peer, toSend, nil, false)
 			for _, w := range withdraws {
 				peer.updateRoutes(w)
 				if operaDebug {
@@ -1645,18 +1654,16 @@ func (s *BgpServer) propagateOperaUpdates(
 						pfx, asp, toID, typ)
 				}
 			}
-		}
-
-		if len(announces) > 0 && needToAdvertise(peer) {
-			sendfsmOutgoingMsg(peer, announces, nil, false)
-			for _, p := range announces {
-				peer.updateRoutes(p)
-				if operaDebug {
-					pfx := p.GetPrefix()
-					asp := asPath(p)
-					typ := table.GetOperaType(p)
-					fmt.Printf("[OPERA] ANNOUNCED ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n",
-						pfx, asp, toID, typ)
+			if shouldAdv {
+				for _, p := range announces {
+					peer.updateRoutes(p)
+					if operaDebug {
+						pfx := p.GetPrefix()
+						asp := asPath(p)
+						typ := table.GetOperaType(p)
+						fmt.Printf("[OPERA] ANNOUNCED ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n",
+							pfx, asp, toID, typ)
+					}
 				}
 			}
 		}

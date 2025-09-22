@@ -619,23 +619,10 @@ func compareByOpera(path1, path2 *Path) *Path {
 		return path1
 	}
 	if IsBetterOperaPath(path2, path1) {
-
 		return path2
 	}
 
-	if best, _ := compareByRouterID(path1, path2); best != nil {
-		return best
-	}
-
-	if best := compareByNeighborAddress(path1, path2); best != nil {
-		return best
-	}
-
-	if best := compareByAge(path1, path2); best != nil {
-		return best
-	}
-
-	return path1
+	return nil
 }
 
 func compareByLocalPref(path1, path2 *Path) *Path {

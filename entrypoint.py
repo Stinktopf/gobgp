@@ -315,7 +315,13 @@ def parse_neighbors_definition(raw_json: str) -> Dict[str, Dict[str, Any]]:
         name = neighbor["name"]
         peer_as = int(neighbor["peerAs"])
         tags = [int(tag) for tag in neighbor.get("communitiesAddTags", [])]
-        neighbors[name] = {"peerAs": peer_as, "tags": tags, "ip": None}
+        lp = neighbor.get("localPref")
+        neighbors[name] = {
+            "peerAs": peer_as,
+            "tags": tags,
+            "localPref": int(lp) if lp is not None else None,
+            "ip": None,
+        }
     return neighbors
 
 
@@ -340,6 +346,13 @@ def write_gobgp_config_file() -> None:
         tags_by_peer_as.setdefault(data["peerAs"], set()).update(data.get("tags", []))
     peer_asns_with_tags = sorted(asn for asn, tags in tags_by_peer_as.items() if tags)
 
+    localpref_by_peer_as: Dict[int, int] = {}
+    for data in snapshot.values():
+        lp = data.get("localPref")
+        if lp is not None:
+            localpref_by_peer_as[data["peerAs"]] = int(lp)
+    peer_asns_with_prefs = sorted(localpref_by_peer_as.keys())
+
     lines: List[str] = []
     lines += [
         "[global.config]",
@@ -348,11 +361,13 @@ def write_gobgp_config_file() -> None:
         "",
     ]
 
-    if GOBGP_OPERA_ENABLED and peer_asns_with_tags:
-        import_policy_names = ", ".join([f'"tag-from-as{asn}"' for asn in peer_asns_with_tags])
+    if GOBGP_OPERA_ENABLED and (peer_asns_with_tags or peer_asns_with_prefs):
+        import_policy_names = []
+        import_policy_names += [f'"tag-from-as{asn}"' for asn in peer_asns_with_tags]
+        import_policy_names += [f'"pref-from-as{asn}"' for asn in peer_asns_with_prefs]
         lines += [
             "[global.apply-policy.config]",
-            f"  import-policy-list = [{import_policy_names}]",
+            f"  import-policy-list = [{', '.join(import_policy_names)}]",
             '  default-import-policy = "accept-route"',
             "",
         ]
@@ -383,6 +398,25 @@ def write_gobgp_config_file() -> None:
                 f"        communities-list = [{communities_literal}]",
                 "",
             ]
+        for asn, lp in localpref_by_peer_as.items():
+            lines += [
+                "[[defined-sets.bgp-defined-sets.as-path-sets]]",
+                f'  as-path-set-name = "from-as{asn}"',
+                f'  as-path-list = ["^{asn}$", "^{asn}_"]',
+                "",
+                "[[policy-definitions]]",
+                f'  name = "pref-from-as{asn}"',
+                "  [[policy-definitions.statements]]",
+                f'    name = "set-pref-from-as{asn}"',
+                "    [policy-definitions.statements.conditions.bgp-conditions.match-as-path-set]",
+                f'      as-path-set = "from-as{asn}"',
+                '      match-set-options = "any"',
+                "    [policy-definitions.statements.actions]",
+                '      route-disposition = "accept-route"',
+                "    [policy-definitions.statements.actions.bgp-actions]",
+                f"      set-local-pref = {lp}",
+                "",
+            ]
     else:
         lines += [
             "[global.apply-policy.config]",
@@ -404,7 +438,7 @@ def write_gobgp_config_file() -> None:
             "  [neighbors.transport.config]",
             f"    passive-mode = {passive_mode}",
             "  [neighbors.add-paths.config]",
-            "    receive = true",
+            f"    receive = {'true' if GOBGP_OPERA_ENABLED else 'false'}",
             f"    send-max = {3 if GOBGP_OPERA_ENABLED else 1}",
             "  [[neighbors.afi-safis]]",
             "    [neighbors.afi-safis.config]",

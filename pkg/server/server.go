@@ -1490,37 +1490,6 @@ func (s *BgpServer) propagateOperaUpdates(
 	toID := peer.ID()
 	var neigh net.IP
 
-	lexLess := func(a, b *table.Path) bool {
-		if a == nil || b == nil {
-			return false
-		}
-		al, bl := a.GetAsPathLen(), b.GetAsPathLen()
-		if al != bl {
-			return al < bl
-		}
-		ap, bp := a.GetAsPath(), b.GetAsPath()
-		if ap == nil || bp == nil {
-			return false
-		}
-		as, bs := ap.Value, bp.Value
-		for i := 0; i < len(as); i++ {
-			if i >= len(bs) {
-				break
-			}
-			aa, bb := as[i].GetAS(), bs[i].GetAS()
-			n := len(aa)
-			if len(bb) < n {
-				n = len(bb)
-			}
-			for j := 0; j < n; j++ {
-				if aa[j] != bb[j] {
-					return aa[j] < bb[j]
-				}
-			}
-		}
-		return false
-	}
-
 	for _, d := range dsts {
 		limit := int(peer.getAddPathSendMax(f))
 		if limit == 0 || limit > 3 {
@@ -1542,7 +1511,7 @@ func (s *BgpServer) propagateOperaUpdates(
 					continue
 				}
 
-				if std == nil || lexLess(p, std) {
+				if std == nil || table.IsBetterOperaPath(p, std) {
 					std = p
 				}
 
@@ -1550,13 +1519,13 @@ func (s *BgpServer) propagateOperaUpdates(
 					if hb == nil ||
 						capExp > hbCap ||
 						(capExp == hbCap && sumLat < hbLat) ||
-						(capExp == hbCap && sumLat == hbLat && lexLess(p, hb)) {
+						(capExp == hbCap && sumLat == hbLat && table.IsBetterOperaPath(p, hb)) {
 						hb, hbCap, hbLat = p, capExp, sumLat
 					}
 					if ll == nil ||
 						sumLat < llLat ||
 						(sumLat == llLat && capExp > llCap) ||
-						(sumLat == llLat && capExp == llCap && lexLess(p, ll)) {
+						(sumLat == llLat && capExp == llCap && table.IsBetterOperaPath(p, ll)) {
 						ll, llCap, llLat = p, capExp, sumLat
 					}
 				}
@@ -1591,6 +1560,8 @@ func (s *BgpServer) propagateOperaUpdates(
 				}
 				cls := table.GetOperaType(p)
 				if _, ok := best[cls]; !ok {
+					best[cls] = p
+				} else if table.IsBetterOperaPath(p, best[cls]) {
 					best[cls] = p
 				}
 			}
@@ -1647,22 +1618,16 @@ func (s *BgpServer) propagateOperaUpdates(
 			for _, w := range withdraws {
 				peer.updateRoutes(w)
 				if operaDebug {
-					pfx := w.GetPrefix()
-					asp := asPath(w)
-					typ := table.GetOperaType(w)
-					fmt.Printf("[OPERA] WITHDRAWN ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n",
-						pfx, asp, toID, typ)
+					fmt.Printf("[OPERA] WITHDRAWN ROUTE TO %s VIA AS %s TO PEER %s\n",
+						w.GetPrefix(), asPath(w), toID)
 				}
 			}
 			if shouldAdv {
 				for _, p := range announces {
 					peer.updateRoutes(p)
 					if operaDebug {
-						pfx := p.GetPrefix()
-						asp := asPath(p)
-						typ := table.GetOperaType(p)
-						fmt.Printf("[OPERA] ANNOUNCED ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n",
-							pfx, asp, toID, typ)
+						fmt.Printf("[OPERA] ANNOUNCED ROUTE TO %s VIA AS %s TO PEER %s\n",
+							p.GetPrefix(), asPath(p), toID)
 					}
 				}
 			}

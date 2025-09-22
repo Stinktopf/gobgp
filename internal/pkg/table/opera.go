@@ -111,6 +111,59 @@ func HasOperaPath(path *Path, suffix uint16) bool {
 	return true
 }
 
+func OperaImportAccept(known []*Path, cand *Path) bool {
+	if !IsOperaEnabled() || cand.IsWithdraw {
+		return true
+	}
+
+	if IsOperaBitfieldMode() {
+		return OperaImportAcceptBitfield(known, cand)
+	}
+	return OperaImportAcceptFuzzy(known, cand)
+}
+
+func OperaImportAcceptBitfield(known []*Path, cand *Path) bool {
+	okCand, capCand, latCand := GetBitfieldMetrics(cand)
+
+	for _, existing := range known {
+		if existing == nil || existing.IsWithdraw {
+			continue
+		}
+
+		okEx, capEx, latEx := GetBitfieldMetrics(existing)
+
+		if okCand && okEx {
+			if !(capCand > capEx || latCand < latEx) {
+				return false
+			}
+		} else {
+			if !IsBetterOperaPath(cand, existing) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func OperaImportAcceptFuzzy(known []*Path, cand *Path) bool {
+	candType := GetOperaType(cand)
+
+	for _, existing := range known {
+		if existing == nil || existing.IsWithdraw {
+			continue
+		}
+
+		existingType := GetOperaType(existing)
+
+		if existingType == candType {
+			if !IsBetterOperaPath(cand, existing) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func IsBetterOperaPath(newPath, existingPath *Path) bool {
 	if newPath == nil || existingPath == nil {
 		return false

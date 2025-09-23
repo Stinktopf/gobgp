@@ -355,7 +355,6 @@ def write_gobgp_config_file() -> None:
     if GOBGP_OPERA_ENABLED:
         for name, data in snapshot.items():
             ip_addr = data.get("ip")
-            peer_as = data["peerAs"]
             if not ip_addr:
                 continue
             lp = data.get("localPref")
@@ -417,6 +416,7 @@ def write_gobgp_config_file() -> None:
             continue
         peer_as = data["peerAs"]
         passive_mode = "true" if peer_as > LOCAL_ASN else "false"
+
         lines += [
             "[[neighbors]]",
             "  [neighbors.config]",
@@ -424,9 +424,16 @@ def write_gobgp_config_file() -> None:
             f"    peer-as = {peer_as}",
             "  [neighbors.transport.config]",
             f"    passive-mode = {passive_mode}",
-            "  [neighbors.add-paths.config]",
-            f"    receive = {'true' if GOBGP_OPERA_ENABLED else 'false'}",
-            f"    send-max = {3 if GOBGP_OPERA_ENABLED else 1}",
+        ]
+
+        if GOBGP_OPERA_ENABLED:
+            lines += [
+                "  [neighbors.add-paths.config]",
+                "    receive = true",
+                "    send-max = 3",
+            ]
+
+        lines += [
             "  [[neighbors.afi-safis]]",
             "    [neighbors.afi-safis.config]",
             '      afi-safi-name = "ipv4-unicast"',

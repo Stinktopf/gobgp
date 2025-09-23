@@ -1485,7 +1485,7 @@ func (s *BgpServer) propagateOperaUpdates(
 		return
 	}
 
-	const operaDebug = true
+	const operaDebug = false
 
 	toID := peer.ID()
 	neigh := net.ParseIP(peer.fsm.pConf.Config.NeighborAddress)

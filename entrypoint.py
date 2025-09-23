@@ -424,16 +424,9 @@ def write_gobgp_config_file() -> None:
             f"    peer-as = {peer_as}",
             "  [neighbors.transport.config]",
             f"    passive-mode = {passive_mode}",
-        ]
-
-        if GOBGP_OPERA_ENABLED:
-            lines += [
-                "  [neighbors.add-paths.config]",
-                "    receive = true",
-                "    send-max = 3",
-            ]
-
-        lines += [
+            "  [neighbors.add-paths.config]",
+            "    receive = true",
+            f"    send-max = {3 if GOBGP_OPERA_ENABLED else 1}",
             "  [[neighbors.afi-safis]]",
             "    [neighbors.afi-safis.config]",
             '      afi-safi-name = "ipv4-unicast"',
@@ -443,6 +436,7 @@ def write_gobgp_config_file() -> None:
     os.makedirs(os.path.dirname(GOBGP_CONFIG_PATH), exist_ok=True)
     with open(GOBGP_CONFIG_PATH, "w") as f:
         f.write("\n".join(lines))
+
 
 
 def restart_gobgp_daemon() -> None:

@@ -568,6 +568,11 @@ class RibDelRequest(BaseModel):
     prefix: str = Field(..., example="203.0.113.0/24", description="CIDR prefix to delete")
     identifier: Optional[int] = Field(None, example=123456, description="Path identifier to delete a specific injected path")
 
+class RibPathLengthResponse(BaseModel):
+    min: int = Field(..., example=1, description="Minimum AS path length in the table")
+    avg: float = Field(..., example=3.5, description="Average AS path length in the table")
+    max: int = Field(..., example=10, description="Maximum AS path length in the table")
+
 
 class NoiseConfig(BaseModel):
     PREFIX_BLOCK: int = Field(0, ge=0, example=0, description="Block index inside the full IPv4 space")
@@ -608,6 +613,14 @@ class NoiseStatus(BaseModel):
     config: Optional[NoiseConfig] = None
     active_count: int = Field(..., example=123, description="Number of active prefixes currently held")
 
+class NoiseDrainRequest(BaseModel):
+    count: Optional[int] = Field(None, ge=1, description="Number of prefixes to withdraw")
+    percent: Optional[float] = Field(None, ge=0.01, le=100.0, description="Percentage of active prefixes to withdraw")
+
+class NoiseDrainResponse(BaseModel):
+    requested: int = Field(..., description="Number of withdrawals requested")
+    removed: int = Field(..., description="Number of prefixes actually withdrawn")
+    remaining: int = Field(..., description="Number of active prefixes remaining after withdrawal")
 
 class RibDelResult(BaseModel):
     prefix: str = Field(..., description="Prefix that was targeted")
@@ -783,6 +796,37 @@ def delete_rib_prefix(body: RibDelRequest):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"prefix": body.prefix, "note": "no matching paths"})
     return RibDelResult(**res)
 
+@app.get(
+    "/rib/pathlengths",
+    tags=["RIB"],
+    response_model=RibPathLengthResponse,
+    summary="RIB path length stats",
+    description="Returns min/avg/max AS path length across all IPv4 RIB entries"
+)
+def get_rib_pathlengths():
+    res = gobgp.list_rib_ipv4()
+    if isinstance(res, dict) and "error" in res:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=res["error"])
+
+    lengths = []
+    for entry in res:
+        dest = entry.get("destination", {})
+        for path in dest.get("paths", []):
+            for pattr in path.get("pattrs", []):
+                if "asPath" in pattr:
+                    for seg in pattr["asPath"].get("segments", []):
+                        nums = seg.get("numbers", [])
+                        if nums:
+                            lengths.append(len(nums))
+
+    if not lengths:
+        return RibPathLengthResponse(min=0, avg=0.0, max=0)
+
+    return RibPathLengthResponse(
+        min=min(lengths),
+        avg=sum(lengths) / len(lengths),
+        max=max(lengths),
+    )
 
 @app.delete("/rib", tags=["RIB"], response_model=RibDelAllResult, status_code=status.HTTP_200_OK, summary="Delete all owned", description="Deletes all locally injected paths and reports remaining foreign paths")
 def delete_all_rib():
@@ -882,6 +926,42 @@ def shutdown(*_):
     gobgp.close()
     raise SystemExit(0)
 
+@app.post(
+    "/noise/drain",
+    tags=["Noise"],
+    response_model=NoiseDrainResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Partial noise drain",
+    description="Withdraws a specified number or percentage of currently active noise prefixes",
+)
+def drain_noise(body: NoiseDrainRequest):
+    with noise_lock:
+        active = list(noise_active_prefixes.items())
+
+    if not active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no active noise prefixes")
+
+    if body.count is not None:
+        target_count = min(body.count, len(active))
+    elif body.percent is not None:
+        target_count = max(1, int(len(active) * (body.percent / 100.0)))
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="must specify either count or percent")
+
+    to_remove = random.sample(active, target_count)
+
+    removed = 0
+    for prefix, (_, ident) in to_remove:
+        res = gobgp.del_route_ipv4(str(prefix), identifier=ident if ident else None)
+        if not (isinstance(res, dict) and "error" in res):
+            removed += 1
+            with noise_lock:
+                noise_active_prefixes.pop(prefix, None)
+
+    with noise_lock:
+        remaining = len(noise_active_prefixes)
+
+    return NoiseDrainResponse(requested=target_count, removed=removed, remaining=remaining)
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, shutdown)

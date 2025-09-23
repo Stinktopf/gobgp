@@ -5,54 +5,38 @@ image:
 
 routers:
   frankfurt:
-    asn: 65016
-    routerId: 10.0.0.17
+    asn: 65001
+    routerId: 10.0.0.1
     neighbors:
-      - name: kassel
-        peerAs: 65025
+      - name: toronto
+        peerAs: 65002
         localPref: 200
-      - name: wuerzburg
-        peerAs: 65049
-        localPref: 100
       - name: fulda
-        peerAs: 65018
+        peerAs: 65003
         localPref: 100
+        communitiesAddTags:
+          - 2565
 
-  kassel:
-    asn: 65025
-    routerId: 10.0.0.26
+  toronto:
+    asn: 65002
+    routerId: 10.0.0.2
     neighbors:
       - name: frankfurt
-        peerAs: 65016
-        localPref: 100
-      - name: wuerzburg
-        peerAs: 65049
-        localPref: 200
-      - name: fulda
-        peerAs: 65018
-        localPref: 100
-
-  wuerzburg:
-    asn: 65049
-    routerId: 10.0.0.50
-    neighbors:
-      - name: frankfurt
-        peerAs: 65016
-        localPref: 200
-      - name: kassel
-        peerAs: 65025
+        peerAs: 65001
         localPref: 100
       - name: fulda
-        peerAs: 65018
-        localPref: 100
+        peerAs: 65003
+        localPref: 200
 
   fulda:
-    asn: 65018
-    routerId: 10.0.0.19
+    asn: 65003
+    routerId: 10.0.0.3
     neighbors:
       - name: frankfurt
-        peerAs: 65016
-      - name: kassel
-        peerAs: 65025
-      - name: wuerzburg
-        peerAs: 65049
+        peerAs: 65001
+        localPref: 200
+        communitiesAddTags:
+          - 2565
+      - name: toronto
+        peerAs: 65002
+        localPref: 100

@@ -341,17 +341,6 @@ def write_gobgp_config_file() -> None:
 
     with neighbor_state_lock:
         snapshot = {name: data.copy() for name, data in neighbor_state_by_service_name.items()}
-    tags_by_peer_as: Dict[int, Set[int]] = {}
-    for data in snapshot.values():
-        tags_by_peer_as.setdefault(data["peerAs"], set()).update(data.get("tags", []))
-    peer_asns_with_tags = sorted(asn for asn, tags in tags_by_peer_as.items() if tags)
-
-    localpref_by_peer_as: Dict[int, int] = {}
-    for data in snapshot.values():
-        lp = data.get("localPref")
-        if lp is not None:
-            localpref_by_peer_as[data["peerAs"]] = int(lp)
-    peer_asns_with_prefs = sorted(localpref_by_peer_as.keys())
 
     lines: List[str] = []
     lines += [
@@ -361,62 +350,60 @@ def write_gobgp_config_file() -> None:
         "",
     ]
 
-    if GOBGP_OPERA_ENABLED and (peer_asns_with_tags or peer_asns_with_prefs):
-        import_policy_names = []
-        import_policy_names += [f'"tag-from-as{asn}"' for asn in peer_asns_with_tags]
-        import_policy_names += [f'"pref-from-as{asn}"' for asn in peer_asns_with_prefs]
+    import_policy_names = []
+
+    if GOBGP_OPERA_ENABLED:
+        for name, data in snapshot.items():
+            ip_addr = data.get("ip")
+            peer_as = data["peerAs"]
+            if not ip_addr:
+                continue
+            lp = data.get("localPref")
+            tags = data.get("tags", [])
+            if not lp and not tags:
+                continue
+
+            ns_name = f"from-nh-{ip_addr.replace('.', '-')}"
+            pol_name = f"policy-{ip_addr.replace('.', '-')}"
+            import_policy_names.append(f'"{pol_name}"')
+
+            lines += [
+                "[[defined-sets.neighbor-sets]]",
+                f'  neighbor-set-name = "{ns_name}"',
+                f'  neighbor-info-list = ["{ip_addr}"]',
+                "",
+                "[[policy-definitions]]",
+                f'  name = "{pol_name}"',
+                "  [[policy-definitions.statements]]",
+                f'    name = "set-attrs-{ip_addr}"',
+                "    [policy-definitions.statements.conditions.match-neighbor-set]",
+                f'      neighbor-set = "{ns_name}"',
+                '      match-set-options = "any"',
+                "    [policy-definitions.statements.actions]",
+                '      route-disposition = "accept-route"',
+            ]
+            if lp:
+                lines += [
+                    "    [policy-definitions.statements.actions.bgp-actions]",
+                    f"      set-local-pref = {int(lp)}",
+                ]
+            if tags:
+                communities_literal = ", ".join([f'"{LOCAL_ASN}:{tag}"' for tag in sorted(tags)])
+                lines += [
+                    "    [policy-definitions.statements.actions.bgp-actions.set-community]",
+                    '      options = "add"',
+                    "      [policy-definitions.statements.actions.bgp-actions.set-community.set-community-method]",
+                    f"        communities-list = [{communities_literal}]",
+                ]
+            lines.append("")
+
+    if import_policy_names:
         lines += [
             "[global.apply-policy.config]",
             f"  import-policy-list = [{', '.join(import_policy_names)}]",
             '  default-import-policy = "accept-route"',
             "",
         ]
-        for asn in peer_asns_with_tags:
-            lines += [
-                "[[defined-sets.bgp-defined-sets.as-path-sets]]",
-                f'  as-path-set-name = "from-as{asn}"',
-                f'  as-path-list = ["^{asn}$", "^{asn}_"]',
-                "",
-            ]
-            tag_set = tags_by_peer_as[asn]
-            lines += [
-                "[[policy-definitions]]",
-                f'  name = "tag-from-as{asn}"',
-                "  [[policy-definitions.statements]]",
-                f'    name = "tag-{LOCAL_ASN}-from-as{asn}"',
-                "    [policy-definitions.statements.conditions.bgp-conditions.match-as-path-set]",
-                f'      as-path-set = "from-as{asn}"',
-                '      match-set-options = "any"',
-                "    [policy-definitions.statements.actions]",
-                '      route-disposition = "accept-route"',
-            ]
-            communities_literal = ", ".join([f'"{LOCAL_ASN}:{tag}"' for tag in sorted(tag_set)])
-            lines += [
-                "    [policy-definitions.statements.actions.bgp-actions.set-community]",
-                '      options = "add"',
-                "      [policy-definitions.statements.actions.bgp-actions.set-community.set-community-method]",
-                f"        communities-list = [{communities_literal}]",
-                "",
-            ]
-        for asn, lp in localpref_by_peer_as.items():
-            lines += [
-                "[[defined-sets.bgp-defined-sets.as-path-sets]]",
-                f'  as-path-set-name = "from-as{asn}"',
-                f'  as-path-list = ["^{asn}$", "^{asn}_"]',
-                "",
-                "[[policy-definitions]]",
-                f'  name = "pref-from-as{asn}"',
-                "  [[policy-definitions.statements]]",
-                f'    name = "set-pref-from-as{asn}"',
-                "    [policy-definitions.statements.conditions.bgp-conditions.match-as-path-set]",
-                f'      as-path-set = "from-as{asn}"',
-                '      match-set-options = "any"',
-                "    [policy-definitions.statements.actions]",
-                '      route-disposition = "accept-route"',
-                "    [policy-definitions.statements.actions.bgp-actions]",
-                f"      set-local-pref = {lp}",
-                "",
-            ]
     else:
         lines += [
             "[global.apply-policy.config]",

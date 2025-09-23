@@ -1485,10 +1485,10 @@ func (s *BgpServer) propagateOperaUpdates(
 		return
 	}
 
-	const operaDebug = false
+	const operaDebug = true
 
 	toID := peer.ID()
-	var neigh net.IP
+	neigh := net.ParseIP(peer.fsm.pConf.Config.NeighborAddress)
 
 	for _, d := range dsts {
 		limit := int(peer.getAddPathSendMax(f))
@@ -1618,16 +1618,16 @@ func (s *BgpServer) propagateOperaUpdates(
 			for _, w := range withdraws {
 				peer.updateRoutes(w)
 				if operaDebug {
-					fmt.Printf("[OPERA] WITHDRAWN ROUTE TO %s VIA AS %s TO PEER %s\n",
-						w.GetPrefix(), asPath(w), toID)
+					fmt.Printf("[OPERA] WITHDRAWN ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n",
+						w.GetPrefix(), asPath(w), toID, table.GetOperaType(w))
 				}
 			}
 			if shouldAdv {
 				for _, p := range announces {
 					peer.updateRoutes(p)
 					if operaDebug {
-						fmt.Printf("[OPERA] ANNOUNCED ROUTE TO %s VIA AS %s TO PEER %s\n",
-							p.GetPrefix(), asPath(p), toID)
+						fmt.Printf("[OPERA] ANNOUNCED ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n",
+							p.GetPrefix(), asPath(p), toID, table.GetOperaType(p))
 					}
 				}
 			}

@@ -37,9 +37,9 @@ spec:
               value: {{ join "," $r.communities | quote }}
             {{- end }}
             - name: GOBGP_OPERA_ENABLED
-              value: "true"
+              value: {{ $.Values.opera.enabled | quote }}
             - name: GOBGP_OPERA_MODE
-              value: "bitfield"
+              value: {{ $.Values.opera.mode | quote }}
           ports:
             - name: bgp
               containerPort: 179

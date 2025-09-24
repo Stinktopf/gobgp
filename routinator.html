@@ -340,6 +340,7 @@
     });
 
     function buildValues(){
+        const opera={enabled: 'false', mode: 'bitfield'}
         const image={repository:'gobgp', tag:'dev', pullPolicy:'IfNotPresent'};
         const routers={};
         cy.nodes().forEach(n=>{ routers[n.id()]={asn:Number(n.data('asn')), routerId:n.data('routerId'), neighbors:[]}; });
@@ -352,7 +353,7 @@
             routers[a].neighbors.push({name:b, peerAs:asnB, communitiesAddTags:comms});
             routers[b].neighbors.push({name:a, peerAs:asnA, communitiesAddTags:comms});
         });
-        return {image, routers};
+        return {opera, image, routers};
     }
     function downloadValues(){
         const values=buildValues(); const text=jsyaml.dump(values,{noRefs:true,lineWidth:120});

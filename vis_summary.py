@@ -31,18 +31,28 @@ def extract_series(data, pod_filter=None, field="num_paths"):
                 for k in ("min", "max", "avg"):
                     if k in vals:
                         all_indices[idx][k].append(vals[k])
-    series = {"min": [], "max": [], "avg": []}
+
+    series = {
+        "mean_min": [], "mean_max": [], "avg": [],
+        "global_min": [], "global_max": []
+    }
+
     for idx in sorted(all_indices.keys()):
-        for k in series:
-            if all_indices[idx][k]:
-                series[k].append(np.mean(all_indices[idx][k]))
-            else:
-                series[k].append(np.nan)
+        mins = all_indices[idx]["min"]
+        maxs = all_indices[idx]["max"]
+        avgs = all_indices[idx]["avg"]
+
+        series["mean_min"].append(np.mean(mins) if mins else np.nan)
+        series["mean_max"].append(np.mean(maxs) if maxs else np.nan)
+        series["avg"].append(np.mean(avgs) if avgs else np.nan)
+        series["global_min"].append(np.min(mins) if mins else np.nan)
+        series["global_max"].append(np.max(maxs) if maxs else np.nan)
+
     return series
 
 def get_series_range(series):
     vals = []
-    for k in ("min", "max", "avg"):
+    for k in ("mean_min", "mean_max", "avg", "global_min", "global_max"):
         vals.extend([v for v in series[k] if not np.isnan(v)])
     if vals:
         return min(vals), max(vals)
@@ -51,7 +61,13 @@ def get_series_range(series):
 def plot_min_max_avg(ax, series, color, title, ylabel, ylim=None):
     x = np.arange(len(series["avg"]))
     ax.plot(x, series["avg"], color=color, label="avg", linewidth=2)
-    ax.fill_between(x, series["min"], series["max"], color=color, alpha=0.2, label="min–max")
+
+    ax.fill_between(x, series["global_min"], series["global_max"],
+                    color=color, alpha=0.1, label="global min–max")
+
+    ax.fill_between(x, series["mean_min"], series["mean_max"],
+                    color=color, alpha=0.3, label="mean min–max")
+
     ax.set_title(title, fontsize=13, weight="bold")
     ax.set_xlabel("Sample index", fontsize=11)
     ax.set_ylabel(ylabel, fontsize=11)

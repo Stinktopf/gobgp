@@ -6,37 +6,907 @@ image:
   tag: dev
   pullPolicy: IfNotPresent
 routers:
-  frankfurt:
-    asn: 65001
+  aachen:
+    asn: 65000
     routerId: 10.0.0.1
     neighbors:
-      - name: aachen
-        peerAs: 65002
-        localPref: 200
-      - name: fulda
-        peerAs: 65003
-        localPref: 100
+      - name: koeln
+        peerAs: 65029
         communitiesAddTags:
-          - 2565
-  aachen:
-    asn: 65002
+          - 3585
+      - name: wesel
+        peerAs: 65048
+        communitiesAddTags:
+          - 4353
+      - name: trier
+        peerAs: 65046
+        communitiesAddTags:
+          - 4097
+  koeln:
+    asn: 65029
+    routerId: 10.0.0.30
+    neighbors:
+      - name: aachen
+        peerAs: 65000
+        communitiesAddTags:
+          - 3585
+      - name: duesseldorf
+        peerAs: 65012
+        communitiesAddTags:
+          - 4353
+      - name: koblenz
+        peerAs: 65028
+        communitiesAddTags:
+          - 4353
+  wesel:
+    asn: 65048
+    routerId: 10.0.0.49
+    neighbors:
+      - name: aachen
+        peerAs: 65000
+        communitiesAddTags:
+          - 4353
+      - name: essen
+        peerAs: 65014
+        communitiesAddTags:
+          - 4353
+      - name: norden
+        peerAs: 65036
+        communitiesAddTags:
+          - 3329
+      - name: oldenburg
+        peerAs: 65038
+        communitiesAddTags:
+          - 4353
+  trier:
+    asn: 65046
+    routerId: 10.0.0.47
+    neighbors:
+      - name: aachen
+        peerAs: 65000
+        communitiesAddTags:
+          - 4097
+      - name: koblenz
+        peerAs: 65028
+        communitiesAddTags:
+          - 3585
+      - name: saarbruecken
+        peerAs: 65042
+        communitiesAddTags:
+          - 4097
+  augsburg:
+    asn: 65001
     routerId: 10.0.0.2
     neighbors:
-      - name: frankfurt
+      - name: ulm
+        peerAs: 65047
+        communitiesAddTags:
+          - 4097
+      - name: muenchen
+        peerAs: 65034
+        communitiesAddTags:
+          - 4097
+      - name: wuerzburg
+        peerAs: 65049
+        communitiesAddTags:
+          - 4353
+  ulm:
+    asn: 65047
+    routerId: 10.0.0.48
+    neighbors:
+      - name: augsburg
         peerAs: 65001
-        localPref: 100
+        communitiesAddTags:
+          - 4097
+      - name: stuttgart
+        peerAs: 65045
+        communitiesAddTags:
+          - 4097
+  muenchen:
+    asn: 65034
+    routerId: 10.0.0.35
+    neighbors:
+      - name: augsburg
+        peerAs: 65001
+        communitiesAddTags:
+          - 4097
+      - name: kempten
+        peerAs: 65026
+        communitiesAddTags:
+          - 3329
+      - name: passau
+        peerAs: 65040
+        communitiesAddTags:
+          - 4097
+      - name: nuernberg
+        peerAs: 65037
+        communitiesAddTags:
+          - 4353
+      - name: regensburg
+        peerAs: 65041
+        communitiesAddTags:
+          - 4097
+  wuerzburg:
+    asn: 65049
+    routerId: 10.0.0.50
+    neighbors:
+      - name: augsburg
+        peerAs: 65001
+        communitiesAddTags:
+          - 4353
+      - name: erfurt
+        peerAs: 65013
+        communitiesAddTags:
+          - 4353
       - name: fulda
-        peerAs: 65003
-        localPref: 200
-  fulda:
-    asn: 65003
+        peerAs: 65018
+        communitiesAddTags:
+          - 4097
+      - name: nuernberg
+        peerAs: 65037
+        communitiesAddTags:
+          - 4097
+      - name: stuttgart
+        peerAs: 65045
+        communitiesAddTags:
+          - 4097
+  bayreuth:
+    asn: 65002
     routerId: 10.0.0.3
     neighbors:
-      - name: frankfurt
-        peerAs: 65001
-        localPref: 200
+      - name: leipzig
+        peerAs: 65031
         communitiesAddTags:
-          - 2565
-      - name: aachen
+          - 4097
+      - name: chemnitz
+        peerAs: 65008
+        communitiesAddTags:
+          - 4097
+      - name: nuernberg
+        peerAs: 65037
+        communitiesAddTags:
+          - 4097
+  leipzig:
+    asn: 65031
+    routerId: 10.0.0.32
+    neighbors:
+      - name: bayreuth
         peerAs: 65002
-        localPref: 100
+        communitiesAddTags:
+          - 4097
+      - name: berlin
+        peerAs: 65003
+        communitiesAddTags:
+          - 4609
+      - name: dresden
+        peerAs: 65011
+        communitiesAddTags:
+          - 4609
+      - name: erfurt
+        peerAs: 65013
+        communitiesAddTags:
+          - 4353
+      - name: magdeburg
+        peerAs: 65032
+        communitiesAddTags:
+          - 4353
+  chemnitz:
+    asn: 65008
+    routerId: 10.0.0.9
+    neighbors:
+      - name: bayreuth
+        peerAs: 65002
+        communitiesAddTags:
+          - 4097
+      - name: dresden
+        peerAs: 65011
+        communitiesAddTags:
+          - 4097
+      - name: erfurt
+        peerAs: 65013
+        communitiesAddTags:
+          - 3585
+  nuernberg:
+    asn: 65037
+    routerId: 10.0.0.38
+    neighbors:
+      - name: muenchen
+        peerAs: 65034
+        communitiesAddTags:
+          - 4353
+      - name: wuerzburg
+        peerAs: 65049
+        communitiesAddTags:
+          - 4097
+      - name: bayreuth
+        peerAs: 65002
+        communitiesAddTags:
+          - 4097
+      - name: regensburg
+        peerAs: 65041
+        communitiesAddTags:
+          - 4097
+  berlin:
+    asn: 65003
+    routerId: 10.0.0.4
+    neighbors:
+      - name: leipzig
+        peerAs: 65031
+        communitiesAddTags:
+          - 4609
+      - name: dresden
+        peerAs: 65011
+        communitiesAddTags:
+          - 4353
+      - name: schwerin
+        peerAs: 65043
+        communitiesAddTags:
+          - 4097
+      - name: magdeburg
+        peerAs: 65032
+        communitiesAddTags:
+          - 4353
+      - name: greifswald
+        peerAs: 65020
+        communitiesAddTags:
+          - 3329
+  dresden:
+    asn: 65011
+    routerId: 10.0.0.12
+    neighbors:
+      - name: leipzig
+        peerAs: 65031
+        communitiesAddTags:
+          - 4609
+      - name: chemnitz
+        peerAs: 65008
+        communitiesAddTags:
+          - 4097
+      - name: berlin
+        peerAs: 65003
+        communitiesAddTags:
+          - 4353
+      - name: erfurt
+        peerAs: 65013
+        communitiesAddTags:
+          - 4353
+  schwerin:
+    asn: 65043
+    routerId: 10.0.0.44
+    neighbors:
+      - name: berlin
+        peerAs: 65003
+        communitiesAddTags:
+          - 4097
+      - name: greifswald
+        peerAs: 65020
+        communitiesAddTags:
+          - 3329
+      - name: hamburg
+        peerAs: 65021
+        communitiesAddTags:
+          - 4097
+      - name: kiel
+        peerAs: 65027
+        communitiesAddTags:
+          - 4097
+      - name: magdeburg
+        peerAs: 65032
+        communitiesAddTags:
+          - 3329
+  magdeburg:
+    asn: 65032
+    routerId: 10.0.0.33
+    neighbors:
+      - name: leipzig
+        peerAs: 65031
+        communitiesAddTags:
+          - 4353
+      - name: berlin
+        peerAs: 65003
+        communitiesAddTags:
+          - 4353
+      - name: schwerin
+        peerAs: 65043
+        communitiesAddTags:
+          - 3329
+      - name: braunschweig
+        peerAs: 65005
+        communitiesAddTags:
+          - 4353
+  greifswald:
+    asn: 65020
+    routerId: 10.0.0.21
+    neighbors:
+      - name: berlin
+        peerAs: 65003
+        communitiesAddTags:
+          - 3329
+      - name: schwerin
+        peerAs: 65043
+        communitiesAddTags:
+          - 3329
+  bielefeld:
+    asn: 65004
+    routerId: 10.0.0.5
+    neighbors:
+      - name: muenster
+        peerAs: 65035
+        communitiesAddTags:
+          - 3329
+      - name: siegen
+        peerAs: 65044
+        communitiesAddTags:
+          - 3329
+      - name: hannover
+        peerAs: 65022
+        communitiesAddTags:
+          - 3329
+      - name: braunschweig
+        peerAs: 65005
+        communitiesAddTags:
+          - 3329
+  muenster:
+    asn: 65035
+    routerId: 10.0.0.36
+    neighbors:
+      - name: bielefeld
+        peerAs: 65004
+        communitiesAddTags:
+          - 3329
+      - name: dortmund
+        peerAs: 65010
+        communitiesAddTags:
+          - 3585
+      - name: osnabrueck
+        peerAs: 65039
+        communitiesAddTags:
+          - 3585
+  siegen:
+    asn: 65044
+    routerId: 10.0.0.45
+    neighbors:
+      - name: bielefeld
+        peerAs: 65004
+        communitiesAddTags:
+          - 3329
+      - name: dortmund
+        peerAs: 65010
+        communitiesAddTags:
+          - 3585
+      - name: giessen
+        peerAs: 65019
+        communitiesAddTags:
+          - 3329
+      - name: koblenz
+        peerAs: 65028
+        communitiesAddTags:
+          - 3329
+  hannover:
+    asn: 65022
+    routerId: 10.0.0.23
+    neighbors:
+      - name: bielefeld
+        peerAs: 65004
+        communitiesAddTags:
+          - 3329
+      - name: braunschweig
+        peerAs: 65005
+        communitiesAddTags:
+          - 4353
+      - name: bremen
+        peerAs: 65006
+        communitiesAddTags:
+          - 3329
+      - name: hamburg
+        peerAs: 65021
+        communitiesAddTags:
+          - 4353
+      - name: osnabrueck
+        peerAs: 65039
+        communitiesAddTags:
+          - 3585
+  braunschweig:
+    asn: 65005
+    routerId: 10.0.0.6
+    neighbors:
+      - name: magdeburg
+        peerAs: 65032
+        communitiesAddTags:
+          - 4353
+      - name: bielefeld
+        peerAs: 65004
+        communitiesAddTags:
+          - 3329
+      - name: hannover
+        peerAs: 65022
+        communitiesAddTags:
+          - 4353
+      - name: hamburg
+        peerAs: 65021
+        communitiesAddTags:
+          - 4097
+      - name: kassel
+        peerAs: 65025
+        communitiesAddTags:
+          - 4097
+  hamburg:
+    asn: 65021
+    routerId: 10.0.0.22
+    neighbors:
+      - name: schwerin
+        peerAs: 65043
+        communitiesAddTags:
+          - 4097
+      - name: hannover
+        peerAs: 65022
+        communitiesAddTags:
+          - 4353
+      - name: braunschweig
+        peerAs: 65005
+        communitiesAddTags:
+          - 4097
+      - name: kiel
+        peerAs: 65027
+        communitiesAddTags:
+          - 4097
+  kassel:
+    asn: 65025
+    routerId: 10.0.0.26
+    neighbors:
+      - name: braunschweig
+        peerAs: 65005
+        communitiesAddTags:
+          - 4097
+      - name: dortmund
+        peerAs: 65010
+        communitiesAddTags:
+          - 4353
+      - name: erfurt
+        peerAs: 65013
+        communitiesAddTags:
+          - 4097
+      - name: fulda
+        peerAs: 65018
+        communitiesAddTags:
+          - 4097
+      - name: giessen
+        peerAs: 65019
+        communitiesAddTags:
+          - 4097
+  bremen:
+    asn: 65006
+    routerId: 10.0.0.7
+    neighbors:
+      - name: hannover
+        peerAs: 65022
+        communitiesAddTags:
+          - 3329
+      - name: oldenburg
+        peerAs: 65038
+        communitiesAddTags:
+          - 3585
+      - name: bremerhaven
+        peerAs: 65007
+        communitiesAddTags:
+          - 3329
+  oldenburg:
+    asn: 65038
+    routerId: 10.0.0.39
+    neighbors:
+      - name: wesel
+        peerAs: 65048
+        communitiesAddTags:
+          - 4353
+      - name: bremen
+        peerAs: 65006
+        communitiesAddTags:
+          - 3585
+      - name: norden
+        peerAs: 65036
+        communitiesAddTags:
+          - 3329
+      - name: osnabrueck
+        peerAs: 65039
+        communitiesAddTags:
+          - 3585
+  bremerhaven:
+    asn: 65007
+    routerId: 10.0.0.8
+    neighbors:
+      - name: bremen
+        peerAs: 65006
+        communitiesAddTags:
+          - 3329
+      - name: flensburg
+        peerAs: 65015
+        communitiesAddTags:
+          - 3329
+  flensburg:
+    asn: 65015
+    routerId: 10.0.0.16
+    neighbors:
+      - name: bremerhaven
+        peerAs: 65007
+        communitiesAddTags:
+          - 3329
+      - name: kiel
+        peerAs: 65027
+        communitiesAddTags:
+          - 3329
+  erfurt:
+    asn: 65013
+    routerId: 10.0.0.14
+    neighbors:
+      - name: wuerzburg
+        peerAs: 65049
+        communitiesAddTags:
+          - 4353
+      - name: leipzig
+        peerAs: 65031
+        communitiesAddTags:
+          - 4353
+      - name: chemnitz
+        peerAs: 65008
+        communitiesAddTags:
+          - 3585
+      - name: dresden
+        peerAs: 65011
+        communitiesAddTags:
+          - 4353
+      - name: kassel
+        peerAs: 65025
+        communitiesAddTags:
+          - 4097
+  darmstadt:
+    asn: 65009
+    routerId: 10.0.0.10
+    neighbors:
+      - name: frankfurt
+        peerAs: 65016
+        communitiesAddTags:
+          - 4609
+      - name: mannheim
+        peerAs: 65033
+        communitiesAddTags:
+          - 2561
+      - name: kaiserslautern
+        peerAs: 65023
+        communitiesAddTags:
+          - 4097
+  frankfurt:
+    asn: 65016
+    routerId: 10.0.0.17
+    neighbors:
+      - name: darmstadt
+        peerAs: 65009
+        communitiesAddTags:
+          - 4609
+      - name: koblenz
+        peerAs: 65028
+        communitiesAddTags:
+          - 4353
+      - name: giessen
+        peerAs: 65019
+        communitiesAddTags:
+          - 4353
+      - name: fulda
+        peerAs: 65018
+        communitiesAddTags:
+          - 4353
+  mannheim:
+    asn: 65033
+    routerId: 10.0.0.34
+    neighbors:
+      - name: darmstadt
+        peerAs: 65009
+        communitiesAddTags:
+          - 2561
+      - name: karlsruhe
+        peerAs: 65024
+        communitiesAddTags:
+          - 3585
+  kaiserslautern:
+    asn: 65023
+    routerId: 10.0.0.24
+    neighbors:
+      - name: darmstadt
+        peerAs: 65009
+        communitiesAddTags:
+          - 4097
+      - name: koblenz
+        peerAs: 65028
+        communitiesAddTags:
+          - 4353
+      - name: saarbruecken
+        peerAs: 65042
+        communitiesAddTags:
+          - 4097
+      - name: karlsruhe
+        peerAs: 65024
+        communitiesAddTags:
+          - 4353
+  dortmund:
+    asn: 65010
+    routerId: 10.0.0.11
+    neighbors:
+      - name: muenster
+        peerAs: 65035
+        communitiesAddTags:
+          - 3585
+      - name: siegen
+        peerAs: 65044
+        communitiesAddTags:
+          - 3585
+      - name: kassel
+        peerAs: 65025
+        communitiesAddTags:
+          - 4353
+      - name: essen
+        peerAs: 65014
+        communitiesAddTags:
+          - 4353
+  essen:
+    asn: 65014
+    routerId: 10.0.0.15
+    neighbors:
+      - name: wesel
+        peerAs: 65048
+        communitiesAddTags:
+          - 4353
+      - name: dortmund
+        peerAs: 65010
+        communitiesAddTags:
+          - 4353
+      - name: duesseldorf
+        peerAs: 65012
+        communitiesAddTags:
+          - 3585
+  duesseldorf:
+    asn: 65012
+    routerId: 10.0.0.13
+    neighbors:
+      - name: koeln
+        peerAs: 65029
+        communitiesAddTags:
+          - 4353
+      - name: essen
+        peerAs: 65014
+        communitiesAddTags:
+          - 3585
+  kiel:
+    asn: 65027
+    routerId: 10.0.0.28
+    neighbors:
+      - name: schwerin
+        peerAs: 65043
+        communitiesAddTags:
+          - 4097
+      - name: hamburg
+        peerAs: 65021
+        communitiesAddTags:
+          - 4097
+      - name: flensburg
+        peerAs: 65015
+        communitiesAddTags:
+          - 3329
+  koblenz:
+    asn: 65028
+    routerId: 10.0.0.29
+    neighbors:
+      - name: koeln
+        peerAs: 65029
+        communitiesAddTags:
+          - 4353
+      - name: trier
+        peerAs: 65046
+        communitiesAddTags:
+          - 3585
+      - name: siegen
+        peerAs: 65044
+        communitiesAddTags:
+          - 3329
+      - name: frankfurt
+        peerAs: 65016
+        communitiesAddTags:
+          - 4353
+      - name: kaiserslautern
+        peerAs: 65023
+        communitiesAddTags:
+          - 4353
+  giessen:
+    asn: 65019
+    routerId: 10.0.0.20
+    neighbors:
+      - name: siegen
+        peerAs: 65044
+        communitiesAddTags:
+          - 3329
+      - name: kassel
+        peerAs: 65025
+        communitiesAddTags:
+          - 4097
+      - name: frankfurt
+        peerAs: 65016
+        communitiesAddTags:
+          - 4353
+      - name: fulda
+        peerAs: 65018
+        communitiesAddTags:
+          - 4097
+  fulda:
+    asn: 65018
+    routerId: 10.0.0.19
+    neighbors:
+      - name: wuerzburg
+        peerAs: 65049
+        communitiesAddTags:
+          - 4097
+      - name: kassel
+        peerAs: 65025
+        communitiesAddTags:
+          - 4097
+      - name: frankfurt
+        peerAs: 65016
+        communitiesAddTags:
+          - 4353
+      - name: giessen
+        peerAs: 65019
+        communitiesAddTags:
+          - 4097
+  freiburg:
+    asn: 65017
+    routerId: 10.0.0.18
+    neighbors:
+      - name: karlsruhe
+        peerAs: 65024
+        communitiesAddTags:
+          - 3585
+      - name: konstanz
+        peerAs: 65030
+        communitiesAddTags:
+          - 3585
+  karlsruhe:
+    asn: 65024
+    routerId: 10.0.0.25
+    neighbors:
+      - name: mannheim
+        peerAs: 65033
+        communitiesAddTags:
+          - 3585
+      - name: kaiserslautern
+        peerAs: 65023
+        communitiesAddTags:
+          - 4353
+      - name: freiburg
+        peerAs: 65017
+        communitiesAddTags:
+          - 3585
+      - name: saarbruecken
+        peerAs: 65042
+        communitiesAddTags:
+          - 4097
+      - name: stuttgart
+        peerAs: 65045
+        communitiesAddTags:
+          - 4353
+  konstanz:
+    asn: 65030
+    routerId: 10.0.0.31
+    neighbors:
+      - name: freiburg
+        peerAs: 65017
+        communitiesAddTags:
+          - 3585
+      - name: kempten
+        peerAs: 65026
+        communitiesAddTags:
+          - 3329
+      - name: stuttgart
+        peerAs: 65045
+        communitiesAddTags:
+          - 3585
+  osnabrueck:
+    asn: 65039
+    routerId: 10.0.0.40
+    neighbors:
+      - name: muenster
+        peerAs: 65035
+        communitiesAddTags:
+          - 3585
+      - name: hannover
+        peerAs: 65022
+        communitiesAddTags:
+          - 3585
+      - name: oldenburg
+        peerAs: 65038
+        communitiesAddTags:
+          - 3585
+  saarbruecken:
+    asn: 65042
+    routerId: 10.0.0.43
+    neighbors:
+      - name: trier
+        peerAs: 65046
+        communitiesAddTags:
+          - 4097
+      - name: kaiserslautern
+        peerAs: 65023
+        communitiesAddTags:
+          - 4097
+      - name: karlsruhe
+        peerAs: 65024
+        communitiesAddTags:
+          - 4097
+  stuttgart:
+    asn: 65045
+    routerId: 10.0.0.46
+    neighbors:
+      - name: ulm
+        peerAs: 65047
+        communitiesAddTags:
+          - 4097
+      - name: wuerzburg
+        peerAs: 65049
+        communitiesAddTags:
+          - 4097
+      - name: karlsruhe
+        peerAs: 65024
+        communitiesAddTags:
+          - 4353
+      - name: konstanz
+        peerAs: 65030
+        communitiesAddTags:
+          - 3585
+  kempten:
+    asn: 65026
+    routerId: 10.0.0.27
+    neighbors:
+      - name: muenchen
+        peerAs: 65034
+        communitiesAddTags:
+          - 3329
+      - name: konstanz
+        peerAs: 65030
+        communitiesAddTags:
+          - 3329
+  passau:
+    asn: 65040
+    routerId: 10.0.0.41
+    neighbors:
+      - name: muenchen
+        peerAs: 65034
+        communitiesAddTags:
+          - 4097
+      - name: regensburg
+        peerAs: 65041
+        communitiesAddTags:
+          - 4097
+  regensburg:
+    asn: 65041
+    routerId: 10.0.0.42
+    neighbors:
+      - name: muenchen
+        peerAs: 65034
+        communitiesAddTags:
+          - 4097
+      - name: nuernberg
+        peerAs: 65037
+        communitiesAddTags:
+          - 4097
+      - name: passau
+        peerAs: 65040
+        communitiesAddTags:
+          - 4097
+  norden:
+    asn: 65036
+    routerId: 10.0.0.37
+    neighbors:
+      - name: wesel
+        peerAs: 65048
+        communitiesAddTags:
+          - 3329
+      - name: oldenburg
+        peerAs: 65038
+        communitiesAddTags:
+          - 3329

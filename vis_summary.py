@@ -69,7 +69,7 @@ def plot_min_max_avg(ax, series, color, title, ylabel, ylim=None):
                     color=color, alpha=0.3, label="mean min–max")
 
     ax.set_title(title, fontsize=13, weight="bold")
-    ax.set_xlabel("Time in Seconds", fontsize=11)
+    ax.set_xlabel("Time in seconds", fontsize=11)
     ax.set_ylabel(ylabel, fontsize=11)
     ax.grid(True, alpha=0.3)
     ax.legend()

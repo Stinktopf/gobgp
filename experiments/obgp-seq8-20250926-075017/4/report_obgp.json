@@ -1,0 +1,285 @@
+{
+  "generated": "2025-09-26T07:58:12.761642",
+  "namespace": "gobgp-lab",
+  "experiment_dir": "experiments\\obgp-seq8-20250926-075017\\4",
+  "sequence": [
+    {
+      "gate": "start_watchers",
+      "watching": [
+        "frankfurt-88d5bc9cd-nltrg",
+        "fulda-6988b4b4bd-9w82t"
+      ]
+    },
+    {
+      "action": {
+        "pod": "aachen-77c77cdb74-8j2lf",
+        "method": "POST",
+        "path": "/noise/start",
+        "result": {
+          "status": 202,
+          "response": {
+            "config": {
+              "PREFIX_BLOCK": 0,
+              "NUMBER_OF_BLOCKS": 1,
+              "rate": 2.0,
+              "lifetime": 60.0,
+              "jitter": 0.5,
+              "max_active": 90
+            }
+          }
+        }
+      }
+    },
+    {
+      "wait": 30
+    },
+    {
+      "action": {
+        "pod": "aachen-77c77cdb74-8j2lf",
+        "method": "POST",
+        "path": "/noise/pause",
+        "result": {
+          "status": 200,
+          "response": {
+            "paused": true
+          }
+        }
+      }
+    },
+    {
+      "wait": 30
+    },
+    {
+      "gate": "mark_start",
+      "ts": 1758887882.080685
+    },
+    {
+      "wait": 5
+    },
+    {
+      "action": {
+        "pod": "aachen-77c77cdb74-8j2lf",
+        "method": "POST",
+        "path": "/noise/stop",
+        "result": {
+          "status": 200,
+          "response": {
+            "cleaned_count": 60
+          }
+        }
+      }
+    },
+    {
+      "gate": "wait_for_drain",
+      "drained": true,
+      "stable_rounds": 3
+    },
+    {
+      "gate": "mark_end",
+      "ts": 1758887892.7467313
+    }
+  ],
+  "observers": {
+    "frankfurt-88d5bc9cd-nltrg": {
+      "series": [
+        {
+          "ts": 1758887882.1893668,
+          "ts_local": "26.09.2025 07:58:02",
+          "num_paths": 114,
+          "num_destinations": 60,
+          "path_len_min": 1,
+          "path_len_avg": 1.4912280701754386,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1758887883.2310076,
+          "ts_local": "26.09.2025 07:58:03",
+          "num_paths": 114,
+          "num_destinations": 60,
+          "path_len_min": 1,
+          "path_len_avg": 1.4912280701754386,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1758887884.3017628,
+          "ts_local": "26.09.2025 07:58:04",
+          "num_paths": 114,
+          "num_destinations": 60,
+          "path_len_min": 1,
+          "path_len_avg": 1.4912280701754386,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1758887885.3532338,
+          "ts_local": "26.09.2025 07:58:05",
+          "num_paths": 114,
+          "num_destinations": 60,
+          "path_len_min": 1,
+          "path_len_avg": 1.4912280701754386,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1758887886.4059224,
+          "ts_local": "26.09.2025 07:58:06",
+          "num_paths": 114,
+          "num_destinations": 60,
+          "path_len_min": 1,
+          "path_len_avg": 1.4912280701754386,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1758887887.4406643,
+          "ts_local": "26.09.2025 07:58:07",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1758887888.4611175,
+          "ts_local": "26.09.2025 07:58:08",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1758887889.478831,
+          "ts_local": "26.09.2025 07:58:09",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1758887890.5065155,
+          "ts_local": "26.09.2025 07:58:10",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1758887891.5447798,
+          "ts_local": "26.09.2025 07:58:11",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        }
+      ],
+      "drained": true,
+      "saw_nonzero": true,
+      "time_to_zero": 68.66044282913208,
+      "last_sample_ts": 1758887892.5453236,
+      "reason": "stopped_by_gate"
+    },
+    "fulda-6988b4b4bd-9w82t": {
+      "series": [
+        {
+          "ts": 1758887882.3898935,
+          "ts_local": "26.09.2025 07:58:02",
+          "num_paths": 114,
+          "num_destinations": 60,
+          "path_len_min": 1,
+          "path_len_avg": 1.5087719298245614,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1758887883.424744,
+          "ts_local": "26.09.2025 07:58:03",
+          "num_paths": 114,
+          "num_destinations": 60,
+          "path_len_min": 1,
+          "path_len_avg": 1.5087719298245614,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1758887884.4625695,
+          "ts_local": "26.09.2025 07:58:04",
+          "num_paths": 114,
+          "num_destinations": 60,
+          "path_len_min": 1,
+          "path_len_avg": 1.5087719298245614,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1758887885.5072687,
+          "ts_local": "26.09.2025 07:58:05",
+          "num_paths": 114,
+          "num_destinations": 60,
+          "path_len_min": 1,
+          "path_len_avg": 1.5087719298245614,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1758887886.5761707,
+          "ts_local": "26.09.2025 07:58:06",
+          "num_paths": 114,
+          "num_destinations": 60,
+          "path_len_min": 1,
+          "path_len_avg": 1.5087719298245614,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1758887887.5931394,
+          "ts_local": "26.09.2025 07:58:07",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1758887888.631252,
+          "ts_local": "26.09.2025 07:58:08",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1758887889.6618204,
+          "ts_local": "26.09.2025 07:58:09",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1758887890.7074785,
+          "ts_local": "26.09.2025 07:58:10",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1758887891.7461002,
+          "ts_local": "26.09.2025 07:58:11",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        }
+      ],
+      "drained": true,
+      "saw_nonzero": true,
+      "time_to_zero": 68.29839897155762,
+      "last_sample_ts": 1758887892.7467313,
+      "reason": "stopped_by_gate"
+    }
+  },
+  "drain_parameters": {
+    "stable_samples": 3
+  }
+}

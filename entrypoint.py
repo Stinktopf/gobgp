@@ -352,49 +352,53 @@ def write_gobgp_config_file() -> None:
 
     import_policy_names = []
 
-    if GOBGP_OPERA_ENABLED:
-        for name, data in snapshot.items():
-            ip_addr = data.get("ip")
-            if not ip_addr:
-                continue
-            lp = data.get("localPref")
-            tags = data.get("tags", [])
-            if not lp and not tags:
-                continue
+    for name, data in snapshot.items():
+        ip_addr = data.get("ip")
+        if not ip_addr:
+            continue
 
-            ns_name = f"from-nh-{ip_addr.replace('.', '-')}"
-            pol_name = f"policy-{ip_addr.replace('.', '-')}"
-            import_policy_names.append(f'"{pol_name}"')
+        lp = data.get("localPref")
+        tags = data.get("tags", []) if GOBGP_OPERA_ENABLED else []
 
+        if not lp and not tags:
+            continue
+
+        ns_name = f"from-nh-{ip_addr.replace('.', '-')}"
+        pol_name = f"policy-{ip_addr.replace('.', '-')}"
+        import_policy_names.append(f'"{pol_name}"')
+
+        lines += [
+            "[[defined-sets.neighbor-sets]]",
+            f'  neighbor-set-name = "{ns_name}"',
+            f'  neighbor-info-list = ["{ip_addr}"]',
+            "",
+            "[[policy-definitions]]",
+            f'  name = "{pol_name}"',
+            "  [[policy-definitions.statements]]",
+            f'    name = "set-attrs-{ip_addr}"',
+            "    [policy-definitions.statements.conditions.match-neighbor-set]",
+            f'      neighbor-set = "{ns_name}"',
+            '      match-set-options = "any"',
+            "    [policy-definitions.statements.actions]",
+            '      route-disposition = "accept-route"',
+        ]
+
+        if lp:
             lines += [
-                "[[defined-sets.neighbor-sets]]",
-                f'  neighbor-set-name = "{ns_name}"',
-                f'  neighbor-info-list = ["{ip_addr}"]',
-                "",
-                "[[policy-definitions]]",
-                f'  name = "{pol_name}"',
-                "  [[policy-definitions.statements]]",
-                f'    name = "set-attrs-{ip_addr}"',
-                "    [policy-definitions.statements.conditions.match-neighbor-set]",
-                f'      neighbor-set = "{ns_name}"',
-                '      match-set-options = "any"',
-                "    [policy-definitions.statements.actions]",
-                '      route-disposition = "accept-route"',
+                "    [policy-definitions.statements.actions.bgp-actions]",
+                f"      set-local-pref = {int(lp)}",
             ]
-            if lp:
-                lines += [
-                    "    [policy-definitions.statements.actions.bgp-actions]",
-                    f"      set-local-pref = {int(lp)}",
-                ]
-            if tags:
-                communities_literal = ", ".join([f'"{LOCAL_ASN}:{tag}"' for tag in sorted(tags)])
-                lines += [
-                    "    [policy-definitions.statements.actions.bgp-actions.set-community]",
-                    '      options = "add"',
-                    "      [policy-definitions.statements.actions.bgp-actions.set-community.set-community-method]",
-                    f"        communities-list = [{communities_literal}]",
-                ]
-            lines.append("")
+
+        if tags:
+            communities_literal = ", ".join([f'"{LOCAL_ASN}:{tag}"' for tag in sorted(tags)])
+            lines += [
+                "    [policy-definitions.statements.actions.bgp-actions.set-community]",
+                '      options = "add"',
+                "      [policy-definitions.statements.actions.bgp-actions.set-community.set-community-method]",
+                f"        communities-list = [{communities_literal}]",
+            ]
+
+        lines.append("")
 
     if import_policy_names:
         lines += [

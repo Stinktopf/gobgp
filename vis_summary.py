@@ -69,7 +69,7 @@ def plot_min_max_avg(ax, series, color, title, ylabel, ylim=None):
                     color=color, alpha=0.3, label="mean min–max")
 
     ax.set_title(title, fontsize=13, weight="bold")
-    ax.set_xlabel("Sample index", fontsize=11)
+    ax.set_xlabel("Time in Seconds", fontsize=11)
     ax.set_ylabel(ylabel, fontsize=11)
     ax.grid(True, alpha=0.3)
     ax.legend()
@@ -85,8 +85,8 @@ if __name__ == "__main__":
     plots = [
         ("oBGP", data_obgp, "num_paths", "oBGP – Routes", "Number of routes"),
         ("BGP", data_bgp, "num_paths", "BGP – Routes", "Number of routes"),
-        ("oBGP", data_obgp, "num_destinations", "oBGP – Destinations", "Number of destinations"),
-        ("BGP", data_bgp, "num_destinations", "BGP – Destinations", "Number of destinations"),
+        ("oBGP", data_obgp, "num_destinations", "oBGP – Prefixes", "Number of prefixes"),
+        ("BGP", data_bgp, "num_destinations", "BGP – Prefixes", "Number of prefixes"),
         ("oBGP", data_obgp, "path_len_min", "oBGP – Min Path Length", "Path length"),
         ("BGP", data_bgp, "path_len_min", "BGP – Min Path Length", "Path length"),
         ("oBGP", data_obgp, "path_len_max", "oBGP – Max Path Length", "Path length"),

@@ -194,7 +194,7 @@ func IsBetterOperaPath(newPath, existingPath *Path) bool {
 			newASNumber := newASList[asIndex]
 			existingASNumber := existingASList[asIndex]
 			if newASNumber != existingASNumber {
-				return newASNumber > existingASNumber
+				return newASNumber < existingASNumber
 			}
 		}
 	}

@@ -1485,7 +1485,7 @@ func (s *BgpServer) propagateOperaUpdates(
 		return
 	}
 
-	const operaDebug = false
+	const operaDebug = true
 
 	toID := peer.ID()
 	neigh := net.ParseIP(peer.fsm.pConf.Config.NeighborAddress)
@@ -1577,11 +1577,8 @@ func (s *BgpServer) propagateOperaUpdates(
 				desired = append(desired, fp)
 				filteredKeys[fp.GetLocalKey()] = struct{}{}
 			} else if operaDebug {
-				pfx := p.GetPrefix()
-				asp := asPath(p)
-				typ := table.GetOperaType(p)
 				fmt.Printf("[OPERA] FILTERED ANNOUNCEMENT OF ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n",
-					pfx, asp, toID, typ)
+					p.GetPrefix(), asPath(p), toID, table.GetOperaType(p))
 			}
 		}
 
@@ -1596,20 +1593,40 @@ func (s *BgpServer) propagateOperaUpdates(
 			}
 		}
 
-		announces := make([]*table.Path, 0, len(desired))
+		// Deduplicate announces
+		aseen := make(map[table.PathLocalKey]struct{})
+		uniqAnnounces := make([]*table.Path, 0, len(desired))
 		for _, p := range desired {
-			if peer.hasPathAlreadyBeenSent(p) {
+			if _, ok := aseen[p.GetLocalKey()]; ok {
 				continue
 			}
-			announces = append(announces, p)
+			aseen[p.GetLocalKey()] = struct{}{}
+			if !peer.hasPathAlreadyBeenSent(p) {
+				uniqAnnounces = append(uniqAnnounces, p)
+			}
 		}
+		announces := uniqAnnounces
+
+		// Deduplicate withdraws
+		wseen := make(map[table.PathLocalKey]struct{})
+		uniqWithdraws := make([]*table.Path, 0, len(withdraws))
+		for _, w := range withdraws {
+			if _, ok := wseen[w.GetLocalKey()]; ok {
+				continue
+			}
+			if _, conflict := aseen[w.GetLocalKey()]; conflict {
+				// Announce wins over withdraw
+				continue
+			}
+			wseen[w.GetLocalKey()] = struct{}{}
+			uniqWithdraws = append(uniqWithdraws, w)
+		}
+		withdraws = uniqWithdraws
 
 		shouldAdv := needToAdvertise(peer)
 		toSend := make([]*table.Path, 0, len(withdraws)+len(announces))
-		if len(withdraws) > 0 {
-			toSend = append(toSend, withdraws...)
-		}
-		if shouldAdv && len(announces) > 0 {
+		toSend = append(toSend, withdraws...)
+		if shouldAdv {
 			toSend = append(toSend, announces...)
 		}
 

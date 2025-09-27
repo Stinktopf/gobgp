@@ -1463,21 +1463,9 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 	}
 }
 
-func asPath(p *table.Path) string {
-	l := p.GetAsList()
-	if len(l) == 0 {
-		return "<EMPTY>"
-	}
-	s := make([]string, len(l))
-	for i, as := range l {
-		s[i] = fmt.Sprintf("%d", as)
-	}
-	return strings.Join(s, " ")
-}
-
 func (s *BgpServer) propagateOperaUpdates(
 	rib *table.TableManager,
-	peer *peer,
+	nbr *peer,
 	dsts []*table.Update,
 	f bgp.Family,
 ) {
@@ -1487,17 +1475,63 @@ func (s *BgpServer) propagateOperaUpdates(
 
 	const operaDebug = true
 
-	toID := peer.ID()
-	neigh := net.ParseIP(peer.fsm.pConf.Config.NeighborAddress)
+	// ---- helpers ----
+	asPath := func(p *table.Path) string {
+		if p == nil {
+			return "<EMPTY>"
+		}
+		l := p.GetAsList()
+		if len(l) == 0 {
+			return "<EMPTY>"
+		}
+		out := make([]string, len(l))
+		for i, asn := range l {
+			out[i] = fmt.Sprintf("%d", asn)
+		}
+		return strings.Join(out, " ")
+	}
+	containsPeerAS := func(p *table.Path, asn uint32) bool {
+		for _, a := range p.GetAsList() {
+			if a == asn {
+				return true
+			}
+		}
+		return false
+	}
+	getPrefix := func(d *table.Update) string {
+		if len(d.KnownPathList) > 0 {
+			return d.KnownPathList[0].GetPrefix() // Prefix ist string
+		}
+		if len(d.OldKnownPathList) > 0 {
+			return d.OldKnownPathList[0].GetPrefix()
+		}
+		return ""
+	}
+	peerRouterID := func(p *peer) string {
+		// Router-ID der Gegenstelle, Fallback: p.ID()
+		if p != nil && p.fsm != nil {
+			p.fsm.lock.RLock()
+			defer p.fsm.lock.RUnlock()
+			if p.fsm.peerInfo != nil && p.fsm.peerInfo.ID != nil {
+				return p.fsm.peerInfo.ID.String()
+			}
+		}
+		return p.ID()
+	}
+
+	toID := peerRouterID(nbr)
+	neigh := net.ParseIP(nbr.fsm.pConf.Config.NeighborAddress)
+	peerAS := nbr.AS()
 
 	for _, d := range dsts {
-		limit := int(peer.getAddPathSendMax(f))
+		limit := int(nbr.getAddPathSendMax(f))
 		if limit == 0 || limit > 3 {
 			limit = 3
 		}
 
 		desiredPre := make([]*table.Path, 0, 3)
 
+		// ---- Auswahl gewünschter Pfade (nur Kandidaten, keine Policy) ----
 		if table.IsOperaBitfieldMode() {
 			var std, hb, ll *table.Path
 			var hbCap, llCap uint8
@@ -1507,14 +1541,18 @@ func (s *BgpServer) propagateOperaUpdates(
 				if p.IsWithdraw || p.IsNexthopInvalid {
 					continue
 				}
+				// nicht an denselben Nachbarn zurück
 				if src := p.GetSource(); src != nil && src.Address != nil && neigh != nil && src.Address.Equal(neigh) {
+					continue
+				}
+				// AS-Loop vermeiden (Peer-AS im AS_PATH)
+				if containsPeerAS(p, peerAS) {
 					continue
 				}
 
 				if std == nil || table.IsBetterOperaPath(p, std) {
 					std = p
 				}
-
 				if ok, capExp, sumLat := table.GetBitfieldMetrics(p); ok {
 					if hb == nil ||
 						capExp > hbCap ||
@@ -1555,13 +1593,17 @@ func (s *BgpServer) propagateOperaUpdates(
 				if len(best) == limit || p.IsWithdraw || p.IsNexthopInvalid {
 					continue
 				}
+				// nicht an denselben Nachbarn zurück
 				if src := p.GetSource(); src != nil && src.Address != nil && neigh != nil && src.Address.Equal(neigh) {
 					continue
 				}
+				// AS-Loop vermeiden (Peer-AS im AS_PATH)
+				if containsPeerAS(p, peerAS) {
+					continue
+				}
+
 				cls := table.GetOperaType(p)
-				if _, ok := best[cls]; !ok {
-					best[cls] = p
-				} else if table.IsBetterOperaPath(p, best[cls]) {
+				if q, ok := best[cls]; !ok || table.IsBetterOperaPath(p, q) {
 					best[cls] = p
 				}
 			}
@@ -1570,10 +1612,12 @@ func (s *BgpServer) propagateOperaUpdates(
 			}
 		}
 
+		// ---- Export-Policy anwenden (auf einem CLONE!) ----
 		desired := make([]*table.Path, 0, len(desiredPre))
 		filteredKeys := make(map[table.PathLocalKey]struct{}, len(desiredPre))
 		for _, p := range desiredPre {
-			if fp := s.filterpath(peer, p, nil); fp != nil {
+			pc := p.Clone(false) // nicht global mutieren
+			if fp := s.filterpath(nbr, pc, nil); fp != nil {
 				desired = append(desired, fp)
 				filteredKeys[fp.GetLocalKey()] = struct{}{}
 			} else if operaDebug {
@@ -1582,18 +1626,22 @@ func (s *BgpServer) propagateOperaUpdates(
 			}
 		}
 
+		// ---- Withdraws ermitteln ----
 		withdraws := make([]*table.Path, 0)
 		for _, old := range d.OldKnownPathList {
-			if !peer.hasPathAlreadyBeenSent(old) {
+			if !nbr.hasPathAlreadyBeenSent(old) {
 				continue
 			}
-			if _, ok := filteredKeys[old.GetLocalKey()]; !ok {
-				w := old.Clone(true)
-				withdraws = append(withdraws, w)
+			if src := old.GetSource(); src != nil && neigh != nil && src.Address.Equal(neigh) {
+				continue
 			}
+			if _, ok := filteredKeys[old.GetLocalKey()]; ok {
+				continue
+			}
+			withdraws = append(withdraws, old.Clone(true))
 		}
 
-		// Deduplicate announces
+		// ---- Announce de-dupen & nur neue senden ----
 		aseen := make(map[table.PathLocalKey]struct{})
 		uniqAnnounces := make([]*table.Path, 0, len(desired))
 		for _, p := range desired {
@@ -1601,13 +1649,13 @@ func (s *BgpServer) propagateOperaUpdates(
 				continue
 			}
 			aseen[p.GetLocalKey()] = struct{}{}
-			if !peer.hasPathAlreadyBeenSent(p) {
+			if !nbr.hasPathAlreadyBeenSent(p) {
 				uniqAnnounces = append(uniqAnnounces, p)
 			}
 		}
 		announces := uniqAnnounces
 
-		// Deduplicate withdraws
+		// ---- Withdraws de-dupen & Announce gewinnt ----
 		wseen := make(map[table.PathLocalKey]struct{})
 		uniqWithdraws := make([]*table.Path, 0, len(withdraws))
 		for _, w := range withdraws {
@@ -1615,7 +1663,10 @@ func (s *BgpServer) propagateOperaUpdates(
 				continue
 			}
 			if _, conflict := aseen[w.GetLocalKey()]; conflict {
-				// Announce wins over withdraw
+				if operaDebug {
+					fmt.Printf("[OPERA] SKIPPED WITHDRAW FOR %s VIA AS %s (announce wins)\n",
+						w.GetPrefix(), asPath(w))
+				}
 				continue
 			}
 			wseen[w.GetLocalKey()] = struct{}{}
@@ -1623,7 +1674,8 @@ func (s *BgpServer) propagateOperaUpdates(
 		}
 		withdraws = uniqWithdraws
 
-		shouldAdv := needToAdvertise(peer)
+		// ---- Senden ----
+		shouldAdv := needToAdvertise(nbr)
 		toSend := make([]*table.Path, 0, len(withdraws)+len(announces))
 		toSend = append(toSend, withdraws...)
 		if shouldAdv {
@@ -1631,9 +1683,14 @@ func (s *BgpServer) propagateOperaUpdates(
 		}
 
 		if len(toSend) > 0 {
-			sendfsmOutgoingMsg(peer, toSend, nil, false)
+			if operaDebug {
+				fmt.Printf("[OPERA] ABOUT TO SEND for %s: %d withdraw(s), %d announce(s)\n",
+					getPrefix(d), len(withdraws), len(announces))
+			}
+			sendfsmOutgoingMsg(nbr, toSend, nil, false)
+
 			for _, w := range withdraws {
-				peer.updateRoutes(w)
+				nbr.updateRoutes(w)
 				if operaDebug {
 					fmt.Printf("[OPERA] WITHDRAWN ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n",
 						w.GetPrefix(), asPath(w), toID, table.GetOperaType(w))
@@ -1641,7 +1698,7 @@ func (s *BgpServer) propagateOperaUpdates(
 			}
 			if shouldAdv {
 				for _, p := range announces {
-					peer.updateRoutes(p)
+					nbr.updateRoutes(p)
 					if operaDebug {
 						fmt.Printf("[OPERA] ANNOUNCED ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n",
 							p.GetPrefix(), asPath(p), toID, table.GetOperaType(p))
@@ -1650,6 +1707,7 @@ func (s *BgpServer) propagateOperaUpdates(
 			}
 		}
 
+		// ---- Cleanup ----
 		if len(d.KnownPathList) > 0 {
 			if dest := rib.GetDestination(d.KnownPathList[0]); dest != nil {
 				keep := make(map[table.PathLocalKey]struct{}, len(d.KnownPathList))

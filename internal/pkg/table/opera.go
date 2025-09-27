@@ -270,3 +270,15 @@ func humanCap(exp uint8) string {
 		return fmt.Sprintf("%.1fMbps", mbps)
 	}
 }
+
+func AsPath(p *Path) string {
+	l := p.GetAsList()
+	if len(l) == 0 {
+		return "<EMPTY>"
+	}
+	s := make([]string, len(l))
+	for i, as := range l {
+		s[i] = fmt.Sprintf("%d", as)
+	}
+	return strings.Join(s, " ")
+}

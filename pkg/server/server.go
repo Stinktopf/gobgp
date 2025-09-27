@@ -1629,7 +1629,7 @@ func (s *BgpServer) propagateOperaUpdates(
 			if !nbr.hasPathAlreadyBeenSent(old) {
 				continue
 			}
-			if src := old.GetSource(); src != nil && neigh != nil && src.Address.Equal(neigh) {
+			if src := old.GetSource(); src != nil && src.Address != nil && neigh != nil && src.Address.Equal(neigh) {
 				continue
 			}
 			if _, ok := filteredKeys[old.GetLocalKey()]; ok {
@@ -1651,13 +1651,18 @@ func (s *BgpServer) propagateOperaUpdates(
 		}
 		announces := uniqAnnounces
 
+		announceKeys := make(map[table.PathLocalKey]struct{}, len(announces))
+		for _, p := range announces {
+			announceKeys[p.GetLocalKey()] = struct{}{}
+		}
+
 		wseen := make(map[table.PathLocalKey]struct{})
 		uniqWithdraws := make([]*table.Path, 0, len(withdraws))
 		for _, w := range withdraws {
 			if _, ok := wseen[w.GetLocalKey()]; ok {
 				continue
 			}
-			if _, conflict := aseen[w.GetLocalKey()]; conflict {
+			if _, conflict := announceKeys[w.GetLocalKey()]; conflict {
 				if table.IsOperaDebug() {
 					fmt.Printf("[OPERA] SKIPPED WITHDRAW FOR %s VIA AS %s (announce wins)\n",
 						w.GetPrefix(), asPath(w))

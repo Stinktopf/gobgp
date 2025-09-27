@@ -49,6 +49,16 @@ func InitOperaFromEnv() {
 	}
 }
 
+var operaDebug = false
+
+func SetOperaDebug(enabled bool) {
+	operaDebug = enabled
+}
+
+func IsOperaDebug() bool {
+	return operaDebug
+}
+
 func SetOperaMode(mode OperaMode) {
 	operaConfig.mode = mode
 }

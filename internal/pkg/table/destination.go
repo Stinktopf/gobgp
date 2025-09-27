@@ -251,29 +251,39 @@ func (dest *Destination) Calculate(logger log.Logger, newPath *Path) *Update {
 	copy(oldKnownPathList, dest.knownPathList)
 
 	if newPath.IsWithdraw {
-		fmt.Printf("[OPERA] INCOMING WITHDRAW OF ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
-			newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
+		if IsOperaDebug() {
+			fmt.Printf("[OPERA] INCOMING WITHDRAW OF ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
+				newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
+		}
 
 		p := dest.explicitWithdraw(logger, newPath)
 		if p != nil && newPath.IsDropped() {
 			if id := p.GetNlri().PathLocalIdentifier(); id != 0 {
 				dest.localIdMap.Unflag(uint(id))
-				fmt.Printf("[OPERA] WITHDRAWN PATH TO %s RELEASED IDENTIFIER %d\n",
-					newPath.GetPrefix(), id)
+				if IsOperaDebug() {
+					fmt.Printf("[OPERA] WITHDRAWN PATH TO %s RELEASED IDENTIFIER %d\n",
+						newPath.GetPrefix(), id)
+				}
 			}
 		}
 	} else {
-		fmt.Printf("[OPERA] INCOMING ANNOUNCEMENT OF ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
-			newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
+		if IsOperaDebug() {
+			fmt.Printf("[OPERA] INCOMING ANNOUNCEMENT OF ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
+				newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
+		}
 
 		dest.implicitWithdraw(logger, newPath)
 		if OperaImportAccept(dest.knownPathList, newPath) {
-			fmt.Printf("[OPERA] ACCEPTED NEW ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
-				newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
+			if IsOperaDebug() {
+				fmt.Printf("[OPERA] ACCEPTED NEW ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
+					newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
+			}
 			dest.insertSort(newPath)
 		} else {
-			fmt.Printf("[OPERA] REJECTED NEW ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
-				newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
+			if IsOperaDebug() {
+				fmt.Printf("[OPERA] REJECTED NEW ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
+					newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
+			}
 		}
 	}
 

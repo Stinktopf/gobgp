@@ -1516,7 +1516,12 @@ func (s *BgpServer) propagateOperaUpdates(
 	}
 
 	toID := peerRouterID(nbr)
-	neigh := net.ParseIP(nbr.fsm.pConf.Config.NeighborAddress)
+
+	nbr.fsm.lock.RLock()
+	neighStr := nbr.fsm.pConf.Config.NeighborAddress
+	nbr.fsm.lock.RUnlock()
+	neigh := net.ParseIP(neighStr)
+
 	peerAS := nbr.AS()
 
 	for _, d := range dsts {
@@ -1536,11 +1541,9 @@ func (s *BgpServer) propagateOperaUpdates(
 				if p.IsWithdraw || p.IsNexthopInvalid {
 					continue
 				}
-
 				if src := p.GetSource(); src != nil && src.Address != nil && neigh != nil && src.Address.Equal(neigh) {
 					continue
 				}
-
 				if containsPeerAS(p, peerAS) {
 					continue
 				}
@@ -1585,14 +1588,12 @@ func (s *BgpServer) propagateOperaUpdates(
 		} else {
 			best := map[string]*table.Path{}
 			for _, p := range d.KnownPathList {
-				if len(best) == limit || p.IsWithdraw || p.IsNexthopInvalid {
+				if p.IsWithdraw || p.IsNexthopInvalid {
 					continue
 				}
-
 				if src := p.GetSource(); src != nil && src.Address != nil && neigh != nil && src.Address.Equal(neigh) {
 					continue
 				}
-
 				if containsPeerAS(p, peerAS) {
 					continue
 				}
@@ -1604,6 +1605,9 @@ func (s *BgpServer) propagateOperaUpdates(
 			}
 			for _, p := range best {
 				desiredPre = append(desiredPre, p)
+			}
+			if len(desiredPre) > limit {
+				desiredPre = desiredPre[:limit]
 			}
 		}
 

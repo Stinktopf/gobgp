@@ -272,12 +272,12 @@ func (dest *Destination) Calculate(logger log.Logger, newPath *Path) *Update {
 				newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
 		}
 
-		dest.implicitWithdraw(logger, newPath)
 		if OperaImportAccept(dest.knownPathList, newPath) {
 			if IsOperaDebug() {
 				fmt.Printf("[OPERA] ACCEPTED NEW ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
 					newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
 			}
+			dest.implicitWithdraw(logger, newPath)
 			dest.insertSort(newPath)
 		} else {
 			if IsOperaDebug() {

@@ -1624,16 +1624,17 @@ func (s *BgpServer) propagateOperaUpdates(
 			}
 		}
 
+		shouldAdv := needToAdvertise(nbr)
+
 		withdraws := make([]*table.Path, 0)
 		for _, old := range d.OldKnownPathList {
 			if !nbr.hasPathAlreadyBeenSent(old) {
 				continue
 			}
-			if src := old.GetSource(); src != nil && src.Address != nil && neigh != nil && src.Address.Equal(neigh) {
-				continue
-			}
-			if _, ok := filteredKeys[old.GetLocalKey()]; ok {
-				continue
+			if shouldAdv {
+				if _, ok := filteredKeys[old.GetLocalKey()]; ok {
+					continue
+				}
 			}
 			withdraws = append(withdraws, old.Clone(true))
 		}
@@ -1662,19 +1663,20 @@ func (s *BgpServer) propagateOperaUpdates(
 			if _, ok := wseen[w.GetLocalKey()]; ok {
 				continue
 			}
-			if _, conflict := announceKeys[w.GetLocalKey()]; conflict {
-				if table.IsOperaDebug() {
-					fmt.Printf("[OPERA] SKIPPED WITHDRAW FOR %s VIA AS %s (announce wins)\n",
-						w.GetPrefix(), asPath(w))
+			if shouldAdv {
+				if _, conflict := announceKeys[w.GetLocalKey()]; conflict {
+					if table.IsOperaDebug() {
+						fmt.Printf("[OPERA] SKIPPED WITHDRAW FOR %s VIA AS %s (announce wins)\n",
+							w.GetPrefix(), asPath(w))
+					}
+					continue
 				}
-				continue
 			}
 			wseen[w.GetLocalKey()] = struct{}{}
 			uniqWithdraws = append(uniqWithdraws, w)
 		}
 		withdraws = uniqWithdraws
 
-		shouldAdv := needToAdvertise(nbr)
 		toSend := make([]*table.Path, 0, len(withdraws)+len(announces))
 		toSend = append(toSend, withdraws...)
 		if shouldAdv {

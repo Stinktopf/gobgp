@@ -557,46 +557,46 @@ def noise_worker():
 
 
 class RibAddRequest(BaseModel):
-    prefix: str = Field(..., example="203.0.113.0/24", description="CIDR prefix to add")
-    next_hop: str = Field(..., example="10.0.0.10", description="IPv4 next hop address")
-    as_path: Optional[List[int]] = Field(None, example=[65010, 65020], description="Ordered list of AS numbers")
-    community: Optional[str] = Field(None, example="65000:100", description="Single community value in NNNN:NNNN format")
-    identifier: Optional[int] = Field(None, example=123456, description="Path identifier used to correlate add and delete")
+    prefix: str = Field(..., json_schema_extra="203.0.113.0/24", description="CIDR prefix to add")
+    next_hop: str = Field(..., json_schema_extra="10.0.0.10", description="IPv4 next hop address")
+    as_path: Optional[List[int]] = Field(None, json_schema_extra=[65010, 65020], description="Ordered list of AS numbers")
+    community: Optional[str] = Field(None, json_schema_extra="65000:100", description="Single community value in NNNN:NNNN format")
+    identifier: Optional[int] = Field(None, json_schema_extra=123456, description="Path identifier used to correlate add and delete")
 
 
 class RibAddResponse(BaseModel):
-    uuid: List[int] = Field(..., example=[1, 2, 3, 4], description="Opaque identifier returned by GoBGP as byte values")
+    uuid: List[int] = Field(..., json_schema_extra=[1, 2, 3, 4], description="Opaque identifier returned by GoBGP as byte values")
 
 
 class RibDelRequest(BaseModel):
-    prefix: str = Field(..., example="203.0.113.0/24", description="CIDR prefix to delete")
-    identifier: Optional[int] = Field(None, example=123456, description="Path identifier to delete a specific injected path")
+    prefix: str = Field(..., json_schema_extra="203.0.113.0/24", description="CIDR prefix to delete")
+    identifier: Optional[int] = Field(None, json_schema_extra=123456, description="Path identifier to delete a specific injected path")
 
 class RibPathLengthResponse(BaseModel):
-    min: int = Field(..., example=1, description="Minimum AS path length in the table")
-    avg: float = Field(..., example=3.5, description="Average AS path length in the table")
-    max: int = Field(..., example=10, description="Maximum AS path length in the table")
+    min: int = Field(..., json_schema_extra=1, description="Minimum AS path length in the table")
+    avg: float = Field(..., json_schema_extra=3.5, description="Average AS path length in the table")
+    max: int = Field(..., json_schema_extra=10, description="Maximum AS path length in the table")
 
 
 class NoiseConfig(BaseModel):
-    PREFIX_BLOCK: int = Field(0, ge=0, example=0, description="Block index inside the full IPv4 space")
-    NUMBER_OF_BLOCKS: int = Field(1, ge=1, example=4, description="Total number of blocks used to shard the IPv4 space")
-    rate: float = Field(1.0, ge=0.01, example=20, description="Announcements per second")
-    lifetime: float = Field(60.0, ge=1.0, example=60, description="Lifetime in seconds for each announced prefix")
-    jitter: float = Field(0.5, ge=0.0, le=1.0, example=0.5, description="Relative lifetime variance from zero to one")
-    max_active: int = Field(250, ge=1, example=1000, description="Maximum number of active prefixes at any time")
+    PREFIX_BLOCK: int = Field(0, ge=0, json_schema_extra=0, description="Block index inside the full IPv4 space")
+    NUMBER_OF_BLOCKS: int = Field(1, ge=1, json_schema_extra=4, description="Total number of blocks used to shard the IPv4 space")
+    rate: float = Field(1.0, ge=0.01, json_schema_extra=20, description="Announcements per second")
+    lifetime: float = Field(60.0, ge=1.0, json_schema_extra=60, description="Lifetime in seconds for each announced prefix")
+    jitter: float = Field(0.5, ge=0.0, le=1.0, json_schema_extra=0.5, description="Relative lifetime variance from zero to one")
+    max_active: int = Field(250, ge=1, json_schema_extra=1000, description="Maximum number of active prefixes at any time")
 
 
 class PcapStartResponse(BaseModel):
-    filename: str = Field(..., example="bgp-1726312345.pcap", description="File name of the created capture")
+    filename: str = Field(..., json_schema_extra="bgp-1726312345.pcap", description="File name of the created capture")
 
 
 class PcapStopResponse(BaseModel):
-    filename: str = Field(..., example="bgp-1726312345.pcap", description="File name of the stopped capture")
+    filename: str = Field(..., json_schema_extra="bgp-1726312345.pcap", description="File name of the stopped capture")
 
 
 class PcapsListResponse(BaseModel):
-    files: List[str] = Field(..., example=["bgp-1726312345.pcap"], description="List of available capture files")
+    files: List[str] = Field(..., json_schema_extra=["bgp-1726312345.pcap"], description="List of available capture files")
 
 
 class NoiseStartResponse(BaseModel):
@@ -604,7 +604,7 @@ class NoiseStartResponse(BaseModel):
 
 
 class NoiseStopResponse(BaseModel):
-    cleaned_count: int = Field(..., example=987, description="Number of prefixes removed on stop")
+    cleaned_count: int = Field(..., json_schema_extra=987, description="Number of prefixes removed on stop")
 
 
 class NoisePauseResponse(BaseModel):
@@ -612,10 +612,10 @@ class NoisePauseResponse(BaseModel):
 
 
 class NoiseStatus(BaseModel):
-    running: bool = Field(..., example=True, description="Indicates whether noise generation thread is alive")
-    paused: bool = Field(..., example=False, description="Indicates whether noise generation is paused")
+    running: bool = Field(..., json_schema_extra=True, description="Indicates whether noise generation thread is alive")
+    paused: bool = Field(..., json_schema_extra=False, description="Indicates whether noise generation is paused")
     config: Optional[NoiseConfig] = None
-    active_count: int = Field(..., example=123, description="Number of active prefixes currently held")
+    active_count: int = Field(..., json_schema_extra=123, description="Number of active prefixes currently held")
 
 class NoiseDrainRequest(BaseModel):
     count: Optional[int] = Field(None, ge=1, description="Number of prefixes to withdraw")
@@ -630,20 +630,20 @@ class RibDelResult(BaseModel):
     prefix: str = Field(..., description="Prefix that was targeted")
     mode: str = Field(..., description="Deletion mode used")
     identifier: Optional[int] = Field(None, description="Identifier used for selection if present")
-    removed_owned: int = Field(..., example=3, description="Count of locally injected paths that were removed")
-    not_removed_foreign: int = Field(..., example=2, description="Count of paths not removed because they were learned from peers or CLI")
-    remaining_for_prefix: int = Field(..., example=2, description="Total remaining paths for this prefix after deletion")
+    removed_owned: int = Field(..., json_schema_extra=3, description="Count of locally injected paths that were removed")
+    not_removed_foreign: int = Field(..., json_schema_extra=2, description="Count of paths not removed because they were learned from peers or CLI")
+    remaining_for_prefix: int = Field(..., json_schema_extra=2, description="Total remaining paths for this prefix after deletion")
 
 
 class RibDelAllResult(BaseModel):
-    removed_owned: int = Field(..., example=1200, description="Total removed paths that were locally injected")
-    skipped_foreign: int = Field(..., example=340, description="Total paths skipped because they were learned from peers or CLI")
-    remaining_paths: int = Field(..., example=340, description="Total remaining paths after deletion of owned paths")
+    removed_owned: int = Field(..., json_schema_extra=1200, description="Total removed paths that were locally injected")
+    skipped_foreign: int = Field(..., json_schema_extra=340, description="Total paths skipped because they were learned from peers or CLI")
+    remaining_paths: int = Field(..., json_schema_extra=340, description="Total remaining paths after deletion of owned paths")
 
 
 class RibSummaryResponse(BaseModel):
-    num_destinations: int = Field(..., example=128, description="Number of destination prefixes in the IPv4 table")
-    num_paths: int = Field(..., example=256, description="Number of paths in the IPv4 table")
+    num_destinations: int = Field(..., json_schema_extra=128, description="Number of destination prefixes in the IPv4 table")
+    num_paths: int = Field(..., json_schema_extra=256, description="Number of paths in the IPv4 table")
 
 
 @asynccontextmanager

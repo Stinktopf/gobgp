@@ -235,6 +235,22 @@ func (dd *Destination) GetMultiBestPath(id string) []*Path {
 	return getMultiBestPath(id, dd.knownPathList)
 }
 
+func containsASSubsequence(haystack, needle []uint32) bool {
+	if len(needle) == 0 || len(needle) > len(haystack) {
+		return false
+	}
+outer:
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		for j := 0; j < len(needle); j++ {
+			if haystack[i+j] != needle[j] {
+				continue outer
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // Calculates best-path among known paths for this destination.
 //
 // Modifies destination's state related to stored paths. Removes withdrawn
@@ -245,6 +261,16 @@ func (dest *Destination) Calculate(logger log.Logger, newPath *Path) *Update {
 			return "local"
 		}
 		return pi.ID.String()
+	}
+	firstHopASN := func(p *Path) uint32 {
+		if p == nil {
+			return 0
+		}
+		as := p.GetAsList()
+		if len(as) == 0 {
+			return 0
+		}
+		return as[0]
 	}
 
 	oldKnownPathList := make([]*Path, len(dest.knownPathList))
@@ -257,6 +283,29 @@ func (dest *Destination) Calculate(logger log.Logger, newPath *Path) *Update {
 		}
 
 		p := dest.explicitWithdraw(logger, newPath)
+
+		// OBGP-style cascade on withdraw: drop any stored path that embeds the withdrawn label.
+		if IsOperaEnabled() && p != nil {
+			withdrawn := p.GetAsList()
+			if len(withdrawn) > 0 {
+				kept := dest.knownPathList[:0]
+				for _, other := range dest.knownPathList {
+					if other == p || other.IsWithdraw {
+						continue
+					}
+					if containsASSubsequence(other.GetAsList(), withdrawn) {
+						if IsOperaDebug() {
+							fmt.Printf("[OPERA] DROP SUPERSET PATH TO %s: %s contains withdrawn %s\n",
+								other.GetPrefix(), AsPath(other), AsPath(p))
+						}
+						continue
+					}
+					kept = append(kept, other)
+				}
+				dest.knownPathList = kept
+			}
+		}
+
 		if p != nil && newPath.IsDropped() {
 			if id := p.GetNlri().PathLocalIdentifier(); id != 0 {
 				dest.localIdMap.Unflag(uint(id))
@@ -273,17 +322,53 @@ func (dest *Destination) Calculate(logger log.Logger, newPath *Path) *Update {
 		}
 
 		dest.implicitWithdraw(logger, newPath)
+
 		if OperaImportAccept(dest.knownPathList, newPath) {
 			if IsOperaDebug() {
 				fmt.Printf("[OPERA] ACCEPTED NEW ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
 					newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
 			}
 			dest.insertSort(newPath)
-		} else {
-			if IsOperaDebug() {
-				fmt.Printf("[OPERA] REJECTED NEW ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
-					newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
+
+			// OBGP ordered import: after accepting q's route, eliminate stored routes
+			// that embed the *previous* label k_dq[old] (identified by first-hop AS q).
+			if IsOperaEnabled() {
+				qAS := firstHopASN(newPath)
+
+				// Find k_dq[old] from the snapshot taken before we modified knownPathList.
+				var oldQ *Path
+				for _, op := range oldKnownPathList {
+					if op != nil && !op.IsWithdraw && firstHopASN(op) == qAS {
+						oldQ = op
+						break
+					}
+				}
+
+				if oldQ != nil {
+					oldQAs := oldQ.GetAsList()
+					if len(oldQAs) > 0 {
+						filtered := dest.knownPathList[:0]
+						for _, other := range dest.knownPathList {
+							if other == newPath || other.IsWithdraw {
+								filtered = append(filtered, other)
+								continue
+							}
+							if containsASSubsequence(other.GetAsList(), oldQAs) {
+								if IsOperaDebug() {
+									fmt.Printf("[OPERA] DROP CONTAINS-OLD-Q %s: %s ⊃ old(q=%d):%s\n",
+										other.GetPrefix(), AsPath(other), qAS, AsPath(oldQ))
+								}
+								continue
+							}
+							filtered = append(filtered, other)
+						}
+						dest.knownPathList = filtered
+					}
+				}
 			}
+		} else if IsOperaDebug() {
+			fmt.Printf("[OPERA] REJECTED NEW ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
+				newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
 		}
 	}
 

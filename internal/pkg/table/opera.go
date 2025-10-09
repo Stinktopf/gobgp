@@ -178,36 +178,44 @@ func IsBetterOperaPath(newPath, existingPath *Path) bool {
 	if newPath == nil || existingPath == nil {
 		return false
 	}
+
 	newPathLength := newPath.GetAsPathLen()
 	existingPathLength := existingPath.GetAsPathLen()
+
 	if newPathLength != existingPathLength {
-		return newPathLength > existingPathLength
+		return newPathLength < existingPathLength
 	}
+
 	newAsPath := newPath.GetAsPath()
 	existingAsPath := existingPath.GetAsPath()
 	if newAsPath == nil || existingAsPath == nil {
 		return false
 	}
+
 	newSegments := newAsPath.Value
 	existingSegments := existingAsPath.Value
 	for segmentIndex := 0; segmentIndex < len(newSegments); segmentIndex++ {
 		if segmentIndex >= len(existingSegments) {
 			break
 		}
+
 		newASList := newSegments[segmentIndex].GetAS()
 		existingASList := existingSegments[segmentIndex].GetAS()
 		minLength := len(newASList)
 		if len(existingASList) < minLength {
 			minLength = len(existingASList)
 		}
+
 		for asIndex := 0; asIndex < minLength; asIndex++ {
 			newASNumber := newASList[asIndex]
 			existingASNumber := existingASList[asIndex]
+
 			if newASNumber != existingASNumber {
 				return newASNumber < existingASNumber
 			}
 		}
 	}
+
 	return false
 }
 

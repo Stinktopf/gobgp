@@ -1548,20 +1548,20 @@ func (s *BgpServer) propagateOperaUpdates(
 					continue
 				}
 
-				if std == nil || table.IsBetterOperaPath(p, std) {
+				if std == nil || table.IsBetterOperaPath(std, p) {
 					std = p
 				}
 				if ok, capExp, sumLat := table.GetBitfieldMetrics(p); ok {
 					if hb == nil ||
 						capExp > hbCap ||
 						(capExp == hbCap && sumLat < hbLat) ||
-						(capExp == hbCap && sumLat == hbLat && table.IsBetterOperaPath(p, hb)) {
+						(capExp == hbCap && sumLat == hbLat && table.IsBetterOperaPath(hb, p)) {
 						hb, hbCap, hbLat = p, capExp, sumLat
 					}
 					if ll == nil ||
 						sumLat < llLat ||
 						(sumLat == llLat && capExp > llCap) ||
-						(sumLat == llLat && capExp == llCap && table.IsBetterOperaPath(p, ll)) {
+						(sumLat == llLat && capExp == llCap && table.IsBetterOperaPath(ll, p)) {
 						ll, llCap, llLat = p, capExp, sumLat
 					}
 				}
@@ -1599,7 +1599,7 @@ func (s *BgpServer) propagateOperaUpdates(
 				}
 
 				cls := table.GetOperaType(p)
-				if q, ok := best[cls]; !ok || table.IsBetterOperaPath(p, q) {
+				if q, ok := best[cls]; !ok || table.IsBetterOperaPath(q, p) {
 					best[cls] = p
 				}
 			}

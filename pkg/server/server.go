@@ -1534,8 +1534,8 @@ func (s *BgpServer) propagateOperaUpdates(
 
 		if table.IsOperaBitfieldMode() {
 			var std, hb, ll *table.Path
-			var hbCap, llCap uint8
-			var hbLat, llLat uint32
+			var worstHbCap, worstLlCap uint8
+			var worstHbLat, worstLlLat uint32
 
 			for _, p := range d.KnownPathList {
 				if p.IsWithdraw || p.IsNexthopInvalid {
@@ -1551,18 +1551,20 @@ func (s *BgpServer) propagateOperaUpdates(
 				if std == nil || table.IsBetterOperaPath(std, p) {
 					std = p
 				}
+
 				if ok, capExp, sumLat := table.GetBitfieldMetrics(p); ok {
 					if hb == nil ||
-						capExp > hbCap ||
-						(capExp == hbCap && sumLat < hbLat) ||
-						(capExp == hbCap && sumLat == hbLat && table.IsBetterOperaPath(hb, p)) {
-						hb, hbCap, hbLat = p, capExp, sumLat
+						capExp < worstHbCap ||
+						(capExp == worstHbCap && sumLat > worstHbLat) ||
+						(capExp == worstHbCap && sumLat == worstHbLat && table.IsBetterOperaPath(hb, p)) {
+						hb, worstHbCap, worstHbLat = p, capExp, sumLat
 					}
+
 					if ll == nil ||
-						sumLat < llLat ||
-						(sumLat == llLat && capExp > llCap) ||
-						(sumLat == llLat && capExp == llCap && table.IsBetterOperaPath(ll, p)) {
-						ll, llCap, llLat = p, capExp, sumLat
+						sumLat > worstLlLat ||
+						(sumLat == worstLlLat && capExp < worstLlCap) ||
+						(sumLat == worstLlLat && capExp == worstLlCap && table.IsBetterOperaPath(ll, p)) {
+						ll, worstLlCap, worstLlLat = p, capExp, sumLat
 					}
 				}
 			}

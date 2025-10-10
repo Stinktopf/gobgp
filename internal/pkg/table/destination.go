@@ -284,7 +284,6 @@ func (dest *Destination) Calculate(logger log.Logger, newPath *Path) *Update {
 
 		p := dest.explicitWithdraw(logger, newPath)
 
-		// OBGP-style cascade on withdraw: drop any stored path that embeds the withdrawn label.
 		if IsOperaEnabled() && p != nil {
 			withdrawn := p.GetAsList()
 			if len(withdrawn) > 0 {
@@ -330,12 +329,9 @@ func (dest *Destination) Calculate(logger log.Logger, newPath *Path) *Update {
 			}
 			dest.insertSort(newPath)
 
-			// OBGP ordered import: after accepting q's route, eliminate stored routes
-			// that embed the *previous* label k_dq[old] (identified by first-hop AS q).
 			if IsOperaEnabled() {
 				qAS := firstHopASN(newPath)
 
-				// Find k_dq[old] from the snapshot taken before we modified knownPathList.
 				var oldQ *Path
 				for _, op := range oldKnownPathList {
 					if op != nil && !op.IsWithdraw && firstHopASN(op) == qAS {

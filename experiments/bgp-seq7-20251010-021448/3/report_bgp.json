@@ -1,0 +1,403 @@
+{
+  "generated": "2025-10-10T02:21:13.412169",
+  "namespace": "gobgp-lab",
+  "experiment_dir": "experiments\\bgp-seq7-20251010-021448\\3",
+  "sequence": [
+    {
+      "gate": "start_watchers",
+      "watching": [
+        "frankfurt-57bc7d9d56-v5vm8",
+        "fulda-5778598d88-q2d4v",
+        "toronto-8657b5c585-p99dg"
+      ]
+    },
+    {
+      "action": {
+        "pod": "aachen-84cc89b597-m5cqs",
+        "method": "POST",
+        "path": "/noise/start",
+        "result": {
+          "status": 202,
+          "response": {
+            "config": {
+              "PREFIX_BLOCK": 0,
+              "NUMBER_OF_BLOCKS": 1,
+              "rate": 1.0,
+              "lifetime": 60.0,
+              "jitter": 0.5,
+              "max_active": 90
+            }
+          }
+        }
+      }
+    },
+    {
+      "wait": 30
+    },
+    {
+      "action": {
+        "pod": "aachen-84cc89b597-m5cqs",
+        "method": "POST",
+        "path": "/noise/pause",
+        "result": {
+          "status": 200,
+          "response": {
+            "paused": true
+          }
+        }
+      }
+    },
+    {
+      "wait": 30
+    },
+    {
+      "gate": "mark_start",
+      "ts": 1760077261.279315
+    },
+    {
+      "wait": 5
+    },
+    {
+      "action": {
+        "pod": "aachen-84cc89b597-m5cqs",
+        "method": "POST",
+        "path": "/noise/stop",
+        "result": {
+          "status": 200,
+          "response": {
+            "cleaned_count": 30
+          }
+        }
+      }
+    },
+    {
+      "gate": "wait_for_drain",
+      "drained": true,
+      "stable_rounds": 3
+    },
+    {
+      "gate": "mark_end",
+      "ts": 1760077273.3967044
+    }
+  ],
+  "observers": {
+    "frankfurt-57bc7d9d56-v5vm8": {
+      "series": [
+        {
+          "ts": 1760077262.1113043,
+          "ts_local": "10.10.2025 02:21:02",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.7,
+          "path_len_max": 3
+        },
+        {
+          "ts": 1760077263.1710143,
+          "ts_local": "10.10.2025 02:21:03",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.7,
+          "path_len_max": 3
+        },
+        {
+          "ts": 1760077264.2131712,
+          "ts_local": "10.10.2025 02:21:04",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.7,
+          "path_len_max": 3
+        },
+        {
+          "ts": 1760077265.2554822,
+          "ts_local": "10.10.2025 02:21:05",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.7,
+          "path_len_max": 3
+        },
+        {
+          "ts": 1760077266.2870157,
+          "ts_local": "10.10.2025 02:21:06",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.7,
+          "path_len_max": 3
+        },
+        {
+          "ts": 1760077267.3469014,
+          "ts_local": "10.10.2025 02:21:07",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077268.3677623,
+          "ts_local": "10.10.2025 02:21:08",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077269.4097126,
+          "ts_local": "10.10.2025 02:21:09",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077270.435152,
+          "ts_local": "10.10.2025 02:21:10",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077271.472063,
+          "ts_local": "10.10.2025 02:21:11",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        }
+      ],
+      "drained": true,
+      "saw_nonzero": true,
+      "time_to_zero": 69.93248844146729,
+      "last_sample_ts": 1760077272.4730566,
+      "reason": "stopped_by_gate"
+    },
+    "fulda-5778598d88-q2d4v": {
+      "series": [
+        {
+          "ts": 1760077262.0297315,
+          "ts_local": "10.10.2025 02:21:02",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.6666666666666667,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1760077263.0664878,
+          "ts_local": "10.10.2025 02:21:03",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.6666666666666667,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1760077264.1066558,
+          "ts_local": "10.10.2025 02:21:04",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.6666666666666667,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1760077265.1667812,
+          "ts_local": "10.10.2025 02:21:05",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.6666666666666667,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1760077266.2028663,
+          "ts_local": "10.10.2025 02:21:06",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.6666666666666667,
+          "path_len_max": 2
+        },
+        {
+          "ts": 1760077267.2325003,
+          "ts_local": "10.10.2025 02:21:07",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077268.25834,
+          "ts_local": "10.10.2025 02:21:08",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077269.3061001,
+          "ts_local": "10.10.2025 02:21:09",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077270.3317082,
+          "ts_local": "10.10.2025 02:21:10",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077271.3664367,
+          "ts_local": "10.10.2025 02:21:11",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077272.396341,
+          "ts_local": "10.10.2025 02:21:12",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        }
+      ],
+      "drained": true,
+      "saw_nonzero": true,
+      "time_to_zero": 69.27851915359497,
+      "last_sample_ts": 1760077273.3967044,
+      "reason": "stopped_by_gate"
+    },
+    "toronto-8657b5c585-p99dg": {
+      "series": [
+        {
+          "ts": 1760077261.6021352,
+          "ts_local": "10.10.2025 02:21:01",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.711111111111111,
+          "path_len_max": 3
+        },
+        {
+          "ts": 1760077262.637866,
+          "ts_local": "10.10.2025 02:21:02",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.711111111111111,
+          "path_len_max": 3
+        },
+        {
+          "ts": 1760077263.680058,
+          "ts_local": "10.10.2025 02:21:03",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.711111111111111,
+          "path_len_max": 3
+        },
+        {
+          "ts": 1760077264.719457,
+          "ts_local": "10.10.2025 02:21:04",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.711111111111111,
+          "path_len_max": 3
+        },
+        {
+          "ts": 1760077265.7508988,
+          "ts_local": "10.10.2025 02:21:05",
+          "num_paths": 90,
+          "num_destinations": 30,
+          "path_len_min": 1,
+          "path_len_avg": 1.711111111111111,
+          "path_len_max": 3
+        },
+        {
+          "ts": 1760077266.7829862,
+          "ts_local": "10.10.2025 02:21:06",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077267.8217857,
+          "ts_local": "10.10.2025 02:21:07",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077268.842937,
+          "ts_local": "10.10.2025 02:21:08",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077269.879439,
+          "ts_local": "10.10.2025 02:21:09",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077270.9004467,
+          "ts_local": "10.10.2025 02:21:10",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        },
+        {
+          "ts": 1760077271.9370885,
+          "ts_local": "10.10.2025 02:21:11",
+          "num_paths": 0,
+          "num_destinations": 0,
+          "path_len_min": 0,
+          "path_len_avg": 0.0,
+          "path_len_max": 0
+        }
+      ],
+      "drained": true,
+      "saw_nonzero": true,
+      "time_to_zero": 68.26164221763611,
+      "last_sample_ts": 1760077272.9379852,
+      "reason": "stopped_by_gate"
+    }
+  },
+  "drain_parameters": {
+    "stable_samples": 3
+  }
+}

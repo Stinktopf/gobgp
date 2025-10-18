@@ -169,15 +169,20 @@
     }
 
     function applyEdgeLabel(edge){
-        const tag = edgeRawTag(edge);
-        let label = '';
-        if (typeof tag === 'number' && tag >= 256) {
-            const {capIndex,latMs} = bfDecode(tag);
-            if (capIndex > 0) {
-                label = `${humanShortBw(capIndex)}/${latMs}`;
-            }
+        const tag=edgeRawTag(edge),prefs=edgePrefs(edge);let p=[];
+        if(typeof tag==='number'&&tag>=256){
+            const{capIndex,latMs}=bfDecode(tag);
+            if(capIndex>0)p.push(`${humanShortBw(capIndex)}/${latMs}ms`);
         }
-        edge.data('label', label);
+        let pa=prefs.prefAB,pb=prefs.prefBA;
+        const set=v=>v!==null&&!Number.isNaN(v)&&v!==0;
+        if(set(pa)||set(pb)){
+            if((!set(pa)||pa===100)&&set(pb)&&pb!==100)pa=100;
+            if((!set(pb)||pb===100)&&set(pa)&&pa!==100)pb=100;
+            if((pa!==null&&pa!==0&&pa!==100)||(pb!==null&&pb!==0&&pb!==100))
+                p.push(`LP(${pa||100}/${pb||100})`);
+        }
+        edge.data('label',p.join(' • '));
     }
 
     function applyEdgeLabelAll(){ cy.edges().forEach(applyEdgeLabel); }

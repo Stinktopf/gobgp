@@ -7,21 +7,18 @@ import (
 )
 
 type OperaMode int
-type OperaKind int
 
 const (
 	OperaDisabled OperaMode = iota
 	OperaEnabled
 )
 
-const (
-	OperaFuzzy OperaKind = iota
-	OperaBitfield
-)
+var operaBandwidthLUT = []uint64{
+	0, 10, 100, 1000, 10000, 25000, 40000, 100000, 200000, 400000, 800000, 1600000,
+}
 
 var operaConfig struct {
 	mode OperaMode
-	kind OperaKind
 	asn  uint32
 }
 
@@ -33,14 +30,6 @@ func InitOperaFromEnv() {
 	} else {
 		SetOperaMode(OperaDisabled)
 		fmt.Println("[OPERA] ALTERNATIVE PATH SELECTION DISABLED")
-	}
-	switch strings.ToLower(os.Getenv("GOBGP_OPERA_MODE")) {
-	case "bitfield":
-		operaConfig.kind = OperaBitfield
-		fmt.Println("[OPERA] MODE: BITFIELD")
-	default:
-		operaConfig.kind = OperaFuzzy
-		fmt.Println("[OPERA] MODE: FUZZY")
 	}
 	if v := os.Getenv("ASN"); v != "" {
 		var parsed uint64
@@ -54,119 +43,64 @@ var operaDebug = false
 func SetOperaDebug(enabled bool) {
 	operaDebug = enabled
 }
-
 func IsOperaDebug() bool {
 	return operaDebug
 }
-
 func SetOperaMode(mode OperaMode) {
 	operaConfig.mode = mode
 }
-
 func IsOperaEnabled() bool {
 	return getOperaMode() == OperaEnabled
 }
-
 func getOperaMode() OperaMode {
 	return operaConfig.mode
 }
 
-func IsOperaBitfieldMode() bool {
-	return operaConfig.kind == OperaBitfield
-}
-
 func GetOperaType(p *Path) string {
-	if p == nil {
+	if p == nil || !IsOperaEnabled() {
 		return "STANDARD"
 	}
-	if IsOperaBitfieldMode() {
-		ok, capExp, sumLat := bitfieldMetrics(p)
-		if !ok {
-			return "STANDARD"
-		}
-		return fmt.Sprintf("OPERA(%s,%dms)", humanCap(capExp), sumLat)
+	coverage, capIndex, sumLat := GetOperaMetrics(p)
+	if coverage == 0.0 {
+		return "STANDARD"
+	} else if coverage == 1.0 {
+		return fmt.Sprintf("OPERA-COMPLETE(%s,%dms)", humanBandwidth(capIndex), sumLat)
+	} else {
+		return fmt.Sprintf("OPERA-PARTIAL[%.0f%%](%s,%dms)", coverage*100, humanBandwidth(capIndex), sumLat)
 	}
-	if HasOperaPath(p, 100) {
-		return "HIGH-BANDWIDTH"
-	}
-	if HasOperaPath(p, 200) {
-		return "LOW-LATENCY"
-	}
-	return "STANDARD"
-}
-
-func HasOperaPath(path *Path, suffix uint16) bool {
-	asList := path.GetAsList()
-	if len(asList) == 0 {
-		return false
-	}
-	if len(asList) == 1 {
-		return false
-	}
-	communities := path.GetCommunities()
-	asToSuffix := make(map[uint32]map[uint16]bool)
-	for _, c := range communities {
-		asn := c >> 16
-		suf := uint16(c & 0xFFFF)
-		if _, exists := asToSuffix[asn]; !exists {
-			asToSuffix[asn] = make(map[uint16]bool)
-		}
-		asToSuffix[asn][suf] = true
-	}
-	for _, asn := range asList[:len(asList)-1] {
-		if suffixes, ok := asToSuffix[asn]; !ok || !suffixes[suffix] {
-			return false
-		}
-	}
-	return true
 }
 
 func OperaImportAccept(known []*Path, cand *Path) bool {
 	if !IsOperaEnabled() || cand.IsWithdraw {
 		return true
 	}
-
-	if IsOperaBitfieldMode() {
-		return OperaImportAcceptBitfield(known, cand)
-	}
-	return OperaImportAcceptFuzzy(known, cand)
+	return OperaImportAcceptInternal(known, cand)
 }
 
-func OperaImportAcceptBitfield(known []*Path, cand *Path) bool {
-	okCand, capCand, latCand := GetBitfieldMetrics(cand)
+func OperaImportAcceptInternal(known []*Path, cand *Path) bool {
+	coverageCand, capIdxCand, latCand := GetOperaMetrics(cand)
 
 	for _, existing := range known {
 		if existing == nil || existing.IsWithdraw {
 			continue
 		}
+		coverageEx, capIdxEx, latEx := GetOperaMetrics(existing)
 
-		okEx, capEx, latEx := GetBitfieldMetrics(existing)
+		if coverageCand < coverageEx {
+			return false
+		}
+		if coverageCand > coverageEx {
+			continue
+		}
 
-		if okCand && okEx {
-			if !(capCand > capEx || latCand < latEx) {
+		if coverageCand == 0.0 {
+			if !IsBetterOperaPath(cand, existing) {
 				return false
 			}
 		} else {
-			if !IsBetterOperaPath(cand, existing) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func OperaImportAcceptFuzzy(known []*Path, cand *Path) bool {
-	candType := GetOperaType(cand)
-
-	for _, existing := range known {
-		if existing == nil || existing.IsWithdraw {
-			continue
-		}
-
-		existingType := GetOperaType(existing)
-
-		if existingType == candType {
-			if !IsBetterOperaPath(cand, existing) {
+			isBetterBw := capIdxCand < capIdxEx
+			isBetterLat := latCand < latEx
+			if !(isBetterBw || isBetterLat) {
 				return false
 			}
 		}
@@ -178,60 +112,93 @@ func IsBetterOperaPath(newPath, existingPath *Path) bool {
 	if newPath == nil || existingPath == nil {
 		return false
 	}
-
-	newPathLength := newPath.GetAsPathLen()
-	existingPathLength := existingPath.GetAsPathLen()
-
-	if newPathLength != existingPathLength {
-		return newPathLength < existingPathLength
+	newLen := newPath.GetAsPathLen()
+	exLen := existingPath.GetAsPathLen()
+	if newLen != exLen {
+		return newLen < exLen
 	}
-
 	newAsPath := newPath.GetAsPath()
-	existingAsPath := existingPath.GetAsPath()
-	if newAsPath == nil || existingAsPath == nil {
+	exAsPath := existingPath.GetAsPath()
+	if newAsPath == nil || exAsPath == nil {
 		return false
 	}
-
-	newSegments := newAsPath.Value
-	existingSegments := existingAsPath.Value
-	for segmentIndex := 0; segmentIndex < len(newSegments); segmentIndex++ {
-		if segmentIndex >= len(existingSegments) {
+	newSegs := newAsPath.Value
+	exSegs := exAsPath.Value
+	for i := 0; i < len(newSegs); i++ {
+		if i >= len(exSegs) {
 			break
 		}
-
-		newASList := newSegments[segmentIndex].GetAS()
-		existingASList := existingSegments[segmentIndex].GetAS()
-		minLength := len(newASList)
-		if len(existingASList) < minLength {
-			minLength = len(existingASList)
+		newASList := newSegs[i].GetAS()
+		exASList := exSegs[i].GetAS()
+		minL := len(newASList)
+		if len(exASList) < minL {
+			minL = len(exASList)
 		}
-
-		for asIndex := 0; asIndex < minLength; asIndex++ {
-			newASNumber := newASList[asIndex]
-			existingASNumber := existingASList[asIndex]
-
-			if newASNumber != existingASNumber {
-				return newASNumber < existingASNumber
+		for j := 0; j < minL; j++ {
+			if newASList[j] != exASList[j] {
+				return newASList[j] < exASList[j]
 			}
 		}
 	}
-
 	return false
 }
 
-func bitfieldMetrics(p *Path) (ok bool, minCapExp uint8, sumLatMs uint32) {
-	asList := p.GetAsList()
-	if len(asList) == 0 {
-		return false, 0, 0
+func IsWorseOperaPath(newPath, existingPath *Path) bool {
+	if newPath == nil || existingPath == nil {
+		return false
 	}
+	newLen := newPath.GetAsPathLen()
+	exLen := existingPath.GetAsPathLen()
+	if newLen != exLen {
+		return newLen > exLen
+	}
+	newAsPath := newPath.GetAsPath()
+	exAsPath := existingPath.GetAsPath()
+	if newAsPath == nil || exAsPath == nil {
+		return false
+	}
+	newSegs := newAsPath.Value
+	exSegs := exAsPath.Value
+	for i := 0; i < len(newSegs); i++ {
+		if i >= len(exSegs) {
+			break
+		}
+		newASList := newSegs[i].GetAS()
+		exASList := exSegs[i].GetAS()
+		minL := len(newASList)
+		if len(exASList) < minL {
+			minL = len(exASList)
+		}
+		for j := 0; j < minL; j++ {
+			if newASList[j] != exASList[j] {
+				return newASList[j] < exASList[j]
+			}
+		}
+	}
+	return false
+}
+
+func calculateMetrics(p *Path) (relativeCoverage float64, minCapIndex uint8, sumLatMs uint32) {
+	asList := p.GetAsList()
+	totalIntermediateHops := 0
+	if len(asList) > 1 {
+		totalIntermediateHops = len(asList) - 1
+		if operaConfig.asn != 0 {
+			totalIntermediateHops++
+		}
+	}
+	if totalIntermediateHops == 0 {
+		return 1.0, 0, 0
+	}
+
 	communities := p.GetCommunities()
 	asToPairs := make(map[uint32][][2]uint8)
 	for _, c := range communities {
 		asn := c >> 16
 		suf := uint16(c & 0xFFFF)
-		capExp := uint8(suf >> 8)
+		capIndex := uint8(suf >> 8)
 		latMs := uint8(suf & 0xFF)
-		asToPairs[asn] = append(asToPairs[asn], [2]uint8{capExp, latMs})
+		asToPairs[asn] = append(asToPairs[asn], [2]uint8{capIndex, latMs})
 	}
 
 	checkAS := []uint32{}
@@ -240,38 +207,57 @@ func bitfieldMetrics(p *Path) (ok bool, minCapExp uint8, sumLatMs uint32) {
 	}
 	checkAS = append(checkAS, asList[:len(asList)-1]...)
 
-	minCap := uint8(255)
+	minCapIndex = uint8(0)
 	var sumLat uint32
+	participatingHops := 0
+
 	for _, asn := range checkAS {
 		pairs, ok := asToPairs[asn]
 		if !ok || len(pairs) == 0 {
-			return false, 0, 0
+			continue
 		}
-		bestCap := uint8(0)
+
+		participatingHops++
+		bestCapIndex := uint8(255)
 		bestLat := uint8(255)
+
 		for _, pr := range pairs {
-			cExp, lMs := pr[0], pr[1]
-			if cExp > bestCap {
-				bestCap = cExp
+			cIdx, lMs := pr[0], pr[1]
+			if cIdx < bestCapIndex {
+				bestCapIndex = cIdx
 			}
 			if lMs < bestLat {
 				bestLat = lMs
 			}
 		}
-		if bestCap < minCap {
-			minCap = bestCap
+
+		if bestCapIndex > minCapIndex {
+			minCapIndex = bestCapIndex
 		}
 		sumLat += uint32(bestLat)
 	}
-	return true, minCap, sumLat
+
+	if participatingHops == 0 {
+		return 0.0, 0, 0
+	}
+
+	relativeCoverage = float64(participatingHops) / float64(totalIntermediateHops)
+	if relativeCoverage > 1.0 {
+		relativeCoverage = 1.0
+	}
+
+	return relativeCoverage, minCapIndex, sumLat
 }
 
-func GetBitfieldMetrics(p *Path) (bool, uint8, uint32) {
-	return bitfieldMetrics(p)
+func GetOperaMetrics(p *Path) (float64, uint8, uint32) {
+	return calculateMetrics(p)
 }
 
-func humanCap(exp uint8) string {
-	mbps := float64(uint64(1) << exp)
+func humanBandwidth(index uint8) string {
+	if index >= uint8(len(operaBandwidthLUT)) {
+		return fmt.Sprintf("Idx!%d", index)
+	}
+	mbps := float64(operaBandwidthLUT[index])
 	switch {
 	case mbps >= 1_000_000:
 		return fmt.Sprintf("%.1fTbps", mbps/1_000_000)

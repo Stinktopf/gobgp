@@ -1532,85 +1532,66 @@ func (s *BgpServer) propagateOperaUpdates(
 
 		desiredPre := make([]*table.Path, 0, 3)
 
-		if table.IsOperaBitfieldMode() {
-			var std, hb, ll *table.Path
-			var worstHbCap, worstLlCap uint8
-			var worstHbLat, worstLlLat uint32
+		var std *table.Path
+		var hb, ll *table.Path
 
-			for _, p := range d.KnownPathList {
-				if p.IsWithdraw || p.IsNexthopInvalid {
-					continue
-				}
-				if src := p.GetSource(); src != nil && src.Address != nil && neigh != nil && src.Address.Equal(neigh) {
-					continue
-				}
-				if containsPeerAS(p, peerAS) {
-					continue
-				}
+		var worstHbCov, worstLlCov float64 = -1.0, -1.0
+		var worstHbCapIdx, worstLlCapIdx uint8
+		var worstHbLat, worstLlLat uint32
 
-				if std == nil || table.IsBetterOperaPath(std, p) {
-					std = p
-				}
-
-				if ok, capExp, sumLat := table.GetBitfieldMetrics(p); ok {
-					if hb == nil ||
-						capExp < worstHbCap ||
-						(capExp == worstHbCap && sumLat > worstHbLat) ||
-						(capExp == worstHbCap && sumLat == worstHbLat && table.IsBetterOperaPath(hb, p)) {
-						hb, worstHbCap, worstHbLat = p, capExp, sumLat
-					}
-
-					if ll == nil ||
-						sumLat > worstLlLat ||
-						(sumLat == worstLlLat && capExp < worstLlCap) ||
-						(sumLat == worstLlLat && capExp == worstLlCap && table.IsBetterOperaPath(ll, p)) {
-						ll, worstLlCap, worstLlLat = p, capExp, sumLat
-					}
-				}
+		for _, p := range d.KnownPathList {
+			if p.IsWithdraw || p.IsNexthopInvalid {
+				continue
+			}
+			if src := p.GetSource(); src != nil && src.Address != nil && neigh != nil && src.Address.Equal(neigh) {
+				continue
+			}
+			if containsPeerAS(p, peerAS) {
+				continue
 			}
 
-			addDesired := func(p *table.Path) {
-				if p == nil {
+			if std == nil || table.IsWorseOperaPath(p, std) {
+				std = p
+			}
+
+			coverage, capIdx, sumLat := table.GetOperaMetrics(p)
+			if coverage > 0.0 {
+
+				if hb == nil || coverage < worstHbCov ||
+					(coverage == worstHbCov && capIdx > worstHbCapIdx) ||
+					(coverage == worstHbCov && capIdx == worstHbCapIdx && sumLat > worstHbLat) ||
+					(coverage == worstHbCov && capIdx == worstHbCapIdx && sumLat == worstHbLat && table.IsBetterOperaPath(hb, p)) {
+					hb, worstHbCov, worstHbCapIdx, worstHbLat = p, coverage, capIdx, sumLat
+				}
+
+				if ll == nil || coverage < worstLlCov ||
+					(coverage == worstLlCov && sumLat > worstLlLat) ||
+					(coverage == worstLlCov && sumLat == worstLlLat && capIdx > worstLlCapIdx) ||
+					(coverage == worstLlCov && sumLat == worstLlLat && capIdx == worstLlCapIdx && table.IsBetterOperaPath(ll, p)) {
+					ll, worstLlCov, worstLlCapIdx, worstLlLat = p, coverage, capIdx, sumLat
+				}
+			}
+		}
+
+		addDesired := func(p *table.Path) {
+			if p == nil {
+				return
+			}
+			lk := p.GetLocalKey()
+			for _, q := range desiredPre {
+				if q.GetLocalKey() == lk {
 					return
 				}
-				lk := p.GetLocalKey()
-				for _, q := range desiredPre {
-					if q.GetLocalKey() == lk {
-						return
-					}
-				}
-				desiredPre = append(desiredPre, p)
 			}
-			addDesired(std)
-			addDesired(hb)
-			addDesired(ll)
-			if len(desiredPre) > limit {
-				desiredPre = desiredPre[:limit]
-			}
-		} else {
-			best := map[string]*table.Path{}
-			for _, p := range d.KnownPathList {
-				if p.IsWithdraw || p.IsNexthopInvalid {
-					continue
-				}
-				if src := p.GetSource(); src != nil && src.Address != nil && neigh != nil && src.Address.Equal(neigh) {
-					continue
-				}
-				if containsPeerAS(p, peerAS) {
-					continue
-				}
+			desiredPre = append(desiredPre, p)
+		}
 
-				cls := table.GetOperaType(p)
-				if q, ok := best[cls]; !ok || table.IsBetterOperaPath(q, p) {
-					best[cls] = p
-				}
-			}
-			for _, p := range best {
-				desiredPre = append(desiredPre, p)
-			}
-			if len(desiredPre) > limit {
-				desiredPre = desiredPre[:limit]
-			}
+		addDesired(std)
+		addDesired(hb)
+		addDesired(ll)
+
+		if len(desiredPre) > limit {
+			desiredPre = desiredPre[:limit]
 		}
 
 		desired := make([]*table.Path, 0, len(desiredPre))
@@ -1668,8 +1649,7 @@ func (s *BgpServer) propagateOperaUpdates(
 			if shouldAdv {
 				if _, conflict := announceKeys[w.GetLocalKey()]; conflict {
 					if table.IsOperaDebug() {
-						fmt.Printf("[OPERA] SKIPPED WITHDRAW FOR %s VIA AS %s (announce wins)\n",
-							w.GetPrefix(), asPath(w))
+						fmt.Printf("[OPERA] SKIPPED WITHDRAW FOR %s VIA AS %s (announce wins)\n", w.GetPrefix(), asPath(w))
 					}
 					continue
 				}
@@ -1687,24 +1667,21 @@ func (s *BgpServer) propagateOperaUpdates(
 
 		if len(toSend) > 0 {
 			if table.IsOperaDebug() {
-				fmt.Printf("[OPERA] ABOUT TO SEND for %s: %d withdraw(s), %d announce(s)\n",
-					getPrefix(d), len(withdraws), len(announces))
+				fmt.Printf("[OPERA] ABOUT TO SEND for %s: %d withdraw(s), %d announce(s)\n", getPrefix(d), len(withdraws), len(announces))
 			}
 			sendfsmOutgoingMsg(nbr, toSend, nil, false)
 
 			for _, w := range withdraws {
 				nbr.updateRoutes(w)
 				if table.IsOperaDebug() {
-					fmt.Printf("[OPERA] WITHDRAWN ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n",
-						w.GetPrefix(), asPath(w), toID, table.GetOperaType(w))
+					fmt.Printf("[OPERA] WITHDRAWN ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n", w.GetPrefix(), asPath(w), toID, table.GetOperaType(w))
 				}
 			}
 			if shouldAdv {
 				for _, p := range announces {
 					nbr.updateRoutes(p)
 					if table.IsOperaDebug() {
-						fmt.Printf("[OPERA] ANNOUNCED ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n",
-							p.GetPrefix(), asPath(p), toID, table.GetOperaType(p))
+						fmt.Printf("[OPERA] ANNOUNCED ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n", p.GetPrefix(), asPath(p), toID, table.GetOperaType(p))
 					}
 				}
 			}
@@ -1716,10 +1693,7 @@ func (s *BgpServer) propagateOperaUpdates(
 				for _, p := range d.KnownPathList {
 					keep[p.GetLocalKey()] = struct{}{}
 				}
-				dest.ClearKnownPathList(func(p *table.Path) bool {
-					_, ok := keep[p.GetLocalKey()]
-					return ok
-				})
+				dest.ClearKnownPathList(func(p *table.Path) bool { _, ok := keep[p.GetLocalKey()]; return ok })
 			}
 		}
 	}

@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>Routinator</title>
+    <title>BGP Topology Editor</title>
     <script src="https://unpkg.com/cytoscape@3.27.0/dist/cytoscape.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
     <style>
@@ -13,23 +13,21 @@
         #cy{position:fixed;inset:0}
         .toolbar,.editor,.btn{backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%)}
         .toolbar{position:fixed;left:14px;top:14px;display:flex;gap:8px;z-index:5;background:linear-gradient(180deg,var(--panel),var(--panel2)) padding-box,linear-gradient(135deg,rgba(96,165,250,.45),rgba(167,139,250,.45)) border-box;border:1px solid transparent;border-radius:16px;padding:8px;box-shadow:0 12px 40px rgba(0,0,0,.35)}
-        .toolbar.right{left:auto;right:14px}
         .btn{border:1px solid transparent;border-radius:12px;cursor:pointer;width:38px;height:38px;display:grid;place-items:center;background:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,.05)) padding-box,linear-gradient(135deg,rgba(96,165,250,.65),rgba(34,211,238,.65)) border-box;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .15s ease, box-shadow .15s ease;color:var(--text)}
         .btn:hover{transform:translateY(-1px);box-shadow:0 10px 28px rgba(0,0,0,.35)}
         .btn svg{width:18px;height:18px;display:block}
-        .btn.wide{width:auto;height:38px;padding:0 12px;font-size:13px;font-weight:600;letter-spacing:.02em}
-        .editor{position:fixed;min-width:260px;max-width:360px;z-index:6;display:none;padding:12px 12px 10px;background:linear-gradient(180deg,var(--panel),var(--panel2)) padding-box,linear-gradient(135deg,rgba(96,165,250,.45),rgba(167,139,250,.45)) border-box;border:1px solid transparent;border-radius:16px;box-shadow:0 16px 50px rgba(0,0,0,.40)}
+        .editor{position:fixed;min-width:300px;max-width:400px;z-index:6;display:none;padding:12px 12px 10px;background:linear-gradient(180deg,var(--panel),var(--panel2)) padding-box,linear-gradient(135deg,rgba(96,165,250,.45),rgba(167,139,250,.45)) border-box;border:1px solid transparent;border-radius:16px;box-shadow:0 16px 50px rgba(0,0,0,.40)}
         .editor h3{margin:0 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;background:linear-gradient(90deg,var(--grad-a),var(--grad-b),var(--grad-c));-webkit-background-clip:text;background-clip:text;color:transparent}
-        .row{display:flex;gap:8px}
+        .row{display:flex;gap:8px; margin-bottom: 8px;}
         label{display:block;font-size:12px;color:#c9d3e8;margin:6px 0 4px}
         input[type="text"],input[type="number"]{width:100%;padding:9px 12px;border-radius:12px;background:rgba(16,24,48,.65);border:1px solid var(--border);color:var(--text);font-size:14px}
         input:focus{outline:none;border-color:rgba(255,255,255,.36);box-shadow:0 0 0 4px rgba(96,165,250,.22)}
-        .hr{height:1px;background:rgba(255,255,255,.12);margin:10px 0;border-radius:1px}
+        .hr{height:1px;background:rgba(255,255,255,.12);margin:12px 0;border-radius:1px}
         .muted{opacity:.85}
         .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
         .chip{background:var(--chip);border:1px solid var(--border);padding:6px 10px;border-radius:999px;cursor:pointer;font-size:12px;user-select:none}
         .chip:hover{background:var(--chip-on)}
-        .preview{font-size:12px;margin-top:6px;opacity:.9}
+        .preview{font-size:12px;margin-top:8px;opacity:.9}
     </style>
 </head>
 <body>
@@ -37,26 +35,15 @@
 
 <div class="toolbar">
     <button id="layoutBtn" class="btn" title="Auto layout" aria-label="Auto layout">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect>
-            <rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect>
-        </svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect></svg>
     </button>
     <button id="importBtn" class="btn" title="Import values.yaml" aria-label="Import values.yaml">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="M12 3v12"></path><path d="M7 8l5-5 5 5"></path>
-        </svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="M12 3v12"></path><path d="M7 8l5-5 5 5"></path></svg>
     </button>
     <button id="downloadBtn" class="btn" title="Download values.yaml" aria-label="Download values.yaml">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="M12 3v12"></path><path d="M17 10l-5 5-5-5"></path>
-        </svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="M12 3v12"></path><path d="M17 10l-5 5-5-5"></path></svg>
     </button>
     <input id="importInput" type="file" accept=".yaml,.yml" style="display:none"/>
-</div>
-
-<div class="toolbar right">
-    <button id="modeToggle" class="btn wide" title="Toggle encoding mode" aria-label="Toggle encoding mode">Mode: Fuzzy</button>
 </div>
 
 <div id="nodeEditor" class="editor">
@@ -76,37 +63,34 @@
         <div style="flex:1"><label>Router B</label><input id="eB" type="text" disabled/></div>
     </div>
 
-    <div id="fuzzyControls" style="display:none">
+    <div id="bitfieldControls">
         <div class="hr"></div>
-        <label>Fuzzy</label>
-        <div class="chips">
-            <span class="chip" data-fuzzy="none">None</span>
-            <span class="chip" data-fuzzy="100">100</span>
-            <span class="chip" data-fuzzy="200">200</span>
-            <span class="chip" data-fuzzy="both">100 | 200</span>
-        </div>
-    </div>
-
-    <div id="bitfieldControls" style="display:none">
-        <div class="hr"></div>
-        <label>Bitfield</label>
+        <label>Intent Metrics (Community)</label>
         <div class="row">
             <div style="flex:1">
-                <label class="muted">Capacity exponent</label>
-                <input id="bfCap" type="number" min="0" max="255" placeholder="e.g. 10"/>
+                <label class="muted">Bandwidth Index (LUT)</label>
+                <input id="bfCap" type="number" min="0" max="255" placeholder="e.g. 7"/>
                 <div class="chips" id="bfCapChips">
-                    <span class="chip" data-exp="10">1G</span>
-                    <span class="chip" data-exp="13">8G</span>
-                    <span class="chip" data-exp="16">64G</span>
-                    <span class="chip" data-exp="17">128G</span>
-                    <span class="chip" data-exp="18">256G</span>
-                    <span class="chip" data-exp="19">512G</span>
+                    <span class="chip" data-idx="0">None</span>
+                    <span class="chip" data-idx="1">10M</span>
+                    <span class="chip" data-idx="2">100M</span>
+                    <span class="chip" data-idx="3">1G</span>
+                    <span class="chip" data-idx="4">10G</span>
+                    <span class="chip" data-idx="5">25G</span>
+                    <span class="chip" data-idx="6">40G</span>
+                    <span class="chip" data-idx="7">100G</span>
+                    <span class="chip" data-idx="8">200G</span>
+                    <span class="chip" data-idx="9">400G</span>
+                    <span class="chip" data-idx="10">800G</span>
+                    <span class="chip" data-idx="11">1.6T</span>
                 </div>
             </div>
             <div style="flex:1">
                 <label class="muted">Latency (ms)</label>
                 <input id="bfLat" type="number" min="0" max="255" placeholder="e.g. 20"/>
                 <div class="chips" id="bfLatChips">
+                    <span class="chip" data-ms="0">None</span>
+                    <span class="chip" data-ms="1">1</span>
                     <span class="chip" data-ms="5">5</span>
                     <span class="chip" data-ms="10">10</span>
                     <span class="chip" data-ms="20">20</span>
@@ -118,11 +102,23 @@
             </div>
         </div>
         <div class="preview" id="bfPreview"></div>
+        <label>Community Value</label>
+        <input id="eComms" type="text" placeholder="Set Bw > None to generate" readonly/>
     </div>
 
     <div class="hr"></div>
-    <label>Tags</label>
-    <input id="eComms" type="text" placeholder="100,200 or bitfield suffix (e.g. 2580)"/>
+    <label>Local Preference (optional)</label>
+    <div class="row">
+        <div style="flex:1">
+            <label class="muted"><span id="prefLabelAB">Pref A → B</span></label>
+            <input id="ePrefAB" type="number" min="0" placeholder="e.g. 200"/>
+        </div>
+        <div style="flex:1">
+            <label class="muted"><span id="prefLabelBA">Pref B → A</span></label>
+            <input id="ePrefBA" type="number" min="0" placeholder="e.g. 100"/>
+        </div>
+    </div>
+
 </div>
 
 <script>
@@ -130,15 +126,8 @@
         container: document.getElementById('cy'),
         boxSelectionEnabled:true, selectionType:'additive',
         style:[
-            { selector:'node', style:{
-                    'label':'data(label)','font-size':12,'color':'#fff','text-valign':'center','text-halign':'center',
-                    'background-opacity':0,'border-color':'rgba(255,255,255,.95)','border-width':3,'width':62,'height':62
-                }},
-            { selector:'edge', style:{
-                    'width':3,'curve-style':'straight','line-fill':'linear-gradient',
-                    'line-gradient-stop-colors':'#60a5fa #a78bfa #22d3ee','line-gradient-stop-positions':'0 50% 100%',
-                    'line-cap':'round','opacity':0.95,'label':'data(label)','color':'#fff','font-size':12,'font-weight':700,'text-rotation':'autorotate'
-                }},
+            { selector:'node', style:{ 'label':'data(label)','font-size':12,'color':'#fff','text-valign':'center','text-halign':'center', 'background-opacity':0,'border-color':'rgba(255,255,255,.95)','border-width':3,'width':62,'height':62 }},
+            { selector:'edge', style:{ 'width':3,'curve-style':'straight','line-fill':'linear-gradient', 'line-gradient-stop-colors':'#60a5fa #a78bfa #22d3ee','line-gradient-stop-positions':'0 50% 100%', 'line-cap':'round','opacity':0.95,'label':'data(label)','color':'#fff','font-size':12,'font-weight':700,'text-rotation':'autorotate' }},
             { selector:'node:selected', style:{'border-color':'#8ab4ff','border-width':5}},
             { selector:'edge:selected', style:{'width':5,'opacity':1,'line-gradient-stop-colors':'#8ab4ff #60a5fa #a78bfa'}}
         ],
@@ -147,30 +136,32 @@
 
     const $ = id => document.getElementById(id);
     const nodeEditor=$('nodeEditor'), edgeEditor=$('edgeEditor');
-    const fuzzyControls=$('fuzzyControls'), bitfieldControls=$('bitfieldControls');
-    const modeToggle=$('modeToggle');
+    const bitfieldControls=$('bitfieldControls');
 
-    const MODE={FUZZY:'fuzzy',BIT:'bitfield'}; let uiMode=MODE.FUZZY;
-    function setMode(m){
-        uiMode = (m===MODE.BIT)?MODE.BIT:MODE.FUZZY;
-        modeToggle.textContent='Mode: '+(uiMode===MODE.FUZZY?'Fuzzy':'Bitfield');
-        fuzzyControls.style.display = uiMode===MODE.FUZZY?'block':'none';
-        bitfieldControls.style.display = uiMode===MODE.BIT?'block':'none';
-        cy.edges().forEach(applyEdgeLabel);
-        updateBfPreview();
-    }
-    modeToggle.onclick=()=>setMode(uiMode===MODE.FUZZY?MODE.BIT:MODE.FUZZY);
-    setMode(MODE.FUZZY);
+    const bandwidthLUT = [ 0, 10, 100, 1000, 10000, 25000, 40000, 100000, 200000, 400000, 800000, 1600000 ];
 
-    function parseTags(s){ if(!s) return []; return s.split(',').map(x=>x.trim()).filter(Boolean).map(Number).filter(n=>!Number.isNaN(n)); }
-    function humanShortCap(exp){
-        const u=['M','G','T','P','E','Z','Y']; const k=Math.floor(exp/10), r=exp-10*k;
-        if(k<u.length){ const base=1<<r; return `${base}${u[k]}`; }
-        return `2^${exp}`;
+    function humanShortBw(index){
+        if (index <= 0 || index >= bandwidthLUT.length) return '?';
+        const mbps = bandwidthLUT[index];
+        if (mbps >= 1000000) return `${mbps/1000000}T`;
+        if (mbps >= 1000) return `${mbps/1000}G`;
+        return `${mbps}M`;
     }
-    function bfEncode(exp,ms){ return ((exp & 0xFF)<<8) | (ms & 0xFF); }
-    function bfDecode(s){ return {capExp:(s>>>8)&0xFF, latMs:s&0xFF}; }
-    function edgeRawTags(edge){ return (edge.data('communitiesAddTags')||[]).map(Number).filter(n=>!Number.isNaN(n)); }
+
+    function bfEncode(capIndex,ms){ return ((capIndex & 0xFF)<<8) | (ms & 0xFF); }
+    function bfDecode(s){ return {capIndex:(s>>>8)&0xFF, latMs:s&0xFF}; }
+    function edgeRawTag(edge){
+        const tags = (edge.data('communitiesAddTags')||[]).map(Number).filter(n=>!Number.isNaN(n));
+        return tags.length > 0 ? tags[0] : null;
+    }
+    function edgePrefs(edge){
+        const prefAB = edge.data('prefAB');
+        const prefBA = edge.data('prefBA');
+        return {
+            prefAB: typeof prefAB === 'number' && prefAB >= 0 ? prefAB : null,
+            prefBA: typeof prefBA === 'number' && prefBA >= 0 ? prefBA : null
+        };
+    }
 
     function applyNodeLabelFromAsn(n){
         const asn=Number(n.data('asn'));
@@ -178,26 +169,17 @@
     }
 
     function applyEdgeLabel(edge){
-        const tags=edgeRawTags(edge);
-        if(!tags.length){ edge.data('label',''); return; }
-        if(uiMode===MODE.BIT){
-            const bf = tags.find(t=>t>=256);
-            if(typeof bf==='number'){
-                const {capExp,latMs}=bfDecode(bf);
-                edge.data('label', `${humanShortCap(capExp)}/${latMs}`);
-                return;
+        const tag = edgeRawTag(edge);
+        let label = '';
+        if (typeof tag === 'number' && tag >= 256) {
+            const {capIndex,latMs} = bfDecode(tag);
+            if (capIndex > 0) {
+                label = `${humanShortBw(capIndex)}/${latMs}`;
             }
-            edge.data('label', String(tags[0]));
-            return;
         }
-        const has100=tags.includes(100), has200=tags.includes(200);
-        let label='';
-        if(has100 && has200) label='100 | 200';
-        else if(has100) label='100';
-        else if(has200) label='200';
-        else label=String(tags[0]);
         edge.data('label', label);
     }
+
     function applyEdgeLabelAll(){ cy.edges().forEach(applyEdgeLabel); }
 
     function layout(){ cy.layout({name:'cose',animate:false,fit:true}).run(); }
@@ -259,10 +241,19 @@
         const old=cy.getElementById(oldId);
         const data=Object.assign({}, old.data(), {id:newId});
         const pos=old.position(), classes=old.classes();
-        const edges=old.connectedEdges().map(e=>({id:e.id(), a:e.data('a'), b:e.data('b'), comms:(e.data('communitiesAddTags')||[]).slice()}));
+        const edges=old.connectedEdges().map(e=>({
+            id:e.id(), a:e.data('a'), b:e.data('b'),
+            comms:(e.data('communitiesAddTags')||[]).slice(),
+            prefs: edgePrefs(e)
+        }));
         old.remove();
         const n=cy.add({data, position:pos, classes:classes.join(' ')});
-        edges.forEach(info=>{ const na=info.a===oldId?newId:info.a; const nb=info.b===oldId?newId:info.b; const e=addOrEdge(na,nb); e.data('communitiesAddTags', info.comms||[]); applyEdgeLabel(e); });
+        edges.forEach(info=>{
+            const na=info.a===oldId?newId:info.a; const nb=info.b===oldId?newId:info.b;
+            const e=addOrEdge(na,nb);
+            e.data({communitiesAddTags: info.comms||[], prefAB: info.prefs.prefAB, prefBA: info.prefs.prefBA });
+            applyEdgeLabel(e);
+        });
         applyNodeLabelFromAsn(n);
         return n;
     }
@@ -279,11 +270,25 @@
     function openEdgeEditor(e){
         editingNode=null; nodeEditor.style.display='none';
         const a=e.data('a'), b=e.data('b');
-        editingEdge=e; edgeSnap={a,b, comms:(e.data('communitiesAddTags')||[]).slice()};
-        $('eA').value=a; $('eB').value=b; $('eComms').value=(edgeSnap.comms||[]).join(',');
+        editingEdge=e;
+        const tag = edgeRawTag(e);
+        const prefs = edgePrefs(e);
+        edgeSnap={a,b, tag, prefAB: prefs.prefAB, prefBA: prefs.prefBA };
+
+        $('eA').value=a; $('eB').value=b;
+        $('prefLabelAB').textContent = `Pref ${a} → ${b}`;
+        $('prefLabelBA').textContent = `Pref ${b} → ${a}`;
+        $('eComms').value= typeof tag === 'number' ? String(tag) : '';
+        $('ePrefAB').value = typeof edgeSnap.prefAB === 'number' ? String(edgeSnap.prefAB) : '';
+        $('ePrefBA').value = typeof edgeSnap.prefBA === 'number' ? String(edgeSnap.prefBA) : '';
+
         positionEdgeEditor(e); edgeEditor.style.display='block';
-        const tags=edgeSnap.comms||[]; const first=Number(tags[0]);
-        if(first>=256){ const {capExp,latMs}=bfDecode(first); $('bfCap').value=String(capExp); $('bfLat').value=String(latMs); } else { $('bfCap').value=''; $('bfLat').value=''; }
+        if(typeof tag === 'number' && tag >= 256){
+            const {capIndex,latMs}=bfDecode(tag);
+            $('bfCap').value=String(capIndex); $('bfLat').value=String(latMs);
+        } else {
+            $('bfCap').value=''; $('bfLat').value='';
+        }
         updateBfPreview(true);
     }
 
@@ -302,8 +307,17 @@
     function commitEdgeEditor(){
         if(!editingEdge || edgeEditor.style.display==='none') return;
         History.push();
-        const comms=parseTags($('eComms').value);
-        editingEdge.data({communitiesAddTags:comms});
+        const capIdxVal = Number($('bfCap').value);
+        const latMsVal = Number($('bfLat').value);
+        const tagVal = (!Number.isNaN(capIdxVal) && capIdxVal > 0 && !Number.isNaN(latMsVal) && latMsVal >= 0) ? bfEncode(capIdxVal, latMsVal) : null;
+        const comms = typeof tagVal === 'number' ? [tagVal] : [];
+
+        const prefABVal = Number($('ePrefAB').value);
+        const prefBAVal = Number($('ePrefBA').value);
+        const prefAB = (!Number.isNaN(prefABVal) && prefABVal > 0) ? prefABVal : null;
+        const prefBA = (!Number.isNaN(prefBAVal) && prefBAVal > 0) ? prefBAVal : null;
+
+        editingEdge.data({communitiesAddTags: comms, prefAB, prefBA });
         applyEdgeLabel(editingEdge);
         editingEdge=null; edgeEditor.style.display='none';
     }
@@ -340,26 +354,42 @@
     });
 
     function buildValues(){
-        const opera={enabled: 'false', mode: 'bitfield'}
+        const opera={enabled: 'false'}
         const image={repository:'gobgp', tag:'dev', pullPolicy:'IfNotPresent'};
         const routers={};
         cy.nodes().forEach(n=>{ routers[n.id()]={asn:Number(n.data('asn')), routerId:n.data('routerId'), neighbors:[]}; });
-        const pushed=new Set();
+
         cy.edges().forEach(e=>{
-            const a=e.data('a'), b=e.data('b'); if(!routers[a]||!routers[b]) return;
-            const key=(a<b)?a+'__'+b:b+'__'+a; if(pushed.has(key)) return; pushed.add(key);
-            const comms=edgeRawTags(e);
-            const asnA=Number(cy.getElementById(a).data('asn')); const asnB=Number(cy.getElementById(b).data('asn'));
-            routers[a].neighbors.push({name:b, peerAs:asnB, communitiesAddTags:comms});
-            routers[b].neighbors.push({name:a, peerAs:asnA, communitiesAddTags:comms});
+            const a=e.data('a'), b=e.data('b');
+            if(!routers[a]||!routers[b]) return;
+
+            const tag = edgeRawTag(e);
+            const { capIndex } = (typeof tag === 'number') ? bfDecode(tag) : { capIndex: 0 };
+            const comms = (typeof tag === 'number' && capIndex > 0) ? [tag] : [];
+            const prefs = edgePrefs(e);
+
+            const asnA=Number(cy.getElementById(a).data('asn'));
+            const asnB=Number(cy.getElementById(b).data('asn'));
+
+            const neighborA = { name:b, peerAs:asnB };
+            if (comms.length > 0) neighborA.communitiesAddTags = comms;
+            if (prefs.prefAB !== null && prefs.prefAB !== 0) neighborA.localPref = prefs.prefAB;
+            routers[a].neighbors.push(neighborA);
+
+            const neighborB = { name:a, peerAs:asnA };
+            if (comms.length > 0) neighborB.communitiesAddTags = comms;
+            if (prefs.prefBA !== null && prefs.prefBA !== 0) neighborB.localPref = prefs.prefBA;
+            routers[b].neighbors.push(neighborB);
         });
         return {opera, image, routers};
     }
+
     function downloadValues(){
         const values=buildValues(); const text=jsyaml.dump(values,{noRefs:true,lineWidth:120});
         const blob=new Blob([text],{type:'text/yaml'}); const a=document.createElement('a');
         a.href=URL.createObjectURL(blob); a.download='values.yaml'; a.click(); URL.revokeObjectURL(a.href);
     }
+
     function loadValues(obj){
         if(!obj || typeof obj!=='object'){ alert('Invalid values.yaml'); return; }
         const routers=obj.routers; if(!routers || typeof routers!=='object'){ alert('Field "routers" is missing in values.yaml'); return; }
@@ -370,18 +400,41 @@
             const pos={x:140+(idx%5)*160, y:200+Math.floor(idx/5)*120};
             const n=cy.add({data:{id:name, asn:Number.isNaN(asn)?null:asn, routerId:rid}, position:pos}); applyNodeLabelFromAsn(n);
         });
-        const pushed=new Set();
+
+        const edgeData = {};
+
         Object.entries(routers).forEach(([aName,router])=>{
             const nbs=Array.isArray(router.neighbors)?router.neighbors:[];
             nbs.forEach(nb=>{
-                const bName=nb && nb.name; if(!bName || !routers[bName]) return;
-                const key=(aName<bName)?aName+'__'+bName:bName+'__'+aName; if(pushed.has(key)) return; pushed.add(key);
-                const commsA=(nb.communitiesAddTags||[]).map(Number).filter(n=>!Number.isNaN(n));
-                let commsB=[]; const lstB=Array.isArray(routers[bName].neighbors)?routers[bName].neighbors:[]; const back=lstB.find(x=>x && x.name===aName);
-                if(back && Array.isArray(back.communitiesAddTags)) commsB=back.communitiesAddTags.map(Number).filter(n=>!Number.isNaN(n));
-                const union=Array.from(new Set([].concat(commsA,commsB)));
-                const e=addOrEdge(aName,bName); if(e){ e.data('communitiesAddTags', union); applyEdgeLabel(e); }
+                const bName=nb && nb.name;
+                if(!bName || !routers[bName]) return;
+
+                const [x,y]=[aName,bName].sort();
+                const edgeId = x+'__UND__'+y;
+                if (!edgeData[edgeId]) edgeData[edgeId] = { a: x, b: y, comms: [], prefAB: null, prefBA: null };
+
+                const comms = (nb.communitiesAddTags||[]).map(Number).filter(n=>!Number.isNaN(n) && n >= 256);
+                if (comms.length > 0) {
+                    const { capIndex } = bfDecode(comms[0]);
+                    if (capIndex > 0) {
+                        edgeData[edgeId].comms = [comms[0]];
+                    }
+                }
+
+                const pref = Number(nb.localPref);
+                if (!Number.isNaN(pref) && pref > 0) {
+                    if (aName === x) edgeData[edgeId].prefAB = pref;
+                    else edgeData[edgeId].prefBA = pref;
+                }
             });
+        });
+
+        Object.values(edgeData).forEach(data => {
+            const e = addOrEdge(data.a, data.b);
+            if(e){
+                e.data({communitiesAddTags: data.comms, prefAB: data.prefAB, prefBA: data.prefBA });
+                applyEdgeLabel(e);
+            }
         });
         layout();
     }
@@ -396,42 +449,46 @@
         finally{ e.target.value=''; }
     });
 
-    $('fuzzyControls').addEventListener('click',(e)=>{
+    function setEdgeBitfield(capIndex,ms){
         if(!editingEdge) return;
-        const chip=e.target.closest('.chip'); if(!chip) return;
-        const choice=chip.getAttribute('data-fuzzy');
-        let tags=[]; if(choice==='100') tags=[100]; else if(choice==='200') tags=[200]; else if(choice==='both') tags=[100,200];
-        History.push();
-        editingEdge.data({communitiesAddTags:tags});
-        $('eComms').value=tags.join(',');
-        applyEdgeLabel(editingEdge);
-    });
-
-    function setEdgeBitfield(exp,ms){
-        if(!editingEdge) return;
-        const suffix=bfEncode(exp,ms);
-        if(editingEdge.data('bfLast')===suffix) return;
-        History.push();
-        editingEdge.data({communitiesAddTags:[suffix], bfLast:suffix});
-        $('eComms').value=String(suffix);
+        if (capIndex === 0) {
+            $('eComms').value = '';
+            editingEdge.data({communitiesAddTags: [], bfLast: null});
+        } else {
+            const suffix=bfEncode(capIndex,ms);
+            $('eComms').value=String(suffix);
+            editingEdge.data({communitiesAddTags:[suffix], bfLast:suffix});
+        }
+        updateBfPreview(true);
         applyEdgeLabel(editingEdge);
     }
 
     function updateBfPreview(skipApply){
-        const exp=Number($('bfCap').value); const ms=Number($('bfLat').value);
-        const okExp=!Number.isNaN(exp) && exp>=0 && exp<=255; const okMs=!Number.isNaN(ms) && ms>=0 && ms<=255;
-        $('bfPreview').textContent = (okExp && okMs) ? `Preview: ${humanShortCap(exp)}/${ms} • ${bfEncode(exp,ms)}` : '';
-        if(uiMode===MODE.BIT && okExp && okMs && !skipApply) setEdgeBitfield(exp,ms);
+        const idx=Number($('bfCap').value); const ms=Number($('bfLat').value);
+        const okIdx=!Number.isNaN(idx) && idx>=0 && idx<=255; const okMs=!Number.isNaN(ms) && ms>=0 && ms<=255;
+        if (okIdx && idx === 0) {
+            $('bfPreview').textContent = 'Preview: None / Clears Community';
+            if(!skipApply) setEdgeBitfield(0, ms);
+        } else if (okIdx && okMs) {
+            $('bfPreview').textContent = `Preview: ${humanShortBw(idx)}/${ms}ms • ${bfEncode(idx,ms)}`;
+            if(!skipApply) setEdgeBitfield(idx,ms);
+        } else {
+            $('bfPreview').textContent = '';
+            if(!skipApply) {
+                $('eComms').value = '';
+                if (editingEdge) editingEdge.data({communitiesAddTags: [], bfLast: null});
+                applyEdgeLabel(editingEdge);
+            }
+        }
     }
 
     $('bfCap').addEventListener('input', ()=>updateBfPreview(false));
     $('bfLat').addEventListener('input', ()=>updateBfPreview(false));
-    $('bfCapChips').addEventListener('click',(e)=>{ const c=e.target.closest('.chip'); if(!c) return; $('bfCap').value=c.getAttribute('data-exp'); updateBfPreview(false); });
+    $('bfCapChips').addEventListener('click',(e)=>{ const c=e.target.closest('.chip'); if(!c) return; $('bfCap').value=c.getAttribute('data-idx'); updateBfPreview(false); });
     $('bfLatChips').addEventListener('click',(e)=>{ const c=e.target.closest('.chip'); if(!c) return; $('bfLat').value=c.getAttribute('data-ms'); updateBfPreview(false); });
 
     (function bootstrap(){
-        const a=addNodeAtCenter(); const b=addNodeAt({x:a.position('x')+180,y:a.position('y')});
-        const e=addOrEdge(a.id(), b.id()); e.select();
+        History.clear();
     })();
 </script>
 </body>

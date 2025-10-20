@@ -24,6 +24,7 @@ import (
 	"net"
 	"slices"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/osrg/gobgp/v4/pkg/config/oc"
@@ -146,7 +147,8 @@ type Path struct {
 
 	// Opera cache (optional)
 	operaCache struct {
-		coverage float64
+		sync.RWMutex
+		coverage uint16
 		capIndex uint8
 		sumLat   uint32
 		valid    bool

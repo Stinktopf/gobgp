@@ -189,7 +189,7 @@ func IsWorseOperaPath(newPath, existingPath *Path) bool {
 	return false
 }
 
-func calculateMetrics(p *Path) (relativeCoverage float64, minCapIndex uint8, sumLatMs uint32) {
+func calculateMetrics(p *Path) (coverage uint16, minCapIndex uint8, sumLatMs uint32) {
 	asList := p.GetAsList()
 	totalIntermediateHops := 0
 	if len(asList) > 1 {
@@ -199,7 +199,7 @@ func calculateMetrics(p *Path) (relativeCoverage float64, minCapIndex uint8, sum
 		}
 	}
 	if totalIntermediateHops == 0 {
-		return 1.0, 0, 0
+		return 10000, 0, 0 // 1.0 * 10000
 	}
 
 	communities := p.GetCommunities()
@@ -218,7 +218,7 @@ func calculateMetrics(p *Path) (relativeCoverage float64, minCapIndex uint8, sum
 	}
 	checkAS = append(checkAS, asList[:len(asList)-1]...)
 
-	minCapIndex = uint8(0)
+	minCapIndex = 0
 	var sumLat uint32
 	participatingHops := 0
 
@@ -249,32 +249,42 @@ func calculateMetrics(p *Path) (relativeCoverage float64, minCapIndex uint8, sum
 	}
 
 	if participatingHops == 0 {
-		return 0.0, 0, 0
+		return 0, 0, 0
 	}
 
-	relativeCoverage = float64(participatingHops) / float64(totalIntermediateHops)
-	if relativeCoverage > 1.0 {
-		relativeCoverage = 1.0
+	ratio := float64(participatingHops) / float64(totalIntermediateHops)
+	if ratio > 1.0 {
+		ratio = 1.0
 	}
-
-	return relativeCoverage, minCapIndex, sumLat
+	coverage = uint16(ratio * 10000.0)
+	return coverage, minCapIndex, sumLat
 }
 
 func GetOperaMetrics(p *Path) (float64, uint8, uint32) {
 	if p == nil {
 		return 0.0, 0, 0
 	}
+
+	p.operaCache.RLock()
 	if p.operaCache.valid {
-		return p.operaCache.coverage, p.operaCache.capIndex, p.operaCache.sumLat
+		cov := p.operaCache.coverage
+		capIdx := p.operaCache.capIndex
+		sumLat := p.operaCache.sumLat
+		p.operaCache.RUnlock()
+		return float64(cov) / 10000.0, capIdx, sumLat
 	}
+	p.operaCache.RUnlock()
 
 	cov, capIdx, lat := calculateMetrics(p)
+
+	p.operaCache.Lock()
 	p.operaCache.coverage = cov
 	p.operaCache.capIndex = capIdx
 	p.operaCache.sumLat = lat
 	p.operaCache.valid = true
+	p.operaCache.Unlock()
 
-	return cov, capIdx, lat
+	return float64(cov) / 10000.0, capIdx, lat
 }
 
 func humanBandwidth(index uint8) string {

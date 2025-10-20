@@ -13,6 +13,8 @@ const (
 	OperaEnabled
 )
 
+const MaxOperaAsPathLength = 15
+
 var operaBandwidthLUT = []uint64{
 	0, 10, 100, 1000, 10000, 25000, 40000, 100000, 200000, 400000, 800000, 1600000,
 }
@@ -74,6 +76,15 @@ func OperaImportAccept(known []*Path, cand *Path) bool {
 	if !IsOperaEnabled() || cand.IsWithdraw {
 		return true
 	}
+
+	if cand.GetAsPathLen() > MaxOperaAsPathLength {
+		if IsOperaDebug() {
+			fmt.Printf("[OPERA] REJECTED (MAX PATH LENGTH %d) ROUTE TO %s VIA AS %s\n",
+				MaxOperaAsPathLength, cand.GetPrefix(), AsPath(cand))
+		}
+		return false
+	}
+
 	return OperaImportAcceptInternal(known, cand)
 }
 
@@ -250,7 +261,20 @@ func calculateMetrics(p *Path) (relativeCoverage float64, minCapIndex uint8, sum
 }
 
 func GetOperaMetrics(p *Path) (float64, uint8, uint32) {
-	return calculateMetrics(p)
+	if p == nil {
+		return 0.0, 0, 0
+	}
+	if p.operaCache.valid {
+		return p.operaCache.coverage, p.operaCache.capIndex, p.operaCache.sumLat
+	}
+
+	cov, capIdx, lat := calculateMetrics(p)
+	p.operaCache.coverage = cov
+	p.operaCache.capIndex = capIdx
+	p.operaCache.sumLat = lat
+	p.operaCache.valid = true
+
+	return cov, capIdx, lat
 }
 
 func humanBandwidth(index uint8) string {

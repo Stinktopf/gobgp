@@ -77,7 +77,7 @@ def plot_min_max_avg(ax, series, color, title, ylabel, ylim=None):
         ax.set_ylim(*ylim)
 
 if __name__ == "__main__":
-    fig, axes = plt.subplots(4, 2, figsize=(16, 16), sharex=True)
+    fig, axes = plt.subplots(5, 2, figsize=(16, 20), sharex=True)
 
     data_obgp = load_summary(FILES["oBGP"])
     data_bgp = load_summary(FILES["BGP"])
@@ -89,9 +89,12 @@ if __name__ == "__main__":
         ("BGP", data_bgp, "num_destinations", "BGP – Prefixes", "Number of prefixes"),
         ("oBGP", data_obgp, "path_len_min", "oBGP – Min Path Length", "Path length"),
         ("BGP", data_bgp, "path_len_min", "BGP – Min Path Length", "Path length"),
+        ("oBGP", data_obgp, "path_len_avg", "oBGP – Avg Path Length", "Average path length"),#
+        ("BGP", data_bgp, "path_len_avg", "BGP – Avg Path Length", "Average path length"),
         ("oBGP", data_obgp, "path_len_max", "oBGP – Max Path Length", "Path length"),
         ("BGP", data_bgp, "path_len_max", "BGP – Max Path Length", "Path length"),
     ]
+
 
     series_data = {}
     for mode, data, field, title, ylabel in plots:

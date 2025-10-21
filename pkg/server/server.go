@@ -1533,11 +1533,6 @@ func (s *BgpServer) propagateOperaUpdates(
 		desiredPre := make([]*table.Path, 0, 3)
 
 		var std *table.Path
-		var hb, ll *table.Path
-
-		var bestHbCov, bestLlCov float64 = -1.0, -1.0
-		var worstHbCapIdx, worstLlCapIdx uint8
-		var worstHbLat, worstLlLat uint32
 
 		for _, p := range d.KnownPathList {
 			if p.IsWithdraw || p.IsNexthopInvalid {
@@ -1552,24 +1547,6 @@ func (s *BgpServer) propagateOperaUpdates(
 
 			if std == nil || table.IsWorseOperaPath(p, std) {
 				std = p
-			}
-
-			coverage, capIdx, sumLat := table.GetOperaMetrics(p)
-			if coverage > 0.0 {
-
-				if hb == nil || coverage > bestHbCov ||
-					(coverage == bestHbCov && capIdx > worstHbCapIdx) ||
-					(coverage == bestHbCov && capIdx == worstHbCapIdx && sumLat > worstHbLat) ||
-					(coverage == bestHbCov && capIdx == worstHbCapIdx && sumLat == worstHbLat && table.IsWorseOperaPath(p, hb)) {
-					hb, bestHbCov, worstHbCapIdx, worstHbLat = p, coverage, capIdx, sumLat
-				}
-
-				if ll == nil || coverage > bestLlCov ||
-					(coverage == bestLlCov && sumLat > worstLlLat) ||
-					(coverage == bestLlCov && sumLat == worstLlLat && capIdx > worstLlCapIdx) ||
-					(coverage == bestLlCov && sumLat == worstLlLat && capIdx == worstLlCapIdx && table.IsWorseOperaPath(p, ll)) {
-					ll, bestLlCov, worstLlCapIdx, worstLlLat = p, coverage, capIdx, sumLat
-				}
 			}
 		}
 
@@ -1587,8 +1564,6 @@ func (s *BgpServer) propagateOperaUpdates(
 		}
 
 		addDesired(std)
-		addDesired(hb)
-		addDesired(ll)
 
 		if len(desiredPre) > limit {
 			desiredPre = desiredPre[:limit]

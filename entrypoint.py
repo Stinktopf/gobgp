@@ -430,7 +430,7 @@ def write_gobgp_config_file() -> None:
             f"    passive-mode = {passive_mode}",
             "  [neighbors.add-paths.config]",
             "    receive = true",
-            f"    send-max = {3 if GOBGP_OPERA_ENABLED else 1}",
+            f"    send-max = 1",
             "  [[neighbors.afi-safis]]",
             "    [neighbors.afi-safis.config]",
             '      afi-safi-name = "ipv4-unicast"',

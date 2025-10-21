@@ -89,34 +89,25 @@ func OperaImportAccept(known []*Path, cand *Path) bool {
 }
 
 func OperaImportAcceptInternal(known []*Path, cand *Path) bool {
-	coverageCand, capIdxCand, latCand := GetOperaMetrics(cand)
+	var worstKnownPath *Path = nil
 
 	for _, existing := range known {
 		if existing == nil || existing.IsWithdraw {
 			continue
 		}
-		coverageEx, capIdxEx, latEx := GetOperaMetrics(existing)
 
-		if coverageCand < coverageEx {
-			return false
-		}
-		if coverageCand > coverageEx {
-			continue
-		}
-
-		if coverageCand == 0.0 {
-			if !IsBetterOperaPath(cand, existing) {
-				return false
-			}
-		} else {
-			isBetterBw := capIdxCand < capIdxEx
-			isBetterLat := latCand < latEx
-			if !(isBetterBw || isBetterLat) {
-				return false
-			}
+		if worstKnownPath == nil {
+			worstKnownPath = existing
+		} else if IsBetterOperaPath(worstKnownPath, existing) {
+			worstKnownPath = existing
 		}
 	}
-	return true
+
+	if worstKnownPath == nil {
+		return true
+	}
+
+	return IsBetterOperaPath(cand, worstKnownPath)
 }
 
 func IsBetterOperaPath(newPath, existingPath *Path) bool {

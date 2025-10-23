@@ -235,156 +235,133 @@ func (dd *Destination) GetMultiBestPath(id string) []*Path {
 	return getMultiBestPath(id, dd.knownPathList)
 }
 
-func containsASSubsequence(haystack, needle []uint32) bool {
-	if len(needle) == 0 || len(needle) > len(haystack) {
+func containsASSubsequence(seq, sub []uint32) bool {
+	if len(sub) == 0 || len(sub) > len(seq) {
 		return false
 	}
-outer:
-	for i := 0; i <= len(haystack)-len(needle); i++ {
-		for j := 0; j < len(needle); j++ {
-			if haystack[i+j] != needle[j] {
-				continue outer
+	for i := 0; i <= len(seq)-len(sub); i++ {
+		match := true
+		for j := 0; j < len(sub); j++ {
+			if seq[i+j] != sub[j] {
+				match = false
+				break
 			}
 		}
-		return true
+		if match {
+			return true
+		}
 	}
 	return false
 }
 
-// Calculates best-path among known paths for this destination.
-//
-// Modifies destination's state related to stored paths. Removes withdrawn
-// paths from known paths. Also, adds new paths to known paths.
-func (dest *Destination) Calculate(logger log.Logger, newPath *Path) *Update {
-	peerID := func(pi *PeerInfo) string {
-		if pi == nil || pi.ID == nil {
-			return "local"
-		}
-		return pi.ID.String()
+func (dest *Destination) dropSupersetPaths(ref *Path) {
+	refAS := ref.GetAsList()
+	if len(refAS) == 0 {
+		return
 	}
-	firstHopASN := func(p *Path) uint32 {
-		if p == nil {
-			return 0
+	keep := dest.knownPathList[:0]
+	for _, p := range dest.knownPathList {
+		if p.IsWithdraw {
+			continue
 		}
-		as := p.GetAsList()
-		if len(as) == 0 {
-			return 0
+		isSuperset := (p != ref) && containsASSubsequence(p.GetAsList(), refAS)
+		if isSuperset {
+			if IsOperaDebugEnabled() {
+				fmt.Printf("[OPERA] DROP SUPERSET PATH TO %s: %s ⊃ %s\n",
+					p.GetPrefix(), AsPath(p), AsPath(ref))
+			}
+			continue
 		}
-		return as[0]
+		keep = append(keep, p)
+	}
+	dest.knownPathList = keep
+}
+
+func (dest *Destination) releaseLocalID(p *Path) {
+	id := p.GetNlri().PathLocalIdentifier()
+	if id == 0 {
+		return
+	}
+	dest.localIdMap.Unflag(uint(id))
+	if IsOperaDebugEnabled() {
+		fmt.Printf("[OPERA] RELEASED IDENTIFIER %d FOR %s\n", id, AsPath(p))
+	}
+}
+
+func (dest *Destination) assignLocalIDs() {
+	for _, p := range dest.knownPathList {
+		if p.GetNlri().PathLocalIdentifier() != 0 {
+			continue
+		}
+		id, err := dest.localIdMap.FindandSetZeroBit()
+		if err != nil {
+			dest.localIdMap.Expand()
+			id, _ = dest.localIdMap.FindandSetZeroBit()
+		}
+		p.GetNlri().SetPathLocalIdentifier(uint32(id))
+	}
+}
+
+func peerLabel(pi *PeerInfo) string {
+	if pi == nil || pi.ID == nil {
+		return "local"
+	}
+	return pi.ID.String()
+}
+
+func (dest *Destination) processWithdraw(logger log.Logger, newPath *Path) {
+	if IsOperaDebugEnabled() {
+		fmt.Printf("[OPERA] WITHDRAW %s VIA %s FROM %s (%s)\n",
+			newPath.GetPrefix(), AsPath(newPath),
+			peerLabel(newPath.GetSource()), GetOperaType(newPath))
 	}
 
-	oldKnownPathList := make([]*Path, len(dest.knownPathList))
-	copy(oldKnownPathList, dest.knownPathList)
+	withdrawn := dest.explicitWithdraw(logger, newPath)
+	if !IsOperaEnabled() || withdrawn == nil {
+		return
+	}
+	dest.dropSupersetPaths(withdrawn)
+	if newPath.IsDropped() {
+		dest.releaseLocalID(withdrawn)
+	}
+}
+
+func (dest *Destination) processAnnouncement(logger log.Logger, newPath *Path) {
+	if IsOperaDebugEnabled() {
+		fmt.Printf("[OPERA] ANNOUNCE %s VIA %s FROM %s (%s)\n",
+			newPath.GetPrefix(), AsPath(newPath),
+			peerLabel(newPath.GetSource()), GetOperaType(newPath))
+	}
+
+	dest.implicitWithdraw(logger, newPath)
+	if !OperaImportAccept(dest.knownPathList, newPath) {
+		if IsOperaDebugEnabled() {
+			fmt.Printf("[OPERA] REJECT %s VIA %s FROM %s (%s)\n",
+				newPath.GetPrefix(), AsPath(newPath),
+				peerLabel(newPath.GetSource()), GetOperaType(newPath))
+		}
+		return
+	}
+
+	dest.insertSort(newPath)
+	if IsOperaEnabled() {
+		dest.dropSupersetPaths(newPath)
+	}
+}
+
+func (dest *Destination) Calculate(logger log.Logger, newPath *Path) *Update {
+	oldKnown := append([]*Path(nil), dest.knownPathList...)
 
 	if newPath.IsWithdraw {
-		if IsOperaDebug() {
-			fmt.Printf("[OPERA] INCOMING WITHDRAW OF ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
-				newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
-		}
-
-		p := dest.explicitWithdraw(logger, newPath)
-
-		if IsOperaEnabled() && p != nil {
-			withdrawn := p.GetAsList()
-			if len(withdrawn) > 0 {
-				kept := dest.knownPathList[:0]
-				for _, other := range dest.knownPathList {
-					if other == p || other.IsWithdraw {
-						continue
-					}
-					if containsASSubsequence(other.GetAsList(), withdrawn) {
-						if IsOperaDebug() {
-							fmt.Printf("[OPERA] DROP SUPERSET PATH TO %s: %s contains withdrawn %s\n",
-								other.GetPrefix(), AsPath(other), AsPath(p))
-						}
-						continue
-					}
-					kept = append(kept, other)
-				}
-				dest.knownPathList = kept
-			}
-		}
-
-		if p != nil && newPath.IsDropped() {
-			if id := p.GetNlri().PathLocalIdentifier(); id != 0 {
-				dest.localIdMap.Unflag(uint(id))
-				if IsOperaDebug() {
-					fmt.Printf("[OPERA] WITHDRAWN PATH TO %s RELEASED IDENTIFIER %d\n",
-						newPath.GetPrefix(), id)
-				}
-			}
-		}
+		dest.processWithdraw(logger, newPath)
 	} else {
-		if IsOperaDebug() {
-			fmt.Printf("[OPERA] INCOMING ANNOUNCEMENT OF ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
-				newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
-		}
-
-		dest.implicitWithdraw(logger, newPath)
-
-		if OperaImportAccept(dest.knownPathList, newPath) {
-			if IsOperaDebug() {
-				fmt.Printf("[OPERA] ACCEPTED NEW ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
-					newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
-			}
-			dest.insertSort(newPath)
-
-			if IsOperaEnabled() {
-				qAS := firstHopASN(newPath)
-
-				var oldQ *Path
-				for _, op := range oldKnownPathList {
-					if op != nil && !op.IsWithdraw && firstHopASN(op) == qAS {
-						oldQ = op
-						break
-					}
-				}
-
-				if oldQ != nil {
-					oldQAs := oldQ.GetAsList()
-					if len(oldQAs) > 0 {
-						filtered := dest.knownPathList[:0]
-						for _, other := range dest.knownPathList {
-							if other == newPath || other.IsWithdraw {
-								filtered = append(filtered, other)
-								continue
-							}
-							if containsASSubsequence(other.GetAsList(), oldQAs) {
-								if IsOperaDebug() {
-									fmt.Printf("[OPERA] DROP CONTAINS-OLD-Q %s: %s ⊃ old(q=%d):%s\n",
-										other.GetPrefix(), AsPath(other), qAS, AsPath(oldQ))
-								}
-								continue
-							}
-							filtered = append(filtered, other)
-						}
-						dest.knownPathList = filtered
-					}
-				}
-			}
-		} else if IsOperaDebug() {
-			fmt.Printf("[OPERA] REJECTED NEW ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
-				newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
-		}
+		dest.processAnnouncement(logger, newPath)
 	}
 
-	for _, path := range dest.knownPathList {
-		if path.GetNlri().PathLocalIdentifier() == 0 {
-			id, err := dest.localIdMap.FindandSetZeroBit()
-			if err != nil {
-				dest.localIdMap.Expand()
-				id, _ = dest.localIdMap.FindandSetZeroBit()
-			}
-			path.GetNlri().SetPathLocalIdentifier(uint32(id))
-		}
-	}
+	dest.assignLocalIDs()
 
-	l := make([]*Path, len(dest.knownPathList))
-	copy(l, dest.knownPathList)
-	return &Update{
-		KnownPathList:    l,
-		OldKnownPathList: oldKnownPathList,
-	}
+	newKnown := append([]*Path(nil), dest.knownPathList...)
+	return &Update{KnownPathList: newKnown, OldKnownPathList: oldKnown}
 }
 
 // Removes withdrawn paths.

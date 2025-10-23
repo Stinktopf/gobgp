@@ -45,15 +45,19 @@ var operaDebug = false
 func SetOperaDebug(enabled bool) {
 	operaDebug = enabled
 }
-func IsOperaDebug() bool {
+
+func IsOperaDebugEnabled() bool {
 	return operaDebug
 }
+
 func SetOperaMode(mode OperaMode) {
 	operaConfig.mode = mode
 }
+
 func IsOperaEnabled() bool {
 	return getOperaMode() == OperaEnabled
 }
+
 func getOperaMode() OperaMode {
 	return operaConfig.mode
 }
@@ -67,9 +71,8 @@ func GetOperaType(p *Path) string {
 		return "STANDARD"
 	} else if coverage == 1.0 {
 		return fmt.Sprintf("OPERA-COMPLETE(%s,%dms)", humanBandwidth(capIndex), sumLat)
-	} else {
-		return fmt.Sprintf("OPERA-PARTIAL[%.0f%%](%s,%dms)", coverage*100, humanBandwidth(capIndex), sumLat)
 	}
+	return fmt.Sprintf("OPERA-PARTIAL[%.0f%%](%s,%dms)", coverage*100, humanBandwidth(capIndex), sumLat)
 }
 
 func OperaImportAccept(known []*Path, cand *Path) bool {
@@ -78,7 +81,7 @@ func OperaImportAccept(known []*Path, cand *Path) bool {
 	}
 
 	if cand.GetAsPathLen() > MaxOperaAsPathLength {
-		if IsOperaDebug() {
+		if IsOperaDebugEnabled() {
 			fmt.Printf("[OPERA] REJECTED (MAX PATH LENGTH %d) ROUTE TO %s VIA AS %s\n",
 				MaxOperaAsPathLength, cand.GetPrefix(), AsPath(cand))
 		}
@@ -89,7 +92,7 @@ func OperaImportAccept(known []*Path, cand *Path) bool {
 }
 
 func OperaImportAcceptInternal(known []*Path, cand *Path) bool {
-	var worstKnownPath *Path = nil
+	var worstKnownPath *Path
 
 	for _, existing := range known {
 		if existing == nil || existing.IsWithdraw {
@@ -110,74 +113,45 @@ func OperaImportAcceptInternal(known []*Path, cand *Path) bool {
 	return IsBetterOperaPath(cand, worstKnownPath)
 }
 
-func IsBetterOperaPath(newPath, existingPath *Path) bool {
-	if newPath == nil || existingPath == nil {
-		return false
+func CompareOperaPaths(a, b *Path) int {
+	if a == nil || b == nil {
+		return 0
 	}
-	newLen := newPath.GetAsPathLen()
-	exLen := existingPath.GetAsPathLen()
-	if newLen != exLen {
-		return newLen < exLen
-	}
-	newAsPath := newPath.GetAsPath()
-	exAsPath := existingPath.GetAsPath()
-	if newAsPath == nil || exAsPath == nil {
-		return false
-	}
-	newSegs := newAsPath.Value
-	exSegs := exAsPath.Value
-	for i := 0; i < len(newSegs); i++ {
-		if i >= len(exSegs) {
-			break
+
+	aLen, bLen := a.GetAsPathLen(), b.GetAsPathLen()
+	if aLen != bLen {
+		if aLen < bLen {
+			return -1
 		}
-		newASList := newSegs[i].GetAS()
-		exASList := exSegs[i].GetAS()
-		minL := len(newASList)
-		if len(exASList) < minL {
-			minL = len(exASList)
-		}
-		for j := 0; j < minL; j++ {
-			if newASList[j] != exASList[j] {
-				return newASList[j] < exASList[j]
+		return 1
+	}
+
+	aAsPath, bAsPath := a.GetAsPath(), b.GetAsPath()
+	if aAsPath == nil || bAsPath == nil {
+		return 0
+	}
+
+	aSegs, bSegs := aAsPath.Value, bAsPath.Value
+	for i := 0; i < len(aSegs) && i < len(bSegs); i++ {
+		aList, bList := aSegs[i].GetAS(), bSegs[i].GetAS()
+		for j := 0; j < len(aList) && j < len(bList); j++ {
+			if aList[j] < bList[j] {
+				return -1
+			}
+			if aList[j] > bList[j] {
+				return 1
 			}
 		}
 	}
-	return false
+	return 0
 }
 
-func IsWorseOperaPath(newPath, existingPath *Path) bool {
-	if newPath == nil || existingPath == nil {
-		return false
-	}
-	newLen := newPath.GetAsPathLen()
-	exLen := existingPath.GetAsPathLen()
-	if newLen != exLen {
-		return newLen > exLen
-	}
-	newAsPath := newPath.GetAsPath()
-	exAsPath := existingPath.GetAsPath()
-	if newAsPath == nil || exAsPath == nil {
-		return false
-	}
-	newSegs := newAsPath.Value
-	exSegs := exAsPath.Value
-	for i := 0; i < len(newSegs); i++ {
-		if i >= len(exSegs) {
-			break
-		}
-		newASList := newSegs[i].GetAS()
-		exASList := exSegs[i].GetAS()
-		minL := len(newASList)
-		if len(exASList) < minL {
-			minL = len(exASList)
-		}
-		for j := 0; j < minL; j++ {
-			if newASList[j] != exASList[j] {
-				return newASList[j] < exASList[j]
-			}
-		}
-	}
-	return false
+func IsBetterOperaPath(a, b *Path) bool {
+	return CompareOperaPaths(a, b) < 0
+}
+
+func IsWorseOperaPath(a, b *Path) bool {
+	return CompareOperaPaths(a, b) > 0
 }
 
 func calculateMetrics(p *Path) (coverage uint16, minCapIndex uint8, sumLatMs uint32) {
@@ -190,7 +164,7 @@ func calculateMetrics(p *Path) (coverage uint16, minCapIndex uint8, sumLatMs uin
 		}
 	}
 	if totalIntermediateHops == 0 {
-		return 10000, 0, 0 // 1.0 * 10000
+		return 10000, 0, 0
 	}
 
 	communities := p.GetCommunities()

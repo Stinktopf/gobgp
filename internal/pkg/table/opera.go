@@ -113,32 +113,32 @@ func OperaImportAcceptInternal(known []*Path, cand *Path) bool {
 	return IsBetterOperaPath(cand, worstKnownPath)
 }
 
-func CompareOperaPaths(a, b *Path) int {
-	if a == nil || b == nil {
+func CompareOperaPaths(pathA, pathB *Path) int {
+	if pathA == nil || pathB == nil {
 		return 0
 	}
 
-	aLen, bLen := a.GetAsPathLen(), b.GetAsPathLen()
-	if aLen != bLen {
-		if aLen < bLen {
+	lengthA, lengthB := pathA.GetAsPathLen(), pathB.GetAsPathLen()
+	if lengthA != lengthB {
+		if lengthA < lengthB {
 			return -1
 		}
 		return 1
 	}
 
-	aAsPath, bAsPath := a.GetAsPath(), b.GetAsPath()
-	if aAsPath == nil || bAsPath == nil {
+	asPathA, asPathB := pathA.GetAsPath(), pathB.GetAsPath()
+	if asPathA == nil || asPathB == nil {
 		return 0
 	}
 
-	aSegs, bSegs := aAsPath.Value, bAsPath.Value
-	for i := 0; i < len(aSegs) && i < len(bSegs); i++ {
-		aList, bList := aSegs[i].GetAS(), bSegs[i].GetAS()
-		for j := 0; j < len(aList) && j < len(bList); j++ {
-			if aList[j] < bList[j] {
+	asSegmentsA, asSegmentsB := asPathA.Value, asPathB.Value
+	for segmentIndex := 0; segmentIndex < len(asSegmentsA) && segmentIndex < len(asSegmentsB); segmentIndex++ {
+		asListA, asListB := asSegmentsA[segmentIndex].GetAS(), asSegmentsB[segmentIndex].GetAS()
+		for asIndex := 0; asIndex < len(asListA) && asIndex < len(asListB); asIndex++ {
+			if asListA[asIndex] < asListB[asIndex] {
 				return -1
 			}
-			if aList[j] > bList[j] {
+			if asListA[asIndex] > asListB[asIndex] {
 				return 1
 			}
 		}
@@ -146,12 +146,12 @@ func CompareOperaPaths(a, b *Path) int {
 	return 0
 }
 
-func IsBetterOperaPath(a, b *Path) bool {
-	return CompareOperaPaths(a, b) < 0
+func IsBetterOperaPath(pathA, pathB *Path) bool {
+	return CompareOperaPaths(pathA, pathB) < 0
 }
 
-func IsWorseOperaPath(a, b *Path) bool {
-	return CompareOperaPaths(a, b) > 0
+func IsWorseOperaPath(pathA, pathB *Path) bool {
+	return CompareOperaPaths(pathA, pathB) > 0
 }
 
 func calculateMetrics(p *Path) (coverage uint16, minCapIndex uint8, sumLatMs uint32) {

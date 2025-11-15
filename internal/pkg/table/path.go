@@ -24,6 +24,7 @@ import (
 	"net"
 	"slices"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/osrg/gobgp/v4/pkg/config/oc"
@@ -143,6 +144,15 @@ type Path struct {
 	// For BGP Nexthop Tracking, this field shows if nexthop is invalidated by IGP.
 	IsNexthopInvalid bool
 	IsWithdraw       bool
+
+	// Opera cache (optional)
+	operaCache struct {
+		sync.RWMutex
+		coverage uint16
+		capIndex uint8
+		sumLat   uint32
+		valid    bool
+	}
 }
 
 type FilteredType uint8

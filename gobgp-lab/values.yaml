@@ -1,0 +1,51 @@
+opera:
+  enabled: "false"
+  mode: "bitfield"
+image:
+  repository: gobgp
+  tag: dev
+  pullPolicy: IfNotPresent
+routers:
+  frankfurt:
+    asn: 65001
+    routerId: 10.0.0.1
+    neighbors:
+      - name: toronto
+        peerAs: 65002
+      - name: fulda
+        peerAs: 65003
+        localPref: 200
+      - name: aachen
+        peerAs: 65004
+  toronto:
+    asn: 65002
+    routerId: 10.0.0.2
+    neighbors:
+      - name: frankfurt
+        peerAs: 65001
+        localPref: 200
+      - name: fulda
+        peerAs: 65003
+      - name: aachen
+        peerAs: 65004
+  fulda:
+    asn: 65003
+    routerId: 10.0.0.3
+    neighbors:
+      - name: frankfurt
+        peerAs: 65001
+      - name: toronto
+        peerAs: 65002
+        localPref: 200
+      - name: aachen
+        peerAs: 65004
+  aachen:
+    asn: 65004
+    routerId: 10.0.0.4
+    neighbors:
+      - name: frankfurt
+        peerAs: 65001
+      - name: toronto
+        peerAs: 65002
+      - name: fulda
+        peerAs: 65003

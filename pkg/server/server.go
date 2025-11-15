@@ -173,6 +173,9 @@ func NewBgpServer(opt ...ServerOption) *BgpServer {
 			}
 		}()
 	}
+
+	table.InitOperaFromEnv()
+
 	return s
 }
 
@@ -1344,6 +1347,11 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 			return family
 		}()
 		if targetPeer.isAddPathSendEnabled(f) {
+			if table.IsOperaEnabled() {
+				s.propagateOperaUpdates(rib, targetPeer, dsts, f)
+				continue
+			}
+
 			// in case of multiple paths to the same destination, we need to
 			// filter the paths before counting the number of paths to be sent.
 			if newPath.IsWithdraw {
@@ -1428,6 +1436,7 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 						})
 				}
 			}
+
 			if needToAdvertise(targetPeer) && len(bestList) > 0 {
 				sendfsmOutgoingMsg(targetPeer, bestList, nil, false)
 			}
@@ -1449,6 +1458,212 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 			}
 			if paths := s.processOutgoingPaths(targetPeer, bestList, oldList); len(paths) > 0 {
 				sendfsmOutgoingMsg(targetPeer, paths, nil, false)
+			}
+		}
+	}
+}
+
+func (s *BgpServer) propagateOperaUpdates(
+	rib *table.TableManager,
+	nbr *peer,
+	dsts []*table.Update,
+	f bgp.Family,
+) {
+	if !table.IsOperaEnabled() {
+		return
+	}
+
+	asPath := func(p *table.Path) string {
+		if p == nil {
+			return "<EMPTY>"
+		}
+		l := p.GetAsList()
+		if len(l) == 0 {
+			return "<EMPTY>"
+		}
+		out := make([]string, len(l))
+		for i, asn := range l {
+			out[i] = fmt.Sprintf("%d", asn)
+		}
+		return strings.Join(out, " ")
+	}
+	containsPeerAS := func(p *table.Path, asn uint32) bool {
+		for _, a := range p.GetAsList() {
+			if a == asn {
+				return true
+			}
+		}
+		return false
+	}
+	getPrefix := func(d *table.Update) string {
+		if len(d.KnownPathList) > 0 {
+			return d.KnownPathList[0].GetPrefix()
+		}
+		if len(d.OldKnownPathList) > 0 {
+			return d.OldKnownPathList[0].GetPrefix()
+		}
+		return ""
+	}
+	peerRouterID := func(p *peer) string {
+		if p != nil && p.fsm != nil {
+			p.fsm.lock.RLock()
+			defer p.fsm.lock.RUnlock()
+			if p.fsm.peerInfo != nil && p.fsm.peerInfo.ID != nil {
+				return p.fsm.peerInfo.ID.String()
+			}
+		}
+		return p.ID()
+	}
+
+	toID := peerRouterID(nbr)
+
+	nbr.fsm.lock.RLock()
+	neighStr := nbr.fsm.pConf.Config.NeighborAddress
+	nbr.fsm.lock.RUnlock()
+	neigh := net.ParseIP(neighStr)
+
+	peerAS := nbr.AS()
+
+	for _, d := range dsts {
+		limit := int(nbr.getAddPathSendMax(f))
+		if limit == 0 || limit > 1 {
+			limit = 1
+		}
+
+		desiredPre := make([]*table.Path, 0, 3)
+
+		var std *table.Path
+
+		for _, p := range d.KnownPathList {
+			if p.IsWithdraw || p.IsNexthopInvalid {
+				continue
+			}
+			if src := p.GetSource(); src != nil && src.Address != nil && neigh != nil && src.Address.Equal(neigh) {
+				continue
+			}
+			if containsPeerAS(p, peerAS) {
+				continue
+			}
+
+			if std == nil || table.IsWorseOperaPath(p, std) {
+				std = p
+			}
+		}
+
+		addDesired := func(p *table.Path) {
+			if p == nil {
+				return
+			}
+			lk := p.GetLocalKey()
+			for _, q := range desiredPre {
+				if q.GetLocalKey() == lk {
+					return
+				}
+			}
+			desiredPre = append(desiredPre, p)
+		}
+
+		addDesired(std)
+
+		if len(desiredPre) > limit {
+			desiredPre = desiredPre[:limit]
+		}
+
+		desired := make([]*table.Path, 0, len(desiredPre))
+		filteredKeys := make(map[table.PathLocalKey]struct{}, len(desiredPre))
+		for _, p := range desiredPre {
+			pc := p.Clone(false)
+			if fp := s.filterpath(nbr, pc, nil); fp != nil {
+				desired = append(desired, fp)
+				filteredKeys[fp.GetLocalKey()] = struct{}{}
+			} else if table.IsOperaDebug() {
+				fmt.Printf("[OPERA] FILTERED ANNOUNCEMENT OF ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n",
+					p.GetPrefix(), asPath(p), toID, table.GetOperaType(p))
+			}
+		}
+
+		shouldAdv := needToAdvertise(nbr)
+
+		withdraws := make([]*table.Path, 0)
+		for _, old := range d.OldKnownPathList {
+			if !nbr.hasPathAlreadyBeenSent(old) {
+				continue
+			}
+			if shouldAdv {
+				if _, ok := filteredKeys[old.GetLocalKey()]; ok {
+					continue
+				}
+			}
+			withdraws = append(withdraws, old.Clone(true))
+		}
+
+		wseen := make(map[table.PathLocalKey]struct{})
+		uniqWithdraws := make([]*table.Path, 0, len(withdraws))
+		for _, w := range withdraws {
+			if _, ok := wseen[w.GetLocalKey()]; ok {
+				continue
+			}
+			wseen[w.GetLocalKey()] = struct{}{}
+			uniqWithdraws = append(uniqWithdraws, w)
+		}
+		withdraws = uniqWithdraws
+
+		aseen := make(map[table.PathLocalKey]struct{})
+		uniqAnnounces := make([]*table.Path, 0, len(desired))
+		for _, p := range desired {
+			if _, ok := aseen[p.GetLocalKey()]; ok {
+				continue
+			}
+			aseen[p.GetLocalKey()] = struct{}{}
+
+			if _, conflict := wseen[p.GetLocalKey()]; conflict {
+				if table.IsOperaDebug() {
+					fmt.Printf("[OPERA] SKIPPED ANNOUNCE FOR %s VIA AS %s (withdraw wins)\n", p.GetPrefix(), asPath(p))
+				}
+				continue
+			}
+
+			if !nbr.hasPathAlreadyBeenSent(p) {
+				uniqAnnounces = append(uniqAnnounces, p)
+			}
+		}
+		announces := uniqAnnounces
+
+		toSend := make([]*table.Path, 0, len(withdraws)+len(announces))
+		toSend = append(toSend, withdraws...)
+		if shouldAdv {
+			toSend = append(toSend, announces...)
+		}
+
+		if len(toSend) > 0 {
+			if table.IsOperaDebug() {
+				fmt.Printf("[OPERA] ABOUT TO SEND for %s: %d withdraw(s), %d announce(s)\n", getPrefix(d), len(withdraws), len(announces))
+			}
+			sendfsmOutgoingMsg(nbr, toSend, nil, false)
+
+			for _, w := range withdraws {
+				nbr.updateRoutes(w)
+				if table.IsOperaDebug() {
+					fmt.Printf("[OPERA] WITHDRAWN ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n", w.GetPrefix(), asPath(w), toID, table.GetOperaType(w))
+				}
+			}
+			if shouldAdv {
+				for _, p := range announces {
+					nbr.updateRoutes(p)
+					if table.IsOperaDebug() {
+						fmt.Printf("[OPERA] ANNOUNCED ROUTE TO %s VIA AS %s TO PEER %s OF TYPE %s\n", p.GetPrefix(), asPath(p), toID, table.GetOperaType(p))
+					}
+				}
+			}
+		}
+
+		if len(d.KnownPathList) > 0 {
+			if dest := rib.GetDestination(d.KnownPathList[0]); dest != nil {
+				keep := make(map[table.PathLocalKey]struct{}, len(d.KnownPathList))
+				for _, p := range d.KnownPathList {
+					keep[p.GetLocalKey()] = struct{}{}
+				}
+				dest.ClearKnownPathList(func(p *table.Path) bool { _, ok := keep[p.GetLocalKey()]; return ok })
 			}
 		}
 	}

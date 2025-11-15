@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>BGP Topology Editor</title>
+    <script src="https://unpkg.com/cytoscape@3.27.0/dist/cytoscape.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+    <style>
+        :root{--text:#e6e9ee;--bg-ink:#0a1027;--grad-a:#60a5fa;--grad-b:#a78bfa;--grad-c:#22d3ee;--panel:rgba(255,255,255,.06);--panel2:rgba(255,255,255,.02);--border:rgba(255,255,255,.18);--chip:rgba(16,24,48,.65);--chip-on:rgba(96,165,250,.25)}
+        *{box-sizing:border-box}html,body{height:100%}
+        body{margin:0;color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:radial-gradient(50vmax 35vmax at 10% 12%, rgba(96,165,250,.18), transparent 60%),radial-gradient(45vmax 35vmax at 90% 18%, rgba(167,139,250,.18), transparent 60%),radial-gradient(42vmax 32vmax at 78% 82%, rgba(34,211,238,.18), transparent 60%),linear-gradient(135deg,#0a1027 0%,#0c1838 50%,#0a1027 100%);background-repeat:no-repeat}
+        #cy{position:fixed;inset:0}
+        .toolbar,.editor,.btn{backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%)}
+        .toolbar{position:fixed;left:14px;top:14px;display:flex;gap:8px;z-index:5;background:linear-gradient(180deg,var(--panel),var(--panel2)) padding-box,linear-gradient(135deg,rgba(96,165,250,.45),rgba(167,139,250,.45)) border-box;border:1px solid transparent;border-radius:16px;padding:8px;box-shadow:0 12px 40px rgba(0,0,0,.35)}
+        .btn{border:1px solid transparent;border-radius:12px;cursor:pointer;width:38px;height:38px;display:grid;place-items:center;background:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,.05)) padding-box,linear-gradient(135deg,rgba(96,165,250,.65),rgba(34,211,238,.65)) border-box;box-shadow:0 6px 20px rgba(0,0,0,.25);transition:transform .15s ease, box-shadow .15s ease;color:var(--text)}
+        .btn:hover{transform:translateY(-1px);box-shadow:0 10px 28px rgba(0,0,0,.35)}
+        .btn svg{width:18px;height:18px;display:block}
+        .editor{position:fixed;min-width:300px;max-width:400px;z-index:6;display:none;padding:12px 12px 10px;background:linear-gradient(180deg,var(--panel),var(--panel2)) padding-box,linear-gradient(135deg,rgba(96,165,250,.45),rgba(167,139,250,.45)) border-box;border:1px solid transparent;border-radius:16px;box-shadow:0 16px 50px rgba(0,0,0,.40)}
+        .editor h3{margin:0 0 8px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;background:linear-gradient(90deg,var(--grad-a),var(--grad-b),var(--grad-c));-webkit-background-clip:text;background-clip:text;color:transparent}
+        .row{display:flex;gap:8px; margin-bottom: 8px;}
+        label{display:block;font-size:12px;color:#c9d3e8;margin:6px 0 4px}
+        input[type="text"],input[type="number"]{width:100%;padding:9px 12px;border-radius:12px;background:rgba(16,24,48,.65);border:1px solid var(--border);color:var(--text);font-size:14px}
+        input:focus{outline:none;border-color:rgba(255,255,255,.36);box-shadow:0 0 0 4px rgba(96,165,250,.22)}
+        .hr{height:1px;background:rgba(255,255,255,.12);margin:12px 0;border-radius:1px}
+        .muted{opacity:.85}
+        .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+        .chip{background:var(--chip);border:1px solid var(--border);padding:6px 10px;border-radius:999px;cursor:pointer;font-size:12px;user-select:none}
+        .chip:hover{background:var(--chip-on)}
+        .preview{font-size:12px;margin-top:8px;opacity:.9}
+    </style>
+</head>
+<body>
+<div id="cy"></div>
+
+<div class="toolbar">
+    <button id="layoutBtn" class="btn" title="Auto layout" aria-label="Auto layout">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect></svg>
+    </button>
+    <button id="importBtn" class="btn" title="Import values.yaml" aria-label="Import values.yaml">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="M12 3v12"></path><path d="M7 8l5-5 5 5"></path></svg>
+    </button>
+    <button id="downloadBtn" class="btn" title="Download values.yaml" aria-label="Download values.yaml">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><path d="M12 3v12"></path><path d="M17 10l-5 5-5-5"></path></svg>
+    </button>
+    <input id="importInput" type="file" accept=".yaml,.yml" style="display:none"/>
+</div>
+
+<div id="nodeEditor" class="editor">
+    <h3>Router</h3>
+    <label>Name</label>
+    <input id="nName" type="text" placeholder="router-a"/>
+    <div class="row">
+        <div style="flex:1"><label>ASN</label><input id="nAsn" type="number" placeholder="65001"/></div>
+        <div style="flex:1"><label>Router ID (IPv4)</label><input id="nRid" type="text" placeholder="10.0.0.1"/></div>
+    </div>
+</div>
+
+<div id="edgeEditor" class="editor">
+    <h3>Edge</h3>
+    <div class="row">
+        <div style="flex:1"><label>Router A</label><input id="eA" type="text" disabled/></div>
+        <div style="flex:1"><label>Router B</label><input id="eB" type="text" disabled/></div>
+    </div>
+
+    <div id="bitfieldControls">
+        <div class="hr"></div>
+        <label>Intent Metrics (Community)</label>
+        <div class="row">
+            <div style="flex:1">
+                <label class="muted">Bandwidth Index (LUT)</label>
+                <input id="bfCap" type="number" min="0" max="255" placeholder="e.g. 7"/>
+                <div class="chips" id="bfCapChips">
+                    <span class="chip" data-idx="0">None</span>
+                    <span class="chip" data-idx="1">10M</span>
+                    <span class="chip" data-idx="2">100M</span>
+                    <span class="chip" data-idx="3">1G</span>
+                    <span class="chip" data-idx="4">10G</span>
+                    <span class="chip" data-idx="5">25G</span>
+                    <span class="chip" data-idx="6">40G</span>
+                    <span class="chip" data-idx="7">100G</span>
+                    <span class="chip" data-idx="8">200G</span>
+                    <span class="chip" data-idx="9">400G</span>
+                    <span class="chip" data-idx="10">800G</span>
+                    <span class="chip" data-idx="11">1.6T</span>
+                </div>
+            </div>
+            <div style="flex:1">
+                <label class="muted">Latency (ms)</label>
+                <input id="bfLat" type="number" min="0" max="255" placeholder="e.g. 20"/>
+                <div class="chips" id="bfLatChips">
+                    <span class="chip" data-ms="0">None</span>
+                    <span class="chip" data-ms="1">1</span>
+                    <span class="chip" data-ms="5">5</span>
+                    <span class="chip" data-ms="10">10</span>
+                    <span class="chip" data-ms="20">20</span>
+                    <span class="chip" data-ms="50">50</span>
+                    <span class="chip" data-ms="100">100</span>
+                    <span class="chip" data-ms="200">200</span>
+                    <span class="chip" data-ms="255">max</span>
+                </div>
+            </div>
+        </div>
+        <div class="preview" id="bfPreview"></div>
+        <label>Community Value</label>
+        <input id="eComms" type="text" placeholder="Set Bw > None to generate" readonly/>
+    </div>
+
+    <div class="hr"></div>
+    <label>Local Preference (optional)</label>
+    <div class="row">
+        <div style="flex:1">
+            <label class="muted"><span id="prefLabelAB">Pref A → B</span></label>
+            <input id="ePrefAB" type="number" min="0" placeholder="e.g. 200"/>
+        </div>
+        <div style="flex:1">
+            <label class="muted"><span id="prefLabelBA">Pref B → A</span></label>
+            <input id="ePrefBA" type="number" min="0" placeholder="e.g. 100"/>
+        </div>
+    </div>
+
+</div>
+
+<script>
+    const cy = cytoscape({
+        container: document.getElementById('cy'),
+        boxSelectionEnabled:true, selectionType:'additive',
+        style:[
+            { selector:'node', style:{ 'label':'data(label)','font-size':12,'color':'#fff','text-valign':'center','text-halign':'center', 'background-opacity':0,'border-color':'rgba(255,255,255,.95)','border-width':3,'width':62,'height':62 }},
+            { selector:'edge', style:{ 'width':3,'curve-style':'straight','line-fill':'linear-gradient', 'line-gradient-stop-colors':'#60a5fa #a78bfa #22d3ee','line-gradient-stop-positions':'0 50% 100%', 'line-cap':'round','opacity':0.95,'label':'data(label)','color':'#fff','font-size':12,'font-weight':700,'text-rotation':'autorotate' }},
+            { selector:'node:selected', style:{'border-color':'#8ab4ff','border-width':5}},
+            { selector:'edge:selected', style:{'width':5,'opacity':1,'line-gradient-stop-colors':'#8ab4ff #60a5fa #a78bfa'}}
+        ],
+        elements:[], layout:{name:'cose',animate:false}
+    });
+
+    const $ = id => document.getElementById(id);
+    const nodeEditor=$('nodeEditor'), edgeEditor=$('edgeEditor');
+    const bitfieldControls=$('bitfieldControls');
+
+    const bandwidthLUT = [ 0, 10, 100, 1000, 10000, 25000, 40000, 100000, 200000, 400000, 800000, 1600000 ];
+
+    function humanShortBw(index){
+        if (index <= 0 || index >= bandwidthLUT.length) return '?';
+        const mbps = bandwidthLUT[index];
+        if (mbps >= 1000000) return `${mbps/1000000}T`;
+        if (mbps >= 1000) return `${mbps/1000}G`;
+        return `${mbps}M`;
+    }
+
+    function bfEncode(capIndex,ms){ return ((capIndex & 0xFF)<<8) | (ms & 0xFF); }
+    function bfDecode(s){ return {capIndex:(s>>>8)&0xFF, latMs:s&0xFF}; }
+    function edgeRawTag(edge){
+        const tags = (edge.data('communitiesAddTags')||[]).map(Number).filter(n=>!Number.isNaN(n));
+        return tags.length > 0 ? tags[0] : null;
+    }
+    function edgePrefs(edge){
+        const prefAB = edge.data('prefAB');
+        const prefBA = edge.data('prefBA');
+        return {
+            prefAB: typeof prefAB === 'number' && prefAB >= 0 ? prefAB : null,
+            prefBA: typeof prefBA === 'number' && prefBA >= 0 ? prefBA : null
+        };
+    }
+
+    function applyNodeLabelFromAsn(n){
+        const asn=Number(n.data('asn'));
+        n.data('label', Number.isNaN(asn)?'':String(asn));
+    }
+
+    function applyEdgeLabel(edge){
+        const tag=edgeRawTag(edge),prefs=edgePrefs(edge);let p=[];
+        if(typeof tag==='number'&&tag>=256){
+            const{capIndex,latMs}=bfDecode(tag);
+            if(capIndex>0)p.push(`${humanShortBw(capIndex)}/${latMs}ms`);
+        }
+        let pa=prefs.prefAB,pb=prefs.prefBA;
+        const set=v=>v!==null&&!Number.isNaN(v)&&v!==0;
+        if(set(pa)||set(pb)){
+            if((!set(pa)||pa===100)&&set(pb)&&pb!==100)pa=100;
+            if((!set(pb)||pb===100)&&set(pa)&&pa!==100)pb=100;
+            if((pa!==null&&pa!==0&&pa!==100)||(pb!==null&&pb!==0&&pb!==100))
+                p.push(`LP(${pa||100}/${pb||100})`);
+        }
+        edge.data('label',p.join(' • '));
+    }
+
+    function applyEdgeLabelAll(){ cy.edges().forEach(applyEdgeLabel); }
+
+    function layout(){ cy.layout({name:'cose',animate:false,fit:true}).run(); }
+
+    function modelToScreen(pos){ const z=cy.zoom(), p=cy.pan(); return {left: pos.x*z + p.x, top: pos.y*z + p.y}; }
+    function positionNodeEditor(n){ const r=modelToScreen(n.position()); nodeEditor.style.left=(r.left+20)+'px'; nodeEditor.style.top=(r.top+20)+'px'; }
+    function positionEdgeEditor(e){ const r=modelToScreen(e.midpoint()); edgeEditor.style.left=(r.left+20)+'px'; edgeEditor.style.top=(r.top+20)+'px'; }
+
+    const History=(()=>{const MAX=50;let undo=[],redo=[],restoring=false;
+        function snap(){ return {elements: cy.elements().map(el=>el.json()), zoom: cy.zoom(), pan: cy.pan()}; }
+        function restore(s){ if(!s) return; restoring=true; try{
+            closeEditors(); cy.elements().remove(); cy.add(s.elements); cy.zoom(s.zoom||1); cy.pan(s.pan||{x:0,y:0});
+            cy.nodes().forEach(applyNodeLabelFromAsn); applyEdgeLabelAll();
+        } finally{ restoring=false; } }
+        return {
+            push(){ if(restoring) return; undo.push(snap()); if(undo.length>MAX) undo.shift(); redo.length=0; },
+            undo(){ if(!undo.length) return; const cur=snap(); const prev=undo.pop(); redo.push(cur); restore(prev); },
+            redo(){ if(!redo.length) return; const cur=snap(); const next=redo.pop(); undo.push(cur); restore(next); },
+            clear(){ undo=[]; redo=[]; }
+        };
+    })();
+
+    function nextName(){ let i=1; while(cy.getElementById('router-'+i).nonempty()) i++; return 'router-'+i; }
+    function maxAsn(){ let m=64999; cy.nodes().forEach(n=>{ const a=Number(n.data('asn')); if(!Number.isNaN(a) && a>m) m=a;}); return m; }
+    function nextAsn(){ return maxAsn()+1; }
+
+    function ipIndexToOctets(idx){ const perA=256*254; const a=Math.floor(idx/perA); const rem=idx%perA; const b=Math.floor(rem/254); const c=(rem%254)+1; return {a,b,c}; }
+    function ipIndexToString(idx){ const o=ipIndexToOctets(idx); return `10.${o.a}.${o.b}.${o.c}`; }
+    function parse10(ip){ const m=/^10\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip||""); if(!m) return null; const a=+m[1],b=+m[2],c=+m[3]; if([a,b,c].some(Number.isNaN)||a>255||b>255||c<1||c>254) return null; return {a,b,c}; }
+    function toIndex(a,b,c){ if(a<0||a>255||b<0||b>255||c<1||c>254) return null; return (a*256*254)+(b*254)+(c-1); }
+    function maxIdx10(){ let m=-1; cy.nodes().forEach(n=>{ const rid=(n.data('routerId')||'').trim(); const o=parse10(rid); if(!o) return; const idx=toIndex(o.a,o.b,o.c); if(idx!==null && idx>m) m=idx;}); return m; }
+    function nextRid(){ const MAX=256*256*254; const n=maxIdx10()+1; if(n>=MAX){ alert('No free 10/8 hosts available.'); return '10.0.0.1'; } return ipIndexToString(n); }
+
+    function addNodeAt(pos){
+        History.push();
+        const id=nextName();
+        const node=cy.add({ data:{id,asn:nextAsn(),routerId:nextRid()}, position:pos });
+        applyNodeLabelFromAsn(node);
+        cy.$(':selected').unselect(); node.select();
+        return node;
+    }
+    function addNodeAtCenter(){
+        const rect=cy.container().getBoundingClientRect(); const pan=cy.pan(), z=cy.zoom();
+        return addNodeAt({x:(rect.width/2-pan.x)/z, y:(rect.height/2-pan.y)/z});
+    }
+    function addOrEdge(a,b){
+        if(!a||!b||a===b) return null;
+        const [x,y]=[a,b].sort(); const id=x+'__UND__'+y; let e=cy.getElementById(id);
+        if(e.nonempty()){ if(!e.data('source')||!e.data('target')) e.data({source:x,target:y}); if(!e.data('a')||!e.data('b')) e.data({a:x,b:y}); applyEdgeLabel(e); return e; }
+        History.push();
+        e = cy.add({ data:{id, a:x,b:y, source:x,target:y, communitiesAddTags:[]}, group:'edges' });
+        applyEdgeLabel(e);
+        return e;
+    }
+
+    function renameNode(oldId,newId){
+        if(oldId===newId) return cy.getElementById(oldId);
+        if(!newId || cy.getElementById(newId).nonempty()){ alert('Invalid or duplicate name.'); return cy.getElementById(oldId); }
+        const old=cy.getElementById(oldId);
+        const data=Object.assign({}, old.data(), {id:newId});
+        const pos=old.position(), classes=old.classes();
+        const edges=old.connectedEdges().map(e=>({
+            id:e.id(), a:e.data('a'), b:e.data('b'),
+            comms:(e.data('communitiesAddTags')||[]).slice(),
+            prefs: edgePrefs(e)
+        }));
+        old.remove();
+        const n=cy.add({data, position:pos, classes:classes.join(' ')});
+        edges.forEach(info=>{
+            const na=info.a===oldId?newId:info.a; const nb=info.b===oldId?newId:info.b;
+            const e=addOrEdge(na,nb);
+            e.data({communitiesAddTags: info.comms||[], prefAB: info.prefs.prefAB, prefBA: info.prefs.prefBA });
+            applyEdgeLabel(e);
+        });
+        applyNodeLabelFromAsn(n);
+        return n;
+    }
+
+    let editingNode=null, nodeSnap=null, editingEdge=null, edgeSnap=null;
+
+    function openNodeEditor(n){
+        editingEdge=null; edgeEditor.style.display='none';
+        editingNode=n; nodeSnap={id:n.id(), asn: n.data('asn'), routerId:n.data('routerId')};
+        $('nName').value=nodeSnap.id; $('nAsn').value=nodeSnap.asn||''; $('nRid').value=nodeSnap.routerId||'';
+        positionNodeEditor(n); nodeEditor.style.display='block';
+    }
+
+    function openEdgeEditor(e){
+        editingNode=null; nodeEditor.style.display='none';
+        const a=e.data('a'), b=e.data('b');
+        editingEdge=e;
+        const tag = edgeRawTag(e);
+        const prefs = edgePrefs(e);
+        edgeSnap={a,b, tag, prefAB: prefs.prefAB, prefBA: prefs.prefBA };
+
+        $('eA').value=a; $('eB').value=b;
+        $('prefLabelAB').textContent = `Pref ${a} → ${b}`;
+        $('prefLabelBA').textContent = `Pref ${b} → ${a}`;
+        $('eComms').value= typeof tag === 'number' ? String(tag) : '';
+        $('ePrefAB').value = typeof edgeSnap.prefAB === 'number' ? String(edgeSnap.prefAB) : '';
+        $('ePrefBA').value = typeof edgeSnap.prefBA === 'number' ? String(edgeSnap.prefBA) : '';
+
+        positionEdgeEditor(e); edgeEditor.style.display='block';
+        if(typeof tag === 'number' && tag >= 256){
+            const {capIndex,latMs}=bfDecode(tag);
+            $('bfCap').value=String(capIndex); $('bfLat').value=String(latMs);
+        } else {
+            $('bfCap').value=''; $('bfLat').value='';
+        }
+        updateBfPreview(true);
+    }
+
+    function commitNodeEditor(){
+        if(!editingNode || nodeEditor.style.display==='none') return;
+        const name=$('nName').value.trim(); const asn=Number($('nAsn').value); const rid=$('nRid').value.trim();
+        if(!name){ alert('Name must not be empty.'); return; }
+        if(Number.isNaN(asn)){ alert('ASN must be a number.'); return; }
+        History.push();
+        const n=renameNode(editingNode.id(), name);
+        n.data({asn:asn, routerId:rid});
+        applyNodeLabelFromAsn(n);
+        editingNode=null; nodeEditor.style.display='none';
+    }
+
+    function commitEdgeEditor(){
+        if(!editingEdge || edgeEditor.style.display==='none') return;
+        History.push();
+        const capIdxVal = Number($('bfCap').value);
+        const latMsVal = Number($('bfLat').value);
+        const tagVal = (!Number.isNaN(capIdxVal) && capIdxVal > 0 && !Number.isNaN(latMsVal) && latMsVal >= 0) ? bfEncode(capIdxVal, latMsVal) : null;
+        const comms = typeof tagVal === 'number' ? [tagVal] : [];
+
+        const prefABVal = Number($('ePrefAB').value);
+        const prefBAVal = Number($('ePrefBA').value);
+        const prefAB = (!Number.isNaN(prefABVal) && prefABVal > 0) ? prefABVal : null;
+        const prefBA = (!Number.isNaN(prefBAVal) && prefBAVal > 0) ? prefBAVal : null;
+
+        editingEdge.data({communitiesAddTags: comms, prefAB, prefBA });
+        applyEdgeLabel(editingEdge);
+        editingEdge=null; edgeEditor.style.display='none';
+    }
+
+    function closeEditors(){ commitNodeEditor(); commitEdgeEditor(); }
+
+    cy.on('tap', (e)=>{ if(e.target===cy){ closeEditors(); cy.$(':selected').unselect(); }});
+    cy.on('tap','node, edge',(e)=>{ const el=e.target; const ev=e.originalEvent||{}; const togg=(window.__BGP_SHIFT_DOWN__===true)||!!ev.shiftKey||!!ev.ctrlKey||!!ev.metaKey; if(togg){ if(el.selected()) el.unselect(); else el.select(); return; } cy.$(':selected').unselect(); el.select(); if(el.isNode && el.isNode()) openNodeEditor(el); else if(el.isEdge && el.isEdge()) openEdgeEditor(el); });
+    cy.on('cxttap','node, edge',(e)=>{ const el=e.target; if(el.selected()) el.unselect(); else el.select(); });
+    cy.on('position pan zoom', ()=>{ if(editingNode) positionNodeEditor(editingNode); if(editingEdge) positionEdgeEditor(editingEdge); });
+
+    let dragging=false, pushed=false;
+    cy.on('grab','node',()=>{ dragging=true; pushed=false; });
+    cy.on('position','node',()=>{ if(dragging && !pushed){ History.push(); pushed=true; }});
+    cy.on('free','node',()=>{ dragging=false; pushed=false; });
+
+    (function trackShift(){
+        if(typeof window.__BGP_SHIFT_DOWN__==='undefined') window.__BGP_SHIFT_DOWN__=false;
+        function set(v){ window.__BGP_SHIFT_DOWN__=!!v; }
+        const g=cy.container();
+        window.addEventListener('keydown',e=>{ if(e.key==='Shift') set(true);});
+        window.addEventListener('keyup',e=>{ if(e.key==='Shift') set(false);});
+        g.addEventListener('mousedown',e=>{ if(e.shiftKey) set(true);});
+        g.addEventListener('pointerdown',e=>{ if(e.shiftKey) set(true);});
+        ['mouseup','pointerup','mouseleave'].forEach(t=>g.addEventListener(t,()=>set(false)));
+    })();
+
+    document.addEventListener('keydown', (e)=>{
+        const tag=(document.activeElement && document.activeElement.tagName)||''; if(tag==='INPUT') return;
+        if((e.ctrlKey||e.metaKey) && !e.shiftKey && e.key.toLowerCase()==='z'){ e.preventDefault(); History.undo(); return; }
+        if((e.ctrlKey||e.metaKey) && (e.key.toLowerCase()==='y' || (e.shiftKey && e.key.toLowerCase()==='z'))){ e.preventDefault(); History.redo(); return; }
+        if(e.key==='+'||e.key==='='||e.code==='NumpadAdd'){ e.preventDefault(); const sel=cy.$('node:selected'); if(sel.length>=2){ const ids=[sel[0].id(), sel[1].id()]; const edge=addOrEdge(ids[0],ids[1]); edge.select(); } else if(sel.length===1){ const n=sel[0]; const pos={x:n.position('x')+120, y:n.position('y')}; addNodeAt(pos);} else addNodeAtCenter(); }
+        if(e.key==='-'||e.code==='NumpadSubtract'||e.key==='Delete'||e.key==='Backspace'){ e.preventDefault(); const s=cy.$(':selected'); if(s.nonempty()){ History.push(); s.remove(); } }
+    });
+
+    function buildValues(){
+        const opera={enabled: 'false'}
+        const image={repository:'gobgp', tag:'dev', pullPolicy:'IfNotPresent'};
+        const routers={};
+        cy.nodes().forEach(n=>{ routers[n.id()]={asn:Number(n.data('asn')), routerId:n.data('routerId'), neighbors:[]}; });
+
+        cy.edges().forEach(e=>{
+            const a=e.data('a'), b=e.data('b');
+            if(!routers[a]||!routers[b]) return;
+
+            const tag = edgeRawTag(e);
+            const { capIndex } = (typeof tag === 'number') ? bfDecode(tag) : { capIndex: 0 };
+            const comms = (typeof tag === 'number' && capIndex > 0) ? [tag] : [];
+            const prefs = edgePrefs(e);
+
+            const asnA=Number(cy.getElementById(a).data('asn'));
+            const asnB=Number(cy.getElementById(b).data('asn'));
+
+            const neighborA = { name:b, peerAs:asnB };
+            if (comms.length > 0) neighborA.communitiesAddTags = comms;
+            if (prefs.prefAB !== null && prefs.prefAB !== 0) neighborA.localPref = prefs.prefAB;
+            routers[a].neighbors.push(neighborA);
+
+            const neighborB = { name:a, peerAs:asnA };
+            if (comms.length > 0) neighborB.communitiesAddTags = comms;
+            if (prefs.prefBA !== null && prefs.prefBA !== 0) neighborB.localPref = prefs.prefBA;
+            routers[b].neighbors.push(neighborB);
+        });
+        return {opera, image, routers};
+    }
+
+    function downloadValues(){
+        const values=buildValues(); const text=jsyaml.dump(values,{noRefs:true,lineWidth:120});
+        const blob=new Blob([text],{type:'text/yaml'}); const a=document.createElement('a');
+        a.href=URL.createObjectURL(blob); a.download='values.yaml'; a.click(); URL.revokeObjectURL(a.href);
+    }
+
+    function loadValues(obj){
+        if(!obj || typeof obj!=='object'){ alert('Invalid values.yaml'); return; }
+        const routers=obj.routers; if(!routers || typeof routers!=='object'){ alert('Field "routers" is missing in values.yaml'); return; }
+        History.push(); closeEditors(); cy.elements().remove();
+        const names=Object.keys(routers);
+        names.forEach((name,idx)=>{
+            const r=routers[name]||{}; const asn=Number(r.asn); const rid=(r.routerId||'').trim();
+            const pos={x:140+(idx%5)*160, y:200+Math.floor(idx/5)*120};
+            const n=cy.add({data:{id:name, asn:Number.isNaN(asn)?null:asn, routerId:rid}, position:pos}); applyNodeLabelFromAsn(n);
+        });
+
+        const edgeData = {};
+
+        Object.entries(routers).forEach(([aName,router])=>{
+            const nbs=Array.isArray(router.neighbors)?router.neighbors:[];
+            nbs.forEach(nb=>{
+                const bName=nb && nb.name;
+                if(!bName || !routers[bName]) return;
+
+                const [x,y]=[aName,bName].sort();
+                const edgeId = x+'__UND__'+y;
+                if (!edgeData[edgeId]) edgeData[edgeId] = { a: x, b: y, comms: [], prefAB: null, prefBA: null };
+
+                const comms = (nb.communitiesAddTags||[]).map(Number).filter(n=>!Number.isNaN(n) && n >= 256);
+                if (comms.length > 0) {
+                    const { capIndex } = bfDecode(comms[0]);
+                    if (capIndex > 0) {
+                        edgeData[edgeId].comms = [comms[0]];
+                    }
+                }
+
+                const pref = Number(nb.localPref);
+                if (!Number.isNaN(pref) && pref > 0) {
+                    if (aName === x) edgeData[edgeId].prefAB = pref;
+                    else edgeData[edgeId].prefBA = pref;
+                }
+            });
+        });
+
+        Object.values(edgeData).forEach(data => {
+            const e = addOrEdge(data.a, data.b);
+            if(e){
+                e.data({communitiesAddTags: data.comms, prefAB: data.prefAB, prefBA: data.prefBA });
+                applyEdgeLabel(e);
+            }
+        });
+        layout();
+    }
+
+    $('layoutBtn').onclick=()=>{ History.push(); layout(); };
+    $('downloadBtn').onclick=downloadValues;
+    $('importBtn').onclick=()=>$('importInput').click();
+    $('importInput').addEventListener('change', async (e)=>{
+        const file=e.target.files && e.target.files[0]; if(!file) return;
+        try{ const text=await file.text(); const data=jsyaml.load(text); loadValues(data); }
+        catch(err){ console.error(err); alert('Failed to load values.yaml: '+(err && err.message ? err.message : String(err))); }
+        finally{ e.target.value=''; }
+    });
+
+    function setEdgeBitfield(capIndex,ms){
+        if(!editingEdge) return;
+        if (capIndex === 0) {
+            $('eComms').value = '';
+            editingEdge.data({communitiesAddTags: [], bfLast: null});
+        } else {
+            const suffix=bfEncode(capIndex,ms);
+            $('eComms').value=String(suffix);
+            editingEdge.data({communitiesAddTags:[suffix], bfLast:suffix});
+        }
+        updateBfPreview(true);
+        applyEdgeLabel(editingEdge);
+    }
+
+    function updateBfPreview(skipApply){
+        const idx=Number($('bfCap').value); const ms=Number($('bfLat').value);
+        const okIdx=!Number.isNaN(idx) && idx>=0 && idx<=255; const okMs=!Number.isNaN(ms) && ms>=0 && ms<=255;
+        if (okIdx && idx === 0) {
+            $('bfPreview').textContent = 'Preview: None / Clears Community';
+            if(!skipApply) setEdgeBitfield(0, ms);
+        } else if (okIdx && okMs) {
+            $('bfPreview').textContent = `Preview: ${humanShortBw(idx)}/${ms}ms • ${bfEncode(idx,ms)}`;
+            if(!skipApply) setEdgeBitfield(idx,ms);
+        } else {
+            $('bfPreview').textContent = '';
+            if(!skipApply) {
+                $('eComms').value = '';
+                if (editingEdge) editingEdge.data({communitiesAddTags: [], bfLast: null});
+                applyEdgeLabel(editingEdge);
+            }
+        }
+    }
+
+    $('bfCap').addEventListener('input', ()=>updateBfPreview(false));
+    $('bfLat').addEventListener('input', ()=>updateBfPreview(false));
+    $('bfCapChips').addEventListener('click',(e)=>{ const c=e.target.closest('.chip'); if(!c) return; $('bfCap').value=c.getAttribute('data-idx'); updateBfPreview(false); });
+    $('bfLatChips').addEventListener('click',(e)=>{ const c=e.target.closest('.chip'); if(!c) return; $('bfLat').value=c.getAttribute('data-ms'); updateBfPreview(false); });
+
+    (function bootstrap(){
+        History.clear();
+    })();
+</script>
+</body>
+</html>

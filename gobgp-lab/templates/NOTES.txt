@@ -1,0 +1,31 @@
+█████████████████████████████████████████████
+
+   ____    U  ___ u   ____     ____    ____
+U /"___|u   \/"_ \/U | __")uU /"___|uU|  _"\ u 
+\| |  _ /   | | | | \|  _ \/\| |  _ /\| |_) |/ 
+ | |_| |.-,_| |_| |  | |_) | | |_| |  |  __/   
+  \____| \_)-\___/   |____/   \____|  |_|      
+  _)(|_       \\    _|| \\_   _)(|_   ||>>_    
+ (__)__)     (__)  (__) (__) (__)__) (__)__)
+
+▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+
+# Install
+minikube start --cpus=20 --memory=14000
+minikube image build -t gobgp:dev .
+helm upgrade --install gobgp-lab gobgp-lab -n gobgp-lab --create-namespace
+
+# Usage
+gobgp neighbor
+gobgp global rib
+gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254
+gobgp global rib add 203.0.113.0/24 nexthop 10.0.0.254 aspath 64500 community 64500:200 identifier 1
+gobgp monitor global rib
+
+# Cleanup
+gobgp global rib -a ipv4 del all
+helm uninstall gobgp-lab -n gobgp-lab
+minikube ssh "docker image prune -a -f"
+minikube ssh "docker builder prune -a"
+
+█████████████████████████████████████████████

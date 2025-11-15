@@ -1,0 +1,47 @@
+{{- range $name, $r := .Values.routers }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}
+    spec:
+      containers:
+        - name: gobgp
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: ASN
+              value: "{{ $r.asn }}"
+            - name: ROUTER_ID
+              value: "{{ $r.routerId }}"
+            - name: NEIGHBORS_JSON
+              value: {{ toJson ($r.neighbors | default list) | quote }}
+            {{- if $r.communities }}
+            - name: COMMUNITIES
+              value: {{ join "," $r.communities | quote }}
+            {{- end }}
+            - name: GOBGP_OPERA_ENABLED
+              value: {{ $.Values.opera.enabled | quote }}
+          ports:
+            - name: bgp
+              containerPort: 179
+            - name: ipapi
+              containerPort: 8080
+---
+{{- end }}

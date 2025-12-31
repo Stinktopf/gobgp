@@ -1,0 +1,529 @@
+opera:
+  enabled: 'false'
+image:
+  repository: gobgp
+  tag: dev
+  pullPolicy: IfNotPresent
+routers:
+  amsterdam:
+    asn: 65000
+    routerId: 10.0.0.1
+    neighbors:
+      - name: brussels
+        peerAs: 65006
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+      - name: glasgow
+        peerAs: 65011
+        communitiesAddTags:
+          - 1036
+        localPref: 100
+      - name: hamburg
+        peerAs: 65012
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+      - name: london
+        peerAs: 65013
+        communitiesAddTags:
+          - 1798
+        localPref: 200
+  brussels:
+    asn: 65006
+    routerId: 10.0.0.7
+    neighbors:
+      - name: amsterdam
+        peerAs: 65000
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+      - name: frankfurt
+        peerAs: 65010
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+      - name: paris
+        peerAs: 65019
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+  glasgow:
+    asn: 65011
+    routerId: 10.0.0.12
+    neighbors:
+      - name: amsterdam
+        peerAs: 65000
+        communitiesAddTags:
+          - 1036
+        localPref: 100
+      - name: dublin
+        peerAs: 65009
+        communitiesAddTags:
+          - 1032
+        localPref: 100
+  hamburg:
+    asn: 65012
+    routerId: 10.0.0.13
+    neighbors:
+      - name: amsterdam
+        peerAs: 65000
+        communitiesAddTags:
+          - 1030
+        localPref: 200
+      - name: berlin
+        peerAs: 65004
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+      - name: frankfurt
+        peerAs: 65010
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+  london:
+    asn: 65013
+    routerId: 10.0.0.14
+    neighbors:
+      - name: amsterdam
+        peerAs: 65000
+        communitiesAddTags:
+          - 1798
+        localPref: 100
+      - name: dublin
+        peerAs: 65009
+        communitiesAddTags:
+          - 1033
+        localPref: 100
+      - name: paris
+        peerAs: 65019
+        communitiesAddTags:
+          - 1798
+        localPref: 200
+  athens:
+    asn: 65001
+    routerId: 10.0.0.2
+    neighbors:
+      - name: belgrade
+        peerAs: 65003
+        communitiesAddTags:
+          - 1039
+        localPref: 100
+      - name: rome
+        peerAs: 65021
+        communitiesAddTags:
+          - 1039
+        localPref: 200
+  belgrade:
+    asn: 65003
+    routerId: 10.0.0.4
+    neighbors:
+      - name: athens
+        peerAs: 65001
+        communitiesAddTags:
+          - 1039
+        localPref: 200
+      - name: budapest
+        peerAs: 65007
+        communitiesAddTags:
+          - 1032
+        localPref: 100
+      - name: zagreb
+        peerAs: 65026
+        communitiesAddTags:
+          - 1032
+        localPref: 100
+  rome:
+    asn: 65021
+    routerId: 10.0.0.22
+    neighbors:
+      - name: athens
+        peerAs: 65001
+        communitiesAddTags:
+          - 1039
+        localPref: 100
+      - name: milan
+        peerAs: 65016
+        communitiesAddTags:
+          - 1029
+        localPref: 200
+      - name: zagreb
+        peerAs: 65026
+        communitiesAddTags:
+          - 1032
+        localPref: 100
+  barcelona:
+    asn: 65002
+    routerId: 10.0.0.3
+    neighbors:
+      - name: lyon
+        peerAs: 65014
+        communitiesAddTags:
+          - 1033
+        localPref: 100
+      - name: madrid
+        peerAs: 65015
+        communitiesAddTags:
+          - 1033
+        localPref: 100
+  lyon:
+    asn: 65014
+    routerId: 10.0.0.15
+    neighbors:
+      - name: barcelona
+        peerAs: 65002
+        communitiesAddTags:
+          - 1033
+        localPref: 100
+      - name: paris
+        peerAs: 65019
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+      - name: zurich
+        peerAs: 65027
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+  madrid:
+    asn: 65015
+    routerId: 10.0.0.16
+    neighbors:
+      - name: barcelona
+        peerAs: 65002
+        communitiesAddTags:
+          - 1033
+        localPref: 100
+      - name: bordeaux
+        peerAs: 65005
+        communitiesAddTags:
+          - 1032
+        localPref: 100
+  budapest:
+    asn: 65007
+    routerId: 10.0.0.8
+    neighbors:
+      - name: belgrade
+        peerAs: 65003
+        communitiesAddTags:
+          - 1032
+        localPref: 200
+      - name: prague
+        peerAs: 65020
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+      - name: warsaw
+        peerAs: 65025
+        communitiesAddTags:
+          - 1032
+        localPref: 100
+  zagreb:
+    asn: 65026
+    routerId: 10.0.0.27
+    neighbors:
+      - name: belgrade
+        peerAs: 65003
+        communitiesAddTags:
+          - 1032
+        localPref: 100
+      - name: rome
+        peerAs: 65021
+        communitiesAddTags:
+          - 1032
+        localPref: 100
+      - name: vienna
+        peerAs: 65024
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+  berlin:
+    asn: 65004
+    routerId: 10.0.0.5
+    neighbors:
+      - name: hamburg
+        peerAs: 65012
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+      - name: copenhagen
+        peerAs: 65008
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+      - name: munich
+        peerAs: 65017
+        communitiesAddTags:
+          - 1799
+        localPref: 100
+      - name: prague
+        peerAs: 65020
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+      - name: warsaw
+        peerAs: 65025
+        communitiesAddTags:
+          - 1031
+        localPref: 100
+  copenhagen:
+    asn: 65008
+    routerId: 10.0.0.9
+    neighbors:
+      - name: berlin
+        peerAs: 65004
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+      - name: oslo
+        peerAs: 65018
+        communitiesAddTags:
+          - 1032
+        localPref: 100
+  munich:
+    asn: 65017
+    routerId: 10.0.0.18
+    neighbors:
+      - name: berlin
+        peerAs: 65004
+        communitiesAddTags:
+          - 1799
+        localPref: 100
+      - name: frankfurt
+        peerAs: 65010
+        communitiesAddTags:
+          - 1799
+        localPref: 100
+      - name: milan
+        peerAs: 65016
+        communitiesAddTags:
+          - 1031
+        localPref: 100
+      - name: vienna
+        peerAs: 65024
+        communitiesAddTags:
+          - 1029
+        localPref: 200
+  prague:
+    asn: 65020
+    routerId: 10.0.0.21
+    neighbors:
+      - name: budapest
+        peerAs: 65007
+        communitiesAddTags:
+          - 1030
+        localPref: 200
+      - name: berlin
+        peerAs: 65004
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+      - name: vienna
+        peerAs: 65024
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+  warsaw:
+    asn: 65025
+    routerId: 10.0.0.26
+    neighbors:
+      - name: budapest
+        peerAs: 65007
+        communitiesAddTags:
+          - 1032
+        localPref: 100
+      - name: berlin
+        peerAs: 65004
+        communitiesAddTags:
+          - 1031
+        localPref: 100
+      - name: stockholm
+        peerAs: 65022
+        communitiesAddTags:
+          - 1037
+        localPref: 100
+  bordeaux:
+    asn: 65005
+    routerId: 10.0.0.6
+    neighbors:
+      - name: madrid
+        peerAs: 65015
+        communitiesAddTags:
+          - 1032
+        localPref: 100
+      - name: paris
+        peerAs: 65019
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+  paris:
+    asn: 65019
+    routerId: 10.0.0.20
+    neighbors:
+      - name: brussels
+        peerAs: 65006
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+      - name: london
+        peerAs: 65013
+        communitiesAddTags:
+          - 1798
+        localPref: 100
+      - name: lyon
+        peerAs: 65014
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+      - name: bordeaux
+        peerAs: 65005
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+      - name: strasbourg
+        peerAs: 65023
+        communitiesAddTags:
+          - 1029
+        localPref: 200
+  frankfurt:
+    asn: 65010
+    routerId: 10.0.0.11
+    neighbors:
+      - name: brussels
+        peerAs: 65006
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+      - name: hamburg
+        peerAs: 65012
+        communitiesAddTags:
+          - 1029
+        localPref: 200
+      - name: munich
+        peerAs: 65017
+        communitiesAddTags:
+          - 1799
+        localPref: 100
+      - name: strasbourg
+        peerAs: 65023
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+  oslo:
+    asn: 65018
+    routerId: 10.0.0.19
+    neighbors:
+      - name: copenhagen
+        peerAs: 65008
+        communitiesAddTags:
+          - 1032
+        localPref: 100
+      - name: stockholm
+        peerAs: 65022
+        communitiesAddTags:
+          - 1031
+        localPref: 100
+  dublin:
+    asn: 65009
+    routerId: 10.0.0.10
+    neighbors:
+      - name: glasgow
+        peerAs: 65011
+        communitiesAddTags:
+          - 1032
+        localPref: 100
+      - name: london
+        peerAs: 65013
+        communitiesAddTags:
+          - 1033
+        localPref: 100
+  strasbourg:
+    asn: 65023
+    routerId: 10.0.0.24
+    neighbors:
+      - name: paris
+        peerAs: 65019
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+      - name: frankfurt
+        peerAs: 65010
+        communitiesAddTags:
+          - 1029
+        localPref: 200
+      - name: zurich
+        peerAs: 65027
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+  zurich:
+    asn: 65027
+    routerId: 10.0.0.28
+    neighbors:
+      - name: lyon
+        peerAs: 65014
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+      - name: strasbourg
+        peerAs: 65023
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+      - name: milan
+        peerAs: 65016
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+  milan:
+    asn: 65016
+    routerId: 10.0.0.17
+    neighbors:
+      - name: rome
+        peerAs: 65021
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+      - name: munich
+        peerAs: 65017
+        communitiesAddTags:
+          - 1031
+        localPref: 200
+      - name: zurich
+        peerAs: 65027
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+  vienna:
+    asn: 65024
+    routerId: 10.0.0.25
+    neighbors:
+      - name: zagreb
+        peerAs: 65026
+        communitiesAddTags:
+          - 1030
+        localPref: 100
+      - name: munich
+        peerAs: 65017
+        communitiesAddTags:
+          - 1029
+        localPref: 100
+      - name: prague
+        peerAs: 65020
+        communitiesAddTags:
+          - 1029
+        localPref: 200
+  stockholm:
+    asn: 65022
+    routerId: 10.0.0.23
+    neighbors:
+      - name: warsaw
+        peerAs: 65025
+        communitiesAddTags:
+          - 1037
+        localPref: 100
+      - name: oslo
+        peerAs: 65018
+        communitiesAddTags:
+          - 1031
+        localPref: 100

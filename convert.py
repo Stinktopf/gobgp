@@ -46,7 +46,7 @@ def convert(json_file: str, yaml_file: str):
         data = json.load(f)
 
     nodes = {n["id"]: normalize(n["name"]) for n in data.get("nodes", [])}
-    links = data.get("links", [])
+    links = data.get("edges", data.get("links", []))
     routers = {}
 
     for link in links:

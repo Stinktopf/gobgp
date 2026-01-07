@@ -1035,6 +1035,10 @@ func (lhs *Path) EqualBySourceAndPathID(rhs *Path) bool {
 		return false
 	}
 
+	if IsOperaEnabled() {
+		return true
+	}
+
 	return lhs.GetNlri().PathIdentifier() == rhs.GetNlri().PathIdentifier()
 }
 

@@ -214,13 +214,29 @@ func (dd *Destination) ClearKnownPathList(needed func(*Path) bool) {
 }
 
 func getBestPath(id string, as uint32, pathList []*Path) *Path {
-	for _, p := range pathList {
-		if rsFilter(id, as, p) {
-			continue
+	if IsOperaEnabled() {
+		var worst *Path
+		for _, p := range pathList {
+			if rsFilter(id, as, p) {
+				continue
+			}
+			if p == nil || p.IsWithdraw || p.IsNexthopInvalid {
+				continue
+			}
+			if worst == nil || IsWorseOperaPath(p, worst) {
+				worst = p
+			}
 		}
-		return p
+		return worst
+	} else {
+		for _, p := range pathList {
+			if rsFilter(id, as, p) {
+				continue
+			}
+			return p
+		}
+		return nil
 	}
-	return nil
 }
 
 func (dd *Destination) GetBestPath(id string, as uint32) *Path {
@@ -256,115 +272,20 @@ outer:
 // Modifies destination's state related to stored paths. Removes withdrawn
 // paths from known paths. Also, adds new paths to known paths.
 func (dest *Destination) Calculate(logger log.Logger, newPath *Path) *Update {
-	peerID := func(pi *PeerInfo) string {
-		if pi == nil || pi.ID == nil {
-			return "local"
-		}
-		return pi.ID.String()
-	}
-	firstHopASN := func(p *Path) uint32 {
-		if p == nil {
-			return 0
-		}
-		as := p.GetAsList()
-		if len(as) == 0 {
-			return 0
-		}
-		return as[0]
-	}
-
 	oldKnownPathList := make([]*Path, len(dest.knownPathList))
 	copy(oldKnownPathList, dest.knownPathList)
 
 	if newPath.IsWithdraw {
-		if IsOperaDebug() {
-			fmt.Printf("[OPERA] INCOMING WITHDRAW OF ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
-				newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
-		}
-
 		p := dest.explicitWithdraw(logger, newPath)
-
-		if IsOperaEnabled() && p != nil {
-			withdrawn := p.GetAsList()
-			if len(withdrawn) > 0 {
-				kept := dest.knownPathList[:0]
-				for _, other := range dest.knownPathList {
-					if other == p || other.IsWithdraw {
-						continue
-					}
-					if containsASSubsequence(other.GetAsList(), withdrawn) {
-						if IsOperaDebug() {
-							fmt.Printf("[OPERA] DROP SUPERSET PATH TO %s: %s contains withdrawn %s\n",
-								other.GetPrefix(), AsPath(other), AsPath(p))
-						}
-						continue
-					}
-					kept = append(kept, other)
-				}
-				dest.knownPathList = kept
-			}
-		}
-
 		if p != nil && newPath.IsDropped() {
 			if id := p.GetNlri().PathLocalIdentifier(); id != 0 {
 				dest.localIdMap.Unflag(uint(id))
-				if IsOperaDebug() {
-					fmt.Printf("[OPERA] WITHDRAWN PATH TO %s RELEASED IDENTIFIER %d\n",
-						newPath.GetPrefix(), id)
-				}
 			}
 		}
 	} else {
-		if IsOperaDebug() {
-			fmt.Printf("[OPERA] INCOMING ANNOUNCEMENT OF ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
-				newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
-		}
-
 		dest.implicitWithdraw(logger, newPath)
-
 		if OperaImportAccept(dest.knownPathList, newPath) {
-			if IsOperaDebug() {
-				fmt.Printf("[OPERA] ACCEPTED NEW ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
-					newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
-			}
 			dest.insertSort(newPath)
-
-			if IsOperaEnabled() {
-				qAS := firstHopASN(newPath)
-
-				var oldQ *Path
-				for _, op := range oldKnownPathList {
-					if op != nil && !op.IsWithdraw && firstHopASN(op) == qAS {
-						oldQ = op
-						break
-					}
-				}
-
-				if oldQ != nil {
-					oldQAs := oldQ.GetAsList()
-					if len(oldQAs) > 0 {
-						filtered := dest.knownPathList[:0]
-						for _, other := range dest.knownPathList {
-							if other == newPath || other.IsWithdraw {
-								filtered = append(filtered, other)
-								continue
-							}
-							if containsASSubsequence(other.GetAsList(), oldQAs) {
-								if IsOperaDebug() {
-									fmt.Printf("[OPERA] DROP CONTAINS-OLD-Q %s: %s ⊃ old(q=%d):%s\n",
-										other.GetPrefix(), AsPath(other), qAS, AsPath(oldQ))
-								}
-								continue
-							}
-							filtered = append(filtered, other)
-						}
-						dest.knownPathList = filtered
-					}
-				}
-			}
-		} else if IsOperaDebug() {
-			fmt.Printf("[OPERA] REJECTED NEW ROUTE TO %s VIA AS %s FROM PEER %s OF TYPE %s\n",
-				newPath.GetPrefix(), AsPath(newPath), peerID(newPath.GetSource()), GetOperaType(newPath))
 		}
 	}
 
@@ -584,23 +505,33 @@ type Update struct {
 }
 
 func getMultiBestPath(id string, pathList []*Path) []*Path {
-	// The path list of destinations in the global RIB are sorted
-	// in descending order. One of the criteria for being a better
-	// path is that it has a reachable next hop. Technically, if the
-	// first path is unreachable, then it's assumed none of them
-	// are. Therefore, we return an empty slice.
-	if len(pathList) == 0 || len(pathList) > 0 && pathList[0].IsNexthopInvalid {
-		// No reachable next hop found, so we return an empty slice.
-		return []*Path{}
-	}
-	best := pathList[0]
+	if IsOperaEnabled() {
+		// OPERA: In worst-path mode, we do not allow multipath propagation.
+		// We return only the single selected worst-path to maintain transparency.
+		wp := getBestPath(id, 0, pathList)
+		if wp == nil {
+			return []*Path{}
+		}
+		return []*Path{wp}
+	} else {
+		// The path list of destinations in the global RIB are sorted
+		// in descending order. One of the criteria for being a better
+		// path is that it has a reachable next hop. Technically, if the
+		// first path is unreachable, then it's assumed none of them
+		// are. Therefore, we return an empty slice.
+		if len(pathList) == 0 || (len(pathList) > 0 && pathList[0].IsNexthopInvalid) {
+			// No reachable next hop found, so we return an empty slice.
+			return []*Path{}
+		}
+		best := pathList[0]
 
-	// Attempt to find the first path that is both reachable and worse than the
-	// best path. Then return a slice paths from the best to that index.
-	index := sort.Search(len(pathList), func(i int) bool {
-		return pathList[i].IsNexthopInvalid || pathList[i].Compare(best) != 0
-	})
-	return pathList[:index]
+		// Attempt to find the first path that is both reachable and worse than the
+		// best path. Then return a slice paths from the best to that index.
+		index := sort.Search(len(pathList), func(i int) bool {
+			return pathList[i].IsNexthopInvalid || pathList[i].Compare(best) != 0
+		})
+		return pathList[:index]
+	}
 }
 
 func (u *Update) GetWithdrawnPath() []*Path {
@@ -664,24 +595,30 @@ func (u *Update) GetChanges(id string, as uint32, peerDown bool) (*Path, *Path, 
 
 	var multi []*Path
 
-	if id == GLOBAL_RIB_NAME && UseMultiplePaths.Enabled {
-		diff := func(lhs, rhs []*Path) bool {
-			if len(lhs) != len(rhs) {
-				return true
-			}
-			for idx, l := range lhs {
-				if !l.Equal(rhs[idx]) {
+	if id == GLOBAL_RIB_NAME {
+		if IsOperaEnabled() {
+			// OPERA: Force single path propagation (the selected worst path)
+			// in the Global RIB to ensure only one path is advertised.
+			multi = []*Path{best}
+		} else if UseMultiplePaths.Enabled {
+			diff := func(lhs, rhs []*Path) bool {
+				if len(lhs) != len(rhs) {
 					return true
 				}
+				for idx, l := range lhs {
+					if !l.Equal(rhs[idx]) {
+						return true
+					}
+				}
+				return false
 			}
-			return false
-		}
-		oldM := getMultiBestPath(id, u.OldKnownPathList)
-		newM := getMultiBestPath(id, u.KnownPathList)
-		if diff(oldM, newM) {
-			multi = newM
-			if len(newM) == 0 {
-				multi = []*Path{best}
+			oldM := getMultiBestPath(id, u.OldKnownPathList)
+			newM := getMultiBestPath(id, u.KnownPathList)
+			if diff(oldM, newM) {
+				multi = newM
+				if len(newM) == 0 {
+					multi = []*Path{best}
+				}
 			}
 		}
 	}

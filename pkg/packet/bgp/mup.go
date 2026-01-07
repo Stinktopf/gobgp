@@ -121,7 +121,6 @@ func getMUPRouteType(at uint8, rt uint16) (MUPRouteTypeInterface, error) {
 }
 
 type MUPNLRI struct {
-	PrefixDefault
 	Afi              uint16
 	ArchitectureType uint8
 	RouteType        uint16
@@ -129,7 +128,7 @@ type MUPNLRI struct {
 	RouteTypeData    MUPRouteTypeInterface
 }
 
-func (n *MUPNLRI) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
+func (n *MUPNLRI) decodeFromBytes(data []byte, options ...*MarshallingOption) error {
 	if len(data) < 4 {
 		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "Not all MUPNLRI bytes available")
 	}
@@ -158,14 +157,6 @@ func (n *MUPNLRI) Serialize(options ...*MarshallingOption) ([]byte, error) {
 		return nil, err
 	}
 	return append(buf, tbuf...), nil
-}
-
-func (n *MUPNLRI) AFI() uint16 {
-	return n.Afi
-}
-
-func (n *MUPNLRI) SAFI() uint8 {
-	return SAFI_MUP
 }
 
 func (n *MUPNLRI) Len(options ...*MarshallingOption) int {
@@ -213,7 +204,7 @@ func NewMUPNLRI(afi uint16, at uint8, rt uint16, data MUPRouteTypeInterface) *MU
 	}
 }
 
-func TEIDString(nlri AddrPrefixInterface) string {
+func TEIDString(nlri NLRI) string {
 	s := ""
 	switch n := nlri.(type) {
 	case *MUPNLRI:
@@ -227,7 +218,7 @@ func TEIDString(nlri AddrPrefixInterface) string {
 	return s
 }
 
-func QFIString(nlri AddrPrefixInterface) string {
+func QFIString(nlri NLRI) string {
 	s := ""
 	switch n := nlri.(type) {
 	case *MUPNLRI:
@@ -241,7 +232,7 @@ func QFIString(nlri AddrPrefixInterface) string {
 	return s
 }
 
-func EndpointString(nlri AddrPrefixInterface) string {
+func EndpointString(nlri NLRI) string {
 	s := ""
 	switch n := nlri.(type) {
 	case *MUPNLRI:

@@ -16,11 +16,14 @@
 package table
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/bits"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -28,9 +31,33 @@ import (
 	"github.com/segmentio/fasthash/fnv1a"
 
 	"github.com/osrg/gobgp/v4/pkg/apiutil"
-	"github.com/osrg/gobgp/v4/pkg/log"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
+
+func addrPrefixOnlySerialize(nlri bgp.NLRI) []byte {
+	switch T := nlri.(type) {
+	case *bgp.IPAddrPrefix:
+		byteLen := T.Prefix.Addr().BitLen() / 8
+		b := make([]byte, byteLen+1)
+		copy(b, T.Prefix.Addr().AsSlice())
+		b[byteLen] = uint8(T.Prefix.Bits())
+		return b
+	case *bgp.LabeledVPNIPAddrPrefix:
+		byteLen := T.Prefix.Addr().BitLen() / 8
+		// RD and length
+		b := make([]byte, byteLen+9)
+		serializedRD, _ := T.RD.Serialize()
+		copy(b, serializedRD)
+		copy(b[8:], T.Prefix.Addr().AsSlice())
+		b[8+byteLen] = uint8(T.Prefix.Bits())
+		return b
+	}
+	return []byte(nlri.String())
+}
+
+func AddrPrefixOnlyCompare(a, b bgp.NLRI) int {
+	return bytes.Compare(addrPrefixOnlySerialize(a), addrPrefixOnlySerialize(b))
+}
 
 // used internally, should not be aliassed
 type (
@@ -48,25 +75,17 @@ type TableSelectOption struct {
 	MultiPath      bool
 }
 
-func tableKey(nlri bgp.AddrPrefixInterface) addrPrefixKey {
+func tableKey(nlri bgp.NLRI) addrPrefixKey {
 	h := fnv1a.Init64
 	switch T := nlri.(type) {
 	case *bgp.IPAddrPrefix:
-		h = fnv1a.AddBytes64(h, T.Prefix.To4())
-		h = fnv1a.AddBytes64(h, []byte{T.Length})
-	case *bgp.IPv6AddrPrefix:
-		h = fnv1a.AddBytes64(h, T.Prefix.To16())
-		h = fnv1a.AddBytes64(h, []byte{T.Length})
+		h = fnv1a.AddBytes64(h, T.Prefix.Addr().AsSlice())
+		h = fnv1a.AddBytes64(h, []byte{uint8(T.Prefix.Bits())})
 	case *bgp.LabeledVPNIPAddrPrefix:
 		serializedRD, _ := T.RD.Serialize()
 		h = fnv1a.AddBytes64(h, serializedRD)
-		h = fnv1a.AddBytes64(h, T.Prefix.To4())
-		h = fnv1a.AddBytes64(h, []byte{T.Length - 8*uint8(T.Labels.Len())})
-	case *bgp.LabeledVPNIPv6AddrPrefix:
-		serializedRD, _ := T.RD.Serialize()
-		h = fnv1a.AddBytes64(h, serializedRD)
-		h = fnv1a.AddBytes64(h, T.Prefix.To16())
-		h = fnv1a.AddBytes64(h, []byte{T.Length - 8*uint8(T.Labels.Len())})
+		h = fnv1a.AddBytes64(h, T.Prefix.Addr().AsSlice())
+		h = fnv1a.AddBytes64(h, []byte{uint8(T.Prefix.Bits())})
 	default:
 		h = fnv1a.AddString64(h, nlri.String())
 	}
@@ -75,7 +94,7 @@ func tableKey(nlri bgp.AddrPrefixInterface) addrPrefixKey {
 
 type Destinations map[addrPrefixKey][]*Destination
 
-func (d Destinations) getDestinationList(nlri bgp.AddrPrefixInterface) []*Destination {
+func (d Destinations) getDestinationList(nlri bgp.NLRI) []*Destination {
 	dest, ok := d[tableKey(nlri)]
 	if !ok {
 		return nil
@@ -83,9 +102,9 @@ func (d Destinations) getDestinationList(nlri bgp.AddrPrefixInterface) []*Destin
 	return dest
 }
 
-func (d Destinations) Get(nlri bgp.AddrPrefixInterface) *Destination {
+func (d Destinations) Get(nlri bgp.NLRI) *Destination {
 	for _, d := range d.getDestinationList(nlri) {
-		if bgp.AddrPrefixOnlyCompare(d.nlri, nlri) == 0 {
+		if AddrPrefixOnlyCompare(d.nlri, nlri) == 0 {
 			return d
 		}
 	}
@@ -101,9 +120,9 @@ func (d Destinations) InsertUpdate(dest *Destination) (collision bool) {
 		new = true
 	}
 	for i, v := range d[key] {
-		if bgp.AddrPrefixOnlyCompare(v.nlri, nlri) == 0 {
+		if AddrPrefixOnlyCompare(v.nlri, nlri) == 0 {
 			d[key][i] = dest
-			return
+			return collision
 		}
 	}
 	if !new {
@@ -114,13 +133,13 @@ func (d Destinations) InsertUpdate(dest *Destination) (collision bool) {
 	return collision
 }
 
-func (d Destinations) Remove(nlri bgp.AddrPrefixInterface) {
+func (d Destinations) Remove(nlri bgp.NLRI) {
 	key := tableKey(nlri)
 	if _, ok := d[key]; !ok {
 		return
 	}
 	for i, v := range d[key] {
-		if bgp.AddrPrefixOnlyCompare(v.nlri, nlri) == 0 {
+		if AddrPrefixOnlyCompare(v.nlri, nlri) == 0 {
 			d[key] = append(d[key][:i], d[key][i+1:]...)
 			if len(d[key]) == 0 {
 				delete(d, key)
@@ -171,14 +190,14 @@ func (e EVPNMacNLRIs) Remove(rt bgp.ExtendedCommunityInterface, mac net.Hardware
 type Table struct {
 	Family       bgp.Family
 	destinations Destinations
-	logger       log.Logger
+	logger       *slog.Logger
 	// index of evpn prefixes with paths to a specific MAC in a MAC-VRF
 	// this is a map[rt, MAC address]map[addrPrefixKey][]nlri
 	// this holds a map for a set of prefixes.
 	macIndex EVPNMacNLRIs
 }
 
-func NewTable(logger log.Logger, rf bgp.Family, dsts ...*Destination) *Table {
+func NewTable(logger *slog.Logger, rf bgp.Family, dsts ...*Destination) *Table {
 	t := &Table{
 		Family:       rf,
 		destinations: make(Destinations),
@@ -204,8 +223,6 @@ func (t *Table) deletePathsByVrf(vrf *Vrf) []*Path {
 				nlri := p.GetNlri()
 				switch v := nlri.(type) {
 				case *bgp.LabeledVPNIPAddrPrefix:
-					rd = v.RD
-				case *bgp.LabeledVPNIPv6AddrPrefix:
 					rd = v.RD
 				case *bgp.EVPNNLRI:
 					rd = v.RD()
@@ -272,59 +289,53 @@ func (t *Table) deleteDest(dest *Destination) {
 func (t *Table) validatePath(path *Path) {
 	if path == nil {
 		t.logger.Error("path is nil",
-			log.Fields{
-				"Topic": "Table",
-				"Key":   t.Family,
-			})
+			slog.String("Topic", "Table"),
+			slog.String("Key", t.Family.String()),
+		)
 	}
 	if path.GetFamily() != t.Family {
 		t.logger.Error("Invalid path. Family mismatch",
-			log.Fields{
-				"Topic":      "Table",
-				"Key":        t.Family,
-				"Prefix":     path.GetPrefix(),
-				"ReceivedRf": path.GetFamily().String(),
-			})
+			slog.String("Topic", "Table"),
+			slog.String("Key", t.Family.String()),
+			slog.Any("Prefix", path.GetPrefix()),
+			slog.String("ReceivedRf", path.GetFamily().String()),
+		)
 	}
 	if attr := path.getPathAttr(bgp.BGP_ATTR_TYPE_AS_PATH); attr != nil {
 		pathParam := attr.(*bgp.PathAttributeAsPath).Value
 		for _, as := range pathParam {
 			_, y := as.(*bgp.As4PathParam)
 			if !y {
-				t.logger.Fatal("AsPathParam must be converted to As4PathParam",
-					log.Fields{
-						"Topic": "Table",
-						"Key":   t.Family,
-						"As":    as,
-					})
+				t.logger.Error("AsPathParam must be converted to As4PathParam",
+					slog.String("Topic", "Table"),
+					slog.String("Key", t.Family.String()),
+					slog.Any("As", as),
+				)
 			}
 		}
 	}
 	if attr := path.getPathAttr(bgp.BGP_ATTR_TYPE_AS4_PATH); attr != nil {
-		t.logger.Fatal("AS4_PATH must be converted to AS_PATH",
-			log.Fields{
-				"Topic": "Table",
-				"Key":   t.Family,
-			})
+		t.logger.Error("AS4_PATH must be converted to AS_PATH",
+			slog.String("Topic", "Table"),
+			slog.String("Key", t.Family.String()),
+		)
 	}
 	if path.GetNlri() == nil {
-		t.logger.Fatal("path's nlri is nil",
-			log.Fields{
-				"Topic": "Table",
-				"Key":   t.Family,
-			})
+		t.logger.Error("path's nlri is nil",
+			slog.String("Topic", "Table"),
+			slog.String("Key", t.Family.String()),
+		)
 	}
 }
 
-func (t *Table) getOrCreateDest(nlri bgp.AddrPrefixInterface, size int) *Destination {
+func (t *Table) getOrCreateDest(nlri bgp.NLRI, size int) *Destination {
 	dest := t.GetDestination(nlri)
 	// If destination for given prefix does not exist we create it.
 	if dest == nil {
 		t.logger.Debug("create Destination",
-			log.Fields{
-				"Topic": "Table",
-				"Nlri":  nlri,
-			})
+			slog.String("Topic", "Table"),
+			slog.Any("Nlri", nlri),
+		)
 		dest = NewDestination(nlri, size)
 		t.setDestination(dest)
 	}
@@ -360,7 +371,7 @@ func (t *Table) GetDestinations() []*Destination {
 	return d
 }
 
-func (t *Table) GetDestination(nlri bgp.AddrPrefixInterface) *Destination {
+func (t *Table) GetDestination(nlri bgp.NLRI) *Destination {
 	return t.destinations.Get(nlri)
 }
 
@@ -401,22 +412,16 @@ func (t *Table) GetLongerPrefixDestinations(key string) ([]*Destination, error) 
 			return true
 		})
 	case bgp.RF_IPv4_VPN, bgp.RF_IPv6_VPN:
-		prefixRd, _, network, err := bgp.ParseVPNPrefix(key)
+		prefixRd, prefix, err := bgp.ParseVPNPrefix(key)
 		if err != nil {
 			return nil, err
 		}
-		ones, bits := network.Mask.Size()
+		ones := prefix.Bits()
+		bits := prefix.Addr().BitLen()
 
 		r := critbitgo.NewNet()
 		for _, dst := range t.GetDestinations() {
-			var dstRD bgp.RouteDistinguisherInterface
-			switch t.Family {
-			case bgp.RF_IPv4_VPN:
-				dstRD = dst.nlri.(*bgp.LabeledVPNIPAddrPrefix).RD
-			case bgp.RF_IPv6_VPN:
-				dstRD = dst.nlri.(*bgp.LabeledVPNIPv6AddrPrefix).RD
-			}
-
+			dstRD := dst.nlri.(*bgp.LabeledVPNIPAddrPrefix).RD
 			if prefixRd.String() != dstRD.String() {
 				continue
 			}
@@ -425,7 +430,7 @@ func (t *Table) GetLongerPrefixDestinations(key string) ([]*Destination, error) 
 		}
 
 		p := &net.IPNet{
-			IP:   network.IP,
+			IP:   prefix.Addr().AsSlice(),
 			Mask: net.CIDRMask(ones>>3<<3, bits),
 		}
 
@@ -523,12 +528,11 @@ func (t *Table) GetMUPDestinationsWithRouteType(p string) ([]*Destination, error
 func (t *Table) setDestination(dst *Destination) {
 	if collision := t.destinations.InsertUpdate(dst); collision {
 		t.logger.Warn("insert collision detected",
-			log.Fields{
-				"Topic":     "Table",
-				"Key":       t.Family,
-				"1stPrefix": t.destinations.getDestinationList(dst.GetNlri())[0].GetNlri().String(),
-				"Prefix":    dst.GetNlri().String(),
-			})
+			slog.String("Topic", "Table"),
+			slog.String("Key", t.Family.String()),
+			slog.String("1stPrefix", t.destinations.getDestinationList(dst.GetNlri())[0].GetNlri().String()),
+			slog.String("Prefix", dst.GetNlri().String()),
+		)
 	}
 
 	if nlri, ok := dst.nlri.(*bgp.EVPNNLRI); ok {
@@ -584,6 +588,13 @@ func (t *Table) GetKnownPathListWithMac(id string, as uint32, rt bgp.ExtendedCom
 	return paths
 }
 
+// ContainsCIDR checks if one IPNet is a subnet of another.
+func containsCIDR(n1, n2 *net.IPNet) bool {
+	ones1, _ := n1.Mask.Size()
+	ones2, _ := n2.Mask.Size()
+	return ones1 <= ones2 && n1.Contains(n2.IP)
+}
+
 func (t *Table) Select(option ...TableSelectOption) (*Table, error) {
 	id := GLOBAL_RIB_NAME
 	var vrf *Vrf
@@ -612,13 +623,11 @@ func (t *Table) Select(option ...TableSelectOption) (*Table, error) {
 		switch t.Family {
 		case bgp.RF_IPv4_UC, bgp.RF_IPv6_UC:
 			f := func(prefixStr string) (bool, error) {
-				var nlri bgp.AddrPrefixInterface
-				var err error
-				if t.Family == bgp.RF_IPv4_UC {
-					nlri, err = bgp.NewPrefixFromFamily(bgp.RF_IPv4_UC, prefixStr)
-				} else {
-					nlri, err = bgp.NewPrefixFromFamily(bgp.RF_IPv6_UC, prefixStr)
+				prefix, err := netip.ParsePrefix(prefixStr)
+				if err != nil {
+					return false, err
 				}
+				nlri, err := bgp.NewIPAddrPrefix(prefix)
 				if err != nil {
 					return false, err
 				}
@@ -686,18 +695,12 @@ func (t *Table) Select(option ...TableSelectOption) (*Table, error) {
 			}
 		case bgp.RF_IPv4_VPN, bgp.RF_IPv6_VPN:
 			f := func(prefixStr string) error {
-				var nlri bgp.AddrPrefixInterface
-				var err error
-
-				if t.Family == bgp.RF_IPv4_VPN {
-					nlri, err = bgp.NewPrefixFromFamily(bgp.RF_IPv4_VPN, prefixStr)
-				} else {
-					nlri, err = bgp.NewPrefixFromFamily(bgp.RF_IPv6_VPN, prefixStr)
-				}
+				rd, p, err := bgp.ParseVPNPrefix(prefixStr)
 				if err != nil {
-					return fmt.Errorf("failed to create prefix: %w", err)
+					return err
 				}
 
+				nlri, _ := bgp.NewLabeledVPNIPAddrPrefix(p, *bgp.NewMPLSLabelStack(), rd)
 				if dst := t.GetDestination(nlri); dst != nil {
 					if d := dst.Select(dOption); d != nil {
 						r.setDestination(d)
@@ -718,7 +721,7 @@ func (t *Table) Select(option ...TableSelectOption) (*Table, error) {
 						for _, dst := range t.GetDestinations() {
 							tablePrefix := nlriToIPNet(dst.nlri)
 
-							if bgp.ContainsCIDR(prefix, tablePrefix) {
+							if containsCIDR(prefix, tablePrefix) {
 								r.setDestination(dst)
 							}
 						}
@@ -746,7 +749,7 @@ func (t *Table) Select(option ...TableSelectOption) (*Table, error) {
 						for _, dst := range t.GetDestinations() {
 							tablePrefix := nlriToIPNet(dst.nlri)
 
-							if bgp.ContainsCIDR(tablePrefix, prefix) {
+							if containsCIDR(tablePrefix, prefix) {
 								r.setDestination(dst)
 							}
 						}

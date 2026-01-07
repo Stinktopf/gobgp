@@ -18,9 +18,10 @@ package table
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
+	"net/netip"
 	"reflect"
 
-	"github.com/osrg/gobgp/v4/pkg/log"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
 
@@ -79,7 +80,7 @@ func UpdatePathAttrs2ByteAs(msg *bgp.BGPUpdate) {
 	}
 }
 
-func UpdatePathAttrs4ByteAs(logger log.Logger, msg *bgp.BGPUpdate) {
+func UpdatePathAttrs4ByteAs(logger *slog.Logger, msg *bgp.BGPUpdate) {
 	var asAttr *bgp.PathAttributeAsPath
 	var as4Attr *bgp.PathAttributeAs4Path
 	asAttrPos := 0
@@ -150,9 +151,7 @@ func UpdatePathAttrs4ByteAs(logger log.Logger, msg *bgp.BGPUpdate) {
 					typ = "CONFED_SET"
 				}
 				logger.Warn(fmt.Sprintf("AS4_PATH contains %s segment %s. ignore", typ, p.String()),
-					log.Fields{
-						"Topic": "Table",
-					})
+					slog.String("Topic", "Table"))
 				continue
 			}
 			as4Len += p.ASLen()
@@ -162,9 +161,7 @@ func UpdatePathAttrs4ByteAs(logger log.Logger, msg *bgp.BGPUpdate) {
 
 	if asLen+asConfedLen < as4Len {
 		logger.Warn("AS4_PATH is longer than AS_PATH. ignore AS4_PATH",
-			log.Fields{
-				"Topic": "Table",
-			})
+			slog.String("Topic", "Table"))
 		return
 	}
 
@@ -211,21 +208,24 @@ func UpdatePathAttrs4ByteAs(logger log.Logger, msg *bgp.BGPUpdate) {
 
 func UpdatePathAggregator2ByteAs(msg *bgp.BGPUpdate) {
 	as := uint32(0)
-	var addr string
+	var addr netip.Addr
 	for i, attr := range msg.PathAttributes {
 		switch agg := attr.(type) {
 		case *bgp.PathAttributeAggregator:
-			addr = agg.Value.Address.String()
+			addr = agg.Value.Address
 			if agg.Value.AS > 1<<16-1 {
 				as = agg.Value.AS
-				msg.PathAttributes[i] = bgp.NewPathAttributeAggregator(uint16(bgp.AS_TRANS), addr)
+				attr, _ := bgp.NewPathAttributeAggregator(uint16(bgp.AS_TRANS), addr)
+				msg.PathAttributes[i] = attr
 			} else {
-				msg.PathAttributes[i] = bgp.NewPathAttributeAggregator(uint16(agg.Value.AS), addr)
+				attr, _ := bgp.NewPathAttributeAggregator(uint16(agg.Value.AS), addr)
+				msg.PathAttributes[i] = attr
 			}
 		}
 	}
 	if as != 0 {
-		msg.PathAttributes = append(msg.PathAttributes, bgp.NewPathAttributeAs4Aggregator(as, addr))
+		attr, _ := bgp.NewPathAttributeAs4Aggregator(as, addr)
+		msg.PathAttributes = append(msg.PathAttributes, attr)
 	}
 }
 
@@ -314,7 +314,8 @@ func createMPReachMessage(path *Path) *bgp.BGPMessage {
 	attrs := make([]bgp.PathAttributeInterface, 0, len(oattrs))
 	for _, a := range oattrs {
 		if a.GetType() == bgp.BGP_ATTR_TYPE_MP_REACH_NLRI {
-			attrs = append(attrs, bgp.NewPathAttributeMpReachNLRI(path.GetNexthop().String(), path.GetNlri()))
+			attr, _ := bgp.NewPathAttributeMpReachNLRI(path.GetFamily(), []bgp.PathNLRI{{NLRI: path.GetNlri(), ID: path.localID}}, path.GetNexthop())
+			attrs = append(attrs, attr)
 		} else {
 			attrs = append(attrs, a)
 		}
@@ -327,7 +328,8 @@ func (p *packerMP) pack(options ...*bgp.MarshallingOption) []*bgp.BGPMessage {
 
 	for _, path := range p.withdrawals {
 		nlri := path.GetNlri()
-		msgs = append(msgs, bgp.NewBGPUpdateMessage(nil, []bgp.PathAttributeInterface{bgp.NewPathAttributeMpUnreachNLRI(nlri)}, nil))
+		unreach, _ := bgp.NewPathAttributeMpUnreachNLRI(path.GetFamily(), []bgp.PathNLRI{{NLRI: nlri, ID: path.localID}})
+		msgs = append(msgs, bgp.NewBGPUpdateMessage(nil, []bgp.PathAttributeInterface{unreach}, nil))
 	}
 
 	for _, path := range p.paths {
@@ -370,7 +372,7 @@ func (p *packerV4) add(path *Path) {
 		return
 	}
 
-	if path.GetNexthop().To4() == nil {
+	if !path.GetNexthop().Is4() {
 		// RFC 5549
 		p.mpPaths = append(p.mpPaths, path)
 		return
@@ -401,14 +403,14 @@ func (p *packerV4) add(path *Path) {
 }
 
 func (p *packerV4) pack(options ...*bgp.MarshallingOption) []*bgp.BGPMessage {
-	split := func(max int, paths []*Path) ([]*bgp.IPAddrPrefix, []*Path) {
+	split := func(max int, paths []*Path) ([]bgp.PathNLRI, []*Path) {
 		if max > len(paths) {
 			max = len(paths)
 		}
-		nlris := make([]*bgp.IPAddrPrefix, 0, max)
+		nlris := make([]bgp.PathNLRI, 0, max)
 		i := 0
 		for ; i < max; i++ {
-			nlris = append(nlris, paths[i].GetNlri().(*bgp.IPAddrPrefix))
+			nlris = append(nlris, bgp.PathNLRI{NLRI: paths[i].GetNlri().(*bgp.IPAddrPrefix), ID: paths[i].localID})
 		}
 		return nlris, paths[i:]
 	}
@@ -423,9 +425,9 @@ func (p *packerV4) pack(options ...*bgp.MarshallingOption) []*bgp.BGPMessage {
 		return (bgp.BGP_MAX_MESSAGE_LENGTH - (19 + 2 + 2 + attrsLen)) / (5 + addpathNLRILen)
 	}
 
-	loop := func(attrsLen int, paths []*Path, cb func([]*bgp.IPAddrPrefix)) {
+	loop := func(attrsLen int, paths []*Path, cb func([]bgp.PathNLRI)) {
 		max := maxNLRIs(attrsLen)
-		var nlris []*bgp.IPAddrPrefix
+		var nlris []bgp.PathNLRI
 		for {
 			nlris, paths = split(max, paths)
 			if len(nlris) == 0 {
@@ -437,7 +439,7 @@ func (p *packerV4) pack(options ...*bgp.MarshallingOption) []*bgp.BGPMessage {
 
 	msgs := make([]*bgp.BGPMessage, 0, p.total)
 
-	loop(0, p.withdrawals, func(nlris []*bgp.IPAddrPrefix) {
+	loop(0, p.withdrawals, func(nlris []bgp.PathNLRI) {
 		msgs = append(msgs, bgp.NewBGPUpdateMessage(nlris, nil, nil))
 	})
 
@@ -452,7 +454,8 @@ func (p *packerV4) pack(options ...*bgp.MarshallingOption) []*bgp.BGPMessage {
 			// while we build the update message
 			// we do not want to modify the `path` though
 			if paths[0].getPathAttr(bgp.BGP_ATTR_TYPE_NEXT_HOP) == nil {
-				attrs = append(attrs, bgp.NewPathAttributeNextHop(paths[0].GetNexthop().String()))
+				pa, _ := bgp.NewPathAttributeNextHop(paths[0].GetNexthop())
+				attrs = append(attrs, pa)
 			}
 			// if we have ever reach here
 			// there is no point keeping MP_REACH_NLRI in the announcement
@@ -467,7 +470,7 @@ func (p *packerV4) pack(options ...*bgp.MarshallingOption) []*bgp.BGPMessage {
 				attrsLen += a.Len()
 			}
 
-			loop(attrsLen, paths, func(nlris []*bgp.IPAddrPrefix) {
+			loop(attrsLen, paths, func(nlris []bgp.PathNLRI) {
 				msgs = append(msgs, bgp.NewBGPUpdateMessage(nil, attrs_without_mp, nlris))
 			})
 		}

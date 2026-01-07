@@ -18,7 +18,7 @@ package apiutil
 import (
 	"encoding/json"
 	"fmt"
-	"net"
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -88,15 +88,16 @@ type LookupPrefix struct {
 
 // used by server.WatchEventMessages API
 type Path struct {
-	Nlri               bgp.AddrPrefixInterface      `json:"nlri"`
+	Family             bgp.Family
+	Nlri               bgp.NLRI                     `json:"nlri"`
 	Age                int64                        `json:"age"`
 	Best               bool                         `json:"best"`
 	Attrs              []bgp.PathAttributeInterface `json:"attrs"`
 	Stale              bool                         `json:"stale"`
 	Withdrawal         bool                         `json:"withdrawal,omitempty"`
 	PeerASN            uint32                       `json:"peer-asn,omitempty"`
-	PeerID             net.IP                       `json:"peer-id,omitempty"`
-	PeerAddress        net.IP                       `json:"peer-address,omitempty"`
+	PeerID             netip.Addr                   `json:"peer-id,omitzero"`
+	PeerAddress        netip.Addr                   `json:"peer-address,omitzero"`
 	IsFromExternal     bool                         `json:"is-from-external,omitempty"`
 	NoImplicitWithdraw bool                         `json:"no-implicit-withdraw,omitempty"`
 	IsNexthopInvalid   bool                         `json:"is-nexthop-invalid,omitempty"`
@@ -104,25 +105,29 @@ type Path struct {
 	SendMaxFiltered bool            `json:"send-max-filtered,omitempty"` // true if the path has been filtered out due to max path count reached
 	Filtered        bool            `json:"filtered,omitempty"`
 	Validation      *api.Validation `json:"validation,omitempty"`
+	RemoteID        uint32
+	LocalID         uint32
 }
 
 type PeerConf struct {
 	PeerASN           uint32
 	LocalASN          uint32
-	NeighborAddress   net.IP
+	NeighborAddress   netip.Addr
 	NeighborInterface string
 }
 type PeerState struct {
-	PeerASN         uint32
-	LocalASN        uint32
-	NeighborAddress net.IP
-	SessionState    bgp.FSMState
-	AdminState      api.PeerState_AdminState
-	RouterID        net.IP
-	RemoteCap       []bgp.ParameterCapabilityInterface
+	PeerASN           uint32
+	LocalASN          uint32
+	NeighborAddress   netip.Addr
+	SessionState      bgp.FSMState
+	AdminState        api.PeerState_AdminState
+	RouterID          netip.Addr
+	RemoteCap         []bgp.ParameterCapabilityInterface
+	DisconnectReason  api.PeerState_DisconnectReason
+	DisconnectMessage string
 }
 type Transport struct {
-	LocalAddress net.IP
+	LocalAddress netip.Addr
 	LocalPort    uint32
 	RemotePort   uint32
 }
@@ -144,6 +149,8 @@ func (d *Destination) MarshalJSON() ([]byte, error) {
 func NewDestination(dst *api.Destination) *Destination {
 	l := make([]*Path, 0, len(dst.Paths))
 	for _, p := range dst.Paths {
+		src, _ := netip.ParseAddr(p.SourceId)
+		neighbor, _ := netip.ParseAddr(p.NeighborIp)
 		nlri, _ := GetNativeNlri(p)
 		attrs, _ := GetNativePathAttributes(p)
 		l = append(l, &Path{
@@ -154,14 +161,14 @@ func NewDestination(dst *api.Destination) *Destination {
 			Stale:           p.Stale,
 			SendMaxFiltered: p.SendMaxFiltered,
 			Withdrawal:      p.IsWithdraw,
-			PeerID:          net.ParseIP(p.SourceId),
-			PeerAddress:     net.ParseIP(p.NeighborIp),
+			PeerID:          src,
+			PeerAddress:     neighbor,
 		})
 	}
 	return &Destination{Paths: l}
 }
 
-func NewPath(nlri bgp.AddrPrefixInterface, isWithdraw bool, attrs []bgp.PathAttributeInterface, age time.Time) (*api.Path, error) {
+func NewPath(family bgp.Family, nlri bgp.NLRI, isWithdraw bool, attrs []bgp.PathAttributeInterface, age time.Time) (*api.Path, error) {
 	n, err := MarshalNLRI(nlri)
 	if err != nil {
 		return nil, err
@@ -175,28 +182,16 @@ func NewPath(nlri bgp.AddrPrefixInterface, isWithdraw bool, attrs []bgp.PathAttr
 		Pattrs:     a,
 		Age:        tspb.New(age),
 		IsWithdraw: isWithdraw,
-		Family:     ToApiFamily(nlri.AFI(), nlri.SAFI()),
-		Identifier: nlri.PathIdentifier(),
+		Family:     ToApiFamily(family.Afi(), family.Safi()),
 	}, nil
 }
 
-func getNLRI(family bgp.Family, buf []byte) (bgp.AddrPrefixInterface, error) {
-	nlri, err := bgp.NewPrefixFromFamily(family)
-	if err != nil {
-		return nil, err
-	}
-	if err := nlri.DecodeFromBytes(buf); err != nil {
-		return nil, err
-	}
-	return nlri, nil
-}
-
-func GetNativeNlri(p *api.Path) (bgp.AddrPrefixInterface, error) {
+func GetNativeNlri(p *api.Path) (bgp.NLRI, error) {
 	if p.Family == nil {
 		return nil, fmt.Errorf("family cannot be nil")
 	}
 	if len(p.NlriBinary) > 0 {
-		return getNLRI(ToFamily(p.Family), p.NlriBinary)
+		return bgp.NLRIFromSlice(ToFamily(p.Family), p.NlriBinary)
 	}
 	return UnmarshalNLRI(ToFamily(p.Family), p.Nlri)
 }

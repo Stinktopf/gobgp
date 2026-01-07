@@ -20,7 +20,6 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"strconv"
-	"time"
 
 	"github.com/osrg/gobgp/v4/api"
 	"github.com/spf13/cobra"
@@ -69,7 +68,7 @@ func newRootCmd() *cobra.Command {
 					exitWithError(err)
 				}
 				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(context.Background(), time.Second*10)
+				ctx, cancel = context.WithCancel(context.Background())
 				client = api.NewGoBgpServiceClient(conn)
 				cleanup = func() {
 					conn.Close()
@@ -91,7 +90,7 @@ func newRootCmd() *cobra.Command {
 
 	rootCmd.PersistentFlags().StringVarP(&globalOpts.Host, "host", "u", "127.0.0.1", "host")
 	rootCmd.PersistentFlags().IntVarP(&globalOpts.Port, "port", "p", 50051, "port")
-	rootCmd.PersistentFlags().StringVarP(&globalOpts.Target, "target", "", "", "alternative to host/port when using UDS. Ex: unix:///var/run/go-bgp.sock if running gobgpd with a UDS socket.")
+	rootCmd.PersistentFlags().StringVarP(&globalOpts.Target, "target", "", "", "alternative to host/port when using UDS. Examples: unix:///var/run/go-bgp.sock (absolute path) or unix:tmp/go-bgp.sock (relative to current directory).")
 	rootCmd.PersistentFlags().BoolVarP(&globalOpts.Json, "json", "j", false, "use json format to output format")
 	rootCmd.PersistentFlags().BoolVarP(&globalOpts.Debug, "debug", "d", false, "use debug")
 	rootCmd.PersistentFlags().BoolVarP(&globalOpts.Quiet, "quiet", "q", false, "use quiet")

@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
-	"net"
+	"net/netip"
 	"os"
 	"sync"
 	"testing"
@@ -12,6 +12,7 @@ import (
 	"github.com/osrg/gobgp/v4/api"
 	"github.com/osrg/gobgp/v4/internal/pkg/table"
 	"github.com/osrg/gobgp/v4/pkg/apiutil"
+	"github.com/osrg/gobgp/v4/pkg/config/oc"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
@@ -69,6 +70,7 @@ func TestToPathApi(t *testing.T) {
 		nlriBinary      bool
 		attributeBinary bool
 	}
+	n, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/8"))
 	tests := []struct {
 		name string
 		args args
@@ -77,20 +79,20 @@ func TestToPathApi(t *testing.T) {
 		{
 			name: "ipv4 path",
 			args: args{
-				path: table.NewPath(&table.PeerInfo{
-					ID:           net.IP{10, 10, 10, 10},
-					LocalID:      net.IP{10, 11, 11, 11},
-					Address:      net.IP{10, 12, 12, 12},
-					LocalAddress: net.IP{10, 13, 13, 13},
+				path: table.NewPath(bgp.RF_IPv4_UC, &table.PeerInfo{
+					ID:           netip.MustParseAddr("10.10.10.10"),
+					LocalID:      netip.MustParseAddr("10.11.11.11"),
+					Address:      netip.MustParseAddr("10.12.12.12"),
+					LocalAddress: netip.MustParseAddr("10.13.13.13"),
 				},
-					bgp.NewIPAddrPrefix(8, "10.0.0.0"),
+					bgp.PathNLRI{NLRI: n},
 					false,
 					[]bgp.PathAttributeInterface{bgp.NewPathAttributeOrigin(0)},
 					time.Time{},
 					false),
 			},
 			want: &api.Path{
-				Nlri:   nlri(bgp.NewIPAddrPrefix(8, "10.0.0.0")),
+				Nlri:   nlri(n),
 				Pattrs: attrs([]bgp.PathAttributeInterface{bgp.NewPathAttributeOrigin(0)}),
 				Family: &api.Family{
 					Afi:  api.Family_AFI_IP,
@@ -107,7 +109,6 @@ func TestToPathApi(t *testing.T) {
 				path: eor(bgp.RF_IPv4_UC),
 			},
 			want: &api.Path{
-				Nlri: eorNlri(bgp.RF_IPv4_UC),
 				Family: &api.Family{
 					Afi:  api.Family_AFI_IP,
 					Safi: api.Family_SAFI_UNICAST,
@@ -124,7 +125,6 @@ func TestToPathApi(t *testing.T) {
 				path: eor(bgp.RF_IPv4_VPN),
 			},
 			want: &api.Path{
-				Nlri: eorNlri(bgp.RF_IPv4_VPN),
 				Family: &api.Family{
 					Afi:  api.Family_AFI_IP,
 					Safi: api.Family_SAFI_MPLS_VPN,
@@ -139,7 +139,9 @@ func TestToPathApi(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			apiPath := toPathApi(toPathApiUtil(tt.args.path), tt.args.onlyBinary, tt.args.nlriBinary, tt.args.attributeBinary)
-			assert.Equal(t, tt.want.Nlri, apiPath.Nlri, "not equal nlri")
+			if tt.want.Nlri != nil {
+				assert.Equal(t, tt.want.Nlri, apiPath.Nlri, "not equal nlri")
+			}
 			assert.Equal(t, tt.want.Pattrs, apiPath.Pattrs, "not equal attrs")
 			assert.Equal(t, tt.want.Family, apiPath.Family, "not equal family")
 			assert.Equal(t, tt.want.NeighborIp, apiPath.NeighborIp, "not equal neighbor")
@@ -150,20 +152,15 @@ func TestToPathApi(t *testing.T) {
 func eor(f bgp.Family) *table.Path {
 	p := table.NewEOR(f)
 	p.SetSource(&table.PeerInfo{
-		ID:           net.IP{10, 10, 10, 10},
-		LocalID:      net.IP{10, 11, 11, 11},
-		Address:      net.IP{10, 12, 12, 12},
-		LocalAddress: net.IP{10, 13, 13, 13},
+		ID:           netip.MustParseAddr("10.10.10.10"),
+		LocalID:      netip.MustParseAddr("10.11.11.11"),
+		Address:      netip.MustParseAddr("10.12.12.12"),
+		LocalAddress: netip.MustParseAddr("10.13.13.13"),
 	})
 	return p
 }
 
-func eorNlri(family bgp.Family) *api.NLRI {
-	n, _ := bgp.NewPrefixFromFamily(family)
-	return nlri(n)
-}
-
-func nlri(nlri bgp.AddrPrefixInterface) *api.NLRI {
+func nlri(nlri bgp.NLRI) *api.NLRI {
 	apiNlri, _ := apiutil.MarshalNLRI(nlri)
 	return apiNlri
 }
@@ -450,4 +447,70 @@ func TestGRPCWatchEvent(t *testing.T) {
 	<-tableCh
 
 	assert.Equal(2, count)
+}
+
+func TestToOcAttributeComparison(t *testing.T) {
+	tests := []struct {
+		in   api.Comparison
+		want oc.AttributeComparison
+	}{
+		{api.Comparison_COMPARISON_EQ, oc.ATTRIBUTE_COMPARISON_EQ},
+		{api.Comparison_COMPARISON_GE, oc.ATTRIBUTE_COMPARISON_GE},
+		{api.Comparison_COMPARISON_LE, oc.ATTRIBUTE_COMPARISON_LE},
+	}
+	for _, tt := range tests {
+		if got := toOcAttributeComparison(tt.in); got != tt.want {
+			t.Fatalf("toOcAttributeComparison(%v) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestNewAsPathLengthConditionFromApiStruct(t *testing.T) {
+	tests := []struct {
+		inType api.Comparison
+		inVal  uint32
+		wantOp string
+	}{
+		{api.Comparison_COMPARISON_EQ, 1, "="},
+		{api.Comparison_COMPARISON_GE, 2, ">="},
+		{api.Comparison_COMPARISON_LE, 3, "<="},
+	}
+	for _, tt := range tests {
+		cond, err := newAsPathLengthConditionFromApiStruct(&api.AsPathLength{Type: tt.inType, Length: tt.inVal})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cond == nil {
+			t.Fatalf("condition is nil")
+		}
+		got := cond.String()
+		if got[:len(tt.wantOp)] != tt.wantOp {
+			t.Fatalf("operator mismatch: got %q want prefix %q", got, tt.wantOp)
+		}
+	}
+}
+
+func TestNewCommunityCountConditionFromApiStruct(t *testing.T) {
+	tests := []struct {
+		inType api.Comparison
+		inVal  uint32
+		wantOp string
+	}{
+		{api.Comparison_COMPARISON_EQ, 10, "="},
+		{api.Comparison_COMPARISON_GE, 20, ">="},
+		{api.Comparison_COMPARISON_LE, 30, "<="},
+	}
+	for _, tt := range tests {
+		cond, err := newCommunityCountConditionFromApiStruct(&api.CommunityCount{Type: tt.inType, Count: tt.inVal})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cond == nil {
+			t.Fatalf("condition is nil")
+		}
+		got := cond.String()
+		if got[:len(tt.wantOp)] != tt.wantOp {
+			t.Fatalf("operator mismatch: got %q want prefix %q", got, tt.wantOp)
+		}
+	}
 }

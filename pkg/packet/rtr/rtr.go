@@ -19,7 +19,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"net"
+	"net/netip"
 )
 
 const (
@@ -214,7 +214,7 @@ type RTRIPPrefix struct {
 	Flags     uint8
 	PrefixLen uint8
 	MaxLen    uint8
-	Prefix    net.IP
+	Prefix    netip.Addr
 	AS        uint32
 }
 
@@ -229,13 +229,13 @@ func (m *RTRIPPrefix) DecodeFromBytes(data []byte) error {
 	m.PrefixLen = data[9]
 	m.MaxLen = data[10]
 	if m.Type == RTR_IPV4_PREFIX {
-		m.Prefix = net.IP(data[12:16]).To4()
+		m.Prefix, _ = netip.AddrFromSlice(data[12:16])
 		m.AS = binary.BigEndian.Uint32(data[16:20])
 	} else {
 		if len(data) < RTR_IPV6_PREFIX_LEN {
 			return errors.New("data too short for RTRIPPrefix")
 		}
-		m.Prefix = net.IP(data[12:28]).To16()
+		m.Prefix, _ = netip.AddrFromSlice(data[12:28])
 		m.AS = binary.BigEndian.Uint32(data[28:32])
 	}
 	return nil
@@ -250,24 +250,27 @@ func (m *RTRIPPrefix) Serialize() ([]byte, error) {
 	data[9] = m.PrefixLen
 	data[10] = m.MaxLen
 	if m.Type == RTR_IPV4_PREFIX {
-		copy(data[12:16], m.Prefix.To4())
+		copy(data[12:16], m.Prefix.AsSlice())
 		binary.BigEndian.PutUint32(data[16:20], m.AS)
 	} else {
-		copy(data[12:28], m.Prefix.To16())
+		copy(data[12:28], m.Prefix.AsSlice())
 		binary.BigEndian.PutUint32(data[28:32], m.AS)
 	}
 	return data, nil
 }
 
-func NewRTRIPPrefix(prefix net.IP, prefixLen, maxLen uint8, as uint32, flags uint8) *RTRIPPrefix {
+func NewRTRIPPrefix(prefix netip.Addr, prefixLen, maxLen uint8, as uint32, flags uint8) *RTRIPPrefix {
 	var pduType uint8
 	var pduLen uint32
-	if prefix.To4() != nil && prefixLen <= 32 {
+	if prefix.Is4() && prefixLen <= 32 {
 		pduType = RTR_IPV4_PREFIX
 		pduLen = RTR_IPV4_PREFIX_LEN
-	} else {
+	} else if prefix.Is6() && prefixLen <= 128 {
 		pduType = RTR_IPV6_PREFIX
 		pduLen = RTR_IPV6_PREFIX_LEN
+	} else {
+		// TODO: return error; !prefix.IsValid() or invalid prefix length
+		return nil
 	}
 
 	return &RTRIPPrefix{
@@ -328,15 +331,34 @@ func (m *RTRErrorReport) DecodeFromBytes(data []byte) error {
 	m.Type = data[1]
 	m.ErrorCode = binary.BigEndian.Uint16(data[2:4])
 	m.Len = binary.BigEndian.Uint32(data[4:8])
+	// Basic validation: the on-wire Length field must be sane and within the
+	// provided buffer to avoid excessive allocations.
+	if m.Len < 16 {
+		return errors.New("data too short for RTRErrorReport")
+	}
+	if uint32(len(data)) < m.Len {
+		return errors.New("data too short for RTRErrorReport")
+	}
+	data = data[:m.Len]
 	m.PDULen = binary.BigEndian.Uint32(data[8:12])
-	if len(data) < 12+int(m.PDULen)+4 {
+	// Need PDULen bytes for the erroneous PDU plus 4 bytes for TextLen.
+	if m.PDULen > uint32(len(data)-12-4) {
 		return errors.New("data too short for RTRErrorReport")
 	}
 	m.PDU = make([]byte, m.PDULen)
 	copy(m.PDU, data[12:12+m.PDULen])
-	m.TextLen = binary.BigEndian.Uint32(data[12+m.PDULen : 16+m.PDULen])
+	textLenOffset := 12 + int(m.PDULen)
+	m.TextLen = binary.BigEndian.Uint32(data[textLenOffset : textLenOffset+4])
+	textOffset := textLenOffset + 4
+	if m.TextLen > uint32(len(data)-textOffset) {
+		return errors.New("data too short for RTRErrorReport")
+	}
+	// RFC6810/8210 layout: 16 + PDULen + TextLen.
+	if uint64(m.Len) != 16+uint64(m.PDULen)+uint64(m.TextLen) {
+		return errors.New("invalid RTRErrorReport length")
+	}
 	m.Text = make([]byte, m.TextLen)
-	copy(m.Text, data[16+m.PDULen:])
+	copy(m.Text, data[textOffset:textOffset+int(m.TextLen)])
 	return nil
 }
 
@@ -368,21 +390,6 @@ func NewRTRErrorReport(errCode uint16, errPDU []byte, errMsg []byte) *RTRErrorRe
 	}
 	pdu.Len = uint32(RTR_MIN_LEN) + uint32(RTR_ERROR_REPORT_ERR_PDU_LEN) + pdu.PDULen + uint32(RTR_ERROR_REPORT_ERR_TEXT_LEN) + pdu.TextLen
 	return pdu
-}
-
-func SplitRTR(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if atEOF && len(data) == 0 || len(data) < RTR_MIN_LEN {
-		return 0, nil, nil
-	}
-
-	totalLen := binary.BigEndian.Uint32(data[4:8])
-	if totalLen < RTR_MIN_LEN {
-		return 0, nil, fmt.Errorf("invalid length: %d", totalLen)
-	}
-	if len(data) < int(totalLen) {
-		return 0, nil, nil
-	}
-	return int(totalLen), data[:totalLen], nil
 }
 
 func ParseRTR(data []byte) (RTRMessage, error) {

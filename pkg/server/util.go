@@ -21,11 +21,35 @@ import (
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
 
+func nonblockSendChannel[T any](ch chan<- T, item T) bool {
+	select {
+	case ch <- item:
+		// sent
+		return true
+	default:
+		// drop the item
+		return false
+	}
+}
+
+func drainChannel[T any](ch <-chan T) {
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+			// drain the channel
+		default:
+			return
+		}
+	}
+}
+
 func cleanInfiniteChannel(ch *channels.InfiniteChannel) {
 	ch.Close()
 	// drain all remaining items
-	for range ch.Out() {
-	}
+	drainChannel(ch.Out())
 }
 
 // Returns the binary formatted Administrative Shutdown Communication from the

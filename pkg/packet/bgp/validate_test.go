@@ -3,6 +3,7 @@ package bgp
 import (
 	"encoding/binary"
 	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,14 +15,16 @@ func bgpupdate() *BGPMessage {
 		NewAsPathParam(2, []uint16{65001}),
 	}
 
+	panh, _ := NewPathAttributeNextHop(netip.MustParseAddr("192.168.1.1"))
 	p := []PathAttributeInterface{
 		NewPathAttributeOrigin(1),
 		NewPathAttributeAsPath(aspath),
-		NewPathAttributeNextHop("192.168.1.1"),
+		panh,
 	}
 
-	n := []*IPAddrPrefix{NewIPAddrPrefix(24, "10.10.10.0")}
-	return NewBGPUpdateMessage(nil, p, n)
+	prefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.10.10.0/24"))
+	n := []*IPAddrPrefix{prefix}
+	return NewBGPUpdateMessage(nil, p, []PathNLRI{{NLRI: n[0]}})
 }
 
 func bgpupdateV6() *BGPMessage {
@@ -29,14 +32,15 @@ func bgpupdateV6() *BGPMessage {
 		NewAsPathParam(2, []uint16{65001}),
 	}
 
-	prefixes := []AddrPrefixInterface{NewIPv6AddrPrefix(100,
-		"fe80:1234:1234:5667:8967:af12:8912:1023")}
+	nlri, _ := NewIPAddrPrefix(netip.MustParsePrefix("fe80:1234:1234:5667:8967:af12:8912:1023/100"))
+	prefixes := []NLRI{nlri}
 
 	p := []PathAttributeInterface{
 		NewPathAttributeOrigin(1),
 		NewPathAttributeAsPath(aspath),
-		NewPathAttributeMpReachNLRI("1023::", prefixes...),
 	}
+	mpreach, _ := NewPathAttributeMpReachNLRI(RF_IPv6_UC, []PathNLRI{{NLRI: prefixes[0]}}, netip.MustParseAddr("1023::"))
+	p = append(p, mpreach)
 	return NewBGPUpdateMessage(nil, p, nil)
 }
 
@@ -390,8 +394,10 @@ func Test_Validate_aspath(t *testing.T) {
 func Test_Validate_flowspec(t *testing.T) {
 	assert := assert.New(t)
 	cmp := make([]FlowSpecComponentInterface, 0)
-	cmp = append(cmp, NewFlowSpecDestinationPrefix(NewIPAddrPrefix(24, "10.0.0.0")))
-	cmp = append(cmp, NewFlowSpecSourcePrefix(NewIPAddrPrefix(24, "10.0.0.0")))
+	destPrefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	cmp = append(cmp, NewFlowSpecDestinationPrefix(destPrefix))
+	srcPrefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	cmp = append(cmp, NewFlowSpecSourcePrefix(srcPrefix))
 	item1 := NewFlowSpecComponentItem(DEC_NUM_OP_EQ, TCP)
 	cmp = append(cmp, NewFlowSpecComponent(FLOW_SPEC_TYPE_IP_PROTO, []*FlowSpecComponentItem{item1}))
 	item2 := NewFlowSpecComponentItem(DEC_NUM_OP_GT_EQ, 20)
@@ -410,17 +416,19 @@ func Test_Validate_flowspec(t *testing.T) {
 	isFragment := uint64(0x02)
 	item7 := NewFlowSpecComponentItem(BITMASK_FLAG_OP_MATCH, isFragment)
 	cmp = append(cmp, NewFlowSpecComponent(FLOW_SPEC_TYPE_FRAGMENT, []*FlowSpecComponentItem{item7}))
-	n1 := NewFlowSpecIPv4Unicast(cmp)
-	a := NewPathAttributeMpReachNLRI("", n1)
+	n1, _ := NewFlowSpecUnicast(RF_FS_IPv4_UC, cmp)
+	a, _ := NewPathAttributeMpReachNLRI(RF_FS_IPv4_UC, []PathNLRI{{NLRI: n1}}, netip.IPv4Unspecified())
 	m := map[Family]BGPAddPathMode{RF_FS_IPv4_UC: BGP_ADD_PATH_NONE}
 	_, err := ValidateAttribute(a, m, false, false, false)
 	assert.NoError(err)
 
 	cmp = make([]FlowSpecComponentInterface, 0)
-	cmp = append(cmp, NewFlowSpecSourcePrefix(NewIPAddrPrefix(24, "10.0.0.0")))
-	cmp = append(cmp, NewFlowSpecDestinationPrefix(NewIPAddrPrefix(24, "10.0.0.0")))
-	n1 = NewFlowSpecIPv4Unicast(cmp)
-	a = NewPathAttributeMpReachNLRI("", n1)
+	srcPrefix2, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	cmp = append(cmp, NewFlowSpecSourcePrefix(srcPrefix2))
+	destPrefix2, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	cmp = append(cmp, NewFlowSpecDestinationPrefix(destPrefix2))
+	n1, _ = NewFlowSpecUnicast(RF_FS_IPv4_UC, cmp)
+	a, _ = NewPathAttributeMpReachNLRI(RF_FS_IPv4_UC, []PathNLRI{{NLRI: n1}}, netip.IPv4Unspecified())
 	// Swaps components order to reproduce the rules order violation.
 	n1.Value[0], n1.Value[1] = n1.Value[1], n1.Value[0]
 	_, err = ValidateAttribute(a, m, false, false, false)

@@ -297,31 +297,6 @@ module gobgp {
   }
 
 
-  grouping gobgp-in-policy {
-    description
-      "additional policy";
-
-    leaf-list in-policy {
-      type leafref {
-        path "/rpol:routing-policy/rpol:policy-definitions/" +
-            "rpol:policy-definition/rpol:name";
-        //require-instance true;
-      }
-      description
-        "list of policy names in sequence to be applied on
-        sending a routing update in the current context, e.g.,
-        for the current other route server clients.";
-    }
-
-    leaf default-in-policy {
-      type rpol:default-policy-type;
-      default REJECT-ROUTE;
-      description
-        "explicitly set a default policy if no policy definition
-        in the in-policy chain is satisfied.";
-    }
-  }
-
   grouping gobgp-route-server-config {
     description
       "Configuration parameter specifying whether
@@ -782,8 +757,11 @@ module gobgp {
 	      leaf peer-restart-time {
 		  type uint32;
 	      }
+        leaf running {
+          type boolean;
+        }
 	      leaf peer-restart-timer-expired {
-		  type boolean;
+		      type boolean;
 	      }
 	  }
       }
@@ -935,7 +913,7 @@ module gobgp {
 
   augment "/bgp:bgp/bgp:neighbors/bgp:neighbor/bgp:state" {
     leaf remote-router-id {
-        type string;
+        type inet:ipv4-address;
     }
   }
 
@@ -947,11 +925,6 @@ module gobgp {
 
     leaf remote-port {
       type inet:port-number;
-    }
-
-    leaf ttl {
-      description "TTL value for BGP packets";
-      type uint8;
     }
 
     leaf bind-interface {
@@ -977,6 +950,9 @@ module gobgp {
       type boolean;
     }
     leaf end-of-rib-sent {
+      type boolean;
+    }
+    leaf running {
       type boolean;
     }
   }
@@ -1039,18 +1015,6 @@ module gobgp {
     uses gobgp-ttl-security-config-set;
    }
 
-  augment "/bgp:bgp/bgp:global/bgp:apply-policy/bgp:config" {
-    description "addtional policy";
-    uses gobgp-in-policy;
-
-  }
-
-  augment "/bgp:bgp/bgp:global/bgp:apply-policy/bgp:state" {
-    description "additional policy";
-    uses gobgp-in-policy;
-
-  }
-
   augment "/rpol:routing-policy/rpol:policy-definitions/" +
     "rpol:policy-definition/rpol:statements/rpol:statement/" +
     "rpol:actions/bgp-pol:bgp-actions/bgp-pol:set-as-path-prepend" {
@@ -1075,7 +1039,7 @@ module gobgp {
     leaf-list neighbor-info {
       description
             "neighbor ip address or prefix";
-      type inet:ip-address;
+      type string;
     }
   }
 
@@ -1224,7 +1188,7 @@ module gobgp {
           "Configures a file name to be written";
       }
       leaf table-name {
-        type string;
+        type inet:ip-address;
         description
           "specify the table name with route server setup";
       }
@@ -1344,7 +1308,7 @@ module gobgp {
         type int32;
     }
     leaf-list local-address {
-        type string;
+        type inet:ip-address;
     }
   }
 
@@ -1384,7 +1348,7 @@ module gobgp {
      This configuration structure was taken from the latest openconfig.";
 
     leaf prefix {
-      type string;
+      type inet:ip-prefix;
     }
     leaf peer-group {
       type string;

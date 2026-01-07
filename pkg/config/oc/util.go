@@ -107,7 +107,7 @@ func (d *DynamicNeighbor) validate(b *BgpConfigSet) error {
 	if _, err := b.getPeerGroup(d.Config.PeerGroup); err != nil {
 		return err
 	}
-	if _, _, err := net.ParseCIDR(d.Config.Prefix); err != nil {
+	if _, _, err := net.ParseCIDR(d.Config.Prefix.String()); err != nil {
 		return fmt.Errorf("invalid dynamic neighbor prefix %s", d.Config.Prefix)
 	}
 	return nil
@@ -154,13 +154,13 @@ func (n *Neighbor) GetAfiSafi(family bgp.Family) *AfiSafi {
 
 func (n *Neighbor) ExtractNeighborAddress() (string, error) {
 	addr := n.State.NeighborAddress
-	if addr == "" {
+	if !addr.IsValid() {
 		addr = n.Config.NeighborAddress
-		if addr == "" {
+		if !addr.IsValid() {
 			return "", fmt.Errorf("NeighborAddress is not configured")
 		}
 	}
-	return addr, nil
+	return addr.String(), nil
 }
 
 func (n *Neighbor) IsAddPathReceiveEnabled(family bgp.Family) bool {
@@ -222,7 +222,9 @@ func (n *Neighbor) NeedsResendOpenMessage(new *Neighbor) bool {
 		!n.AddPaths.Config.Equal(&new.AddPaths.Config) ||
 		!n.AsPathOptions.Config.Equal(&new.AsPathOptions.Config) ||
 		!n.GracefulRestart.Config.Equal(&new.GracefulRestart.Config) ||
-		isAfiSafiChanged(n.AfiSafis, new.AfiSafis)
+		isAfiSafiChanged(n.AfiSafis, new.AfiSafis) ||
+		!n.EbgpMultihop.Config.Equal(&new.EbgpMultihop.Config) ||
+		!n.TtlSecurity.Config.Equal(&new.TtlSecurity.Config)
 }
 
 // TODO: these regexp are duplicated in api
@@ -349,6 +351,14 @@ func newLongLivedGracefulRestartFromConfigStruct(c *LongLivedGracefulRestart) *a
 			Enabled:     c.Config.Enabled,
 			RestartTime: c.Config.RestartTime,
 		},
+		State: &api.LongLivedGracefulRestartState{
+			Enabled:                 c.State.Enabled,
+			Received:                c.State.Received,
+			Advertised:              c.State.Advertised,
+			PeerRestartTime:         c.State.PeerRestartTime,
+			PeerRestartTimerExpired: c.State.PeerRestartTimerExpired,
+			Running:                 c.State.Running,
+		},
 	}
 }
 
@@ -385,6 +395,7 @@ func newMpGracefulRestartFromConfigStruct(c *MpGracefulRestart) *api.MpGracefulR
 			Advertised:       c.State.Advertised,
 			EndOfRibReceived: c.State.EndOfRibReceived,
 			EndOfRibSent:     c.State.EndOfRibSent,
+			Running:          c.State.Running,
 		},
 	}
 }
@@ -449,7 +460,7 @@ func NewPeerFromConfigStruct(pconf *Neighbor) *api.Peer {
 	timer := pconf.Timers
 	s := pconf.State
 	localAddress := pconf.Transport.Config.LocalAddress
-	if pconf.Transport.State.LocalAddress != "" {
+	if pconf.Transport.State.LocalAddress.IsValid() {
 		localAddress = pconf.Transport.State.LocalAddress
 	}
 	remoteCap, err := apiutil.MarshalCapabilities(pconf.State.RemoteCapabilityList)
@@ -495,7 +506,7 @@ func NewPeerFromConfigStruct(pconf *Neighbor) *api.Peer {
 	return &api.Peer{
 		ApplyPolicy: newApplyPolicyFromConfigStruct(&pconf.ApplyPolicy),
 		Conf: &api.PeerConf{
-			NeighborAddress:      pconf.Config.NeighborAddress,
+			NeighborAddress:      pconf.Config.NeighborAddress.String(),
 			PeerAsn:              pconf.Config.PeerAs,
 			LocalAsn:             pconf.Config.LocalAs,
 			Type:                 toPeerType(pconf.Config.PeerType),
@@ -540,11 +551,11 @@ func NewPeerFromConfigStruct(pconf *Neighbor) *api.Peer {
 			PeerAsn:         s.PeerAs,
 			LocalAsn:        s.LocalAs,
 			Type:            toPeerType(s.PeerType),
-			NeighborAddress: pconf.State.NeighborAddress,
+			NeighborAddress: pconf.State.NeighborAddress.String(),
 			Queues:          &api.Queues{},
 			RemoteCap:       remoteCap,
 			LocalCap:        localCap,
-			RouterId:        s.RemoteRouterId,
+			RouterId:        s.RemoteRouterId.String(),
 			Flops:           s.Flops,
 		},
 		EbgpMultihop: &api.EbgpMultihop{
@@ -571,7 +582,7 @@ func NewPeerFromConfigStruct(pconf *Neighbor) *api.Peer {
 		},
 		RouteReflector: &api.RouteReflector{
 			RouteReflectorClient:    pconf.RouteReflector.Config.RouteReflectorClient,
-			RouteReflectorClusterId: string(pconf.RouteReflector.State.RouteReflectorClusterId),
+			RouteReflectorClusterId: pconf.RouteReflector.State.RouteReflectorClusterId.String(),
 		},
 		RouteServer: &api.RouteServer{
 			RouteServerClient: pconf.RouteServer.Config.RouteServerClient,
@@ -591,7 +602,7 @@ func NewPeerFromConfigStruct(pconf *Neighbor) *api.Peer {
 		Transport: &api.Transport{
 			RemotePort:    uint32(pconf.Transport.Config.RemotePort),
 			LocalPort:     uint32(pconf.Transport.Config.LocalPort),
-			LocalAddress:  localAddress,
+			LocalAddress:  localAddress.String(),
 			PassiveMode:   pconf.Transport.Config.PassiveMode,
 			BindInterface: pconf.Transport.Config.BindInterface,
 			TcpMss:        uint32(pconf.Transport.Config.TcpMss),
@@ -654,7 +665,7 @@ func NewPeerGroupFromConfigStruct(pconf *PeerGroup) *api.PeerGroup {
 		},
 		RouteReflector: &api.RouteReflector{
 			RouteReflectorClient:    pconf.RouteReflector.Config.RouteReflectorClient,
-			RouteReflectorClusterId: string(pconf.RouteReflector.Config.RouteReflectorClusterId),
+			RouteReflectorClusterId: pconf.RouteReflector.Config.RouteReflectorClusterId.String(),
 		},
 		RouteServer: &api.RouteServer{
 			RouteServerClient: pconf.RouteServer.Config.RouteServerClient,
@@ -671,7 +682,7 @@ func NewPeerGroupFromConfigStruct(pconf *PeerGroup) *api.PeerGroup {
 		},
 		Transport: &api.Transport{
 			RemotePort:   uint32(pconf.Transport.Config.RemotePort),
-			LocalAddress: pconf.Transport.Config.LocalAddress,
+			LocalAddress: pconf.Transport.Config.LocalAddress.String(),
 			PassiveMode:  pconf.Transport.Config.PassiveMode,
 			TcpMss:       uint32(pconf.Transport.Config.TcpMss),
 		},
@@ -685,13 +696,16 @@ func NewGlobalFromConfigStruct(c *Global) *api.Global {
 		families = append(families, uint32(AfiSafiTypeToIntMap[f.Config.AfiSafiName]))
 	}
 
-	applyPolicy := newApplyPolicyFromConfigStruct(&c.ApplyPolicy)
+	l := make([]string, 0, len(c.Config.LocalAddressList))
+	for _, addr := range c.Config.LocalAddressList {
+		l = append(l, addr.String())
+	}
 
 	return &api.Global{
 		Asn:              c.Config.As,
-		RouterId:         c.Config.RouterId,
+		RouterId:         c.Config.RouterId.String(),
 		ListenPort:       c.Config.Port,
-		ListenAddresses:  c.Config.LocalAddressList,
+		ListenAddresses:  l,
 		Families:         families,
 		UseMultiplePaths: c.UseMultiplePaths.Config.Enabled,
 		RouteSelectionOptions: &api.RouteSelectionOptionsConfig{
@@ -721,17 +735,16 @@ func NewGlobalFromConfigStruct(c *Global) *api.Global {
 			NotificationEnabled: c.GracefulRestart.Config.NotificationEnabled,
 			LonglivedEnabled:    c.GracefulRestart.Config.LongLivedEnabled,
 		},
-		ApplyPolicy: applyPolicy,
 	}
 }
 
 func newAPIPrefixFromConfigStruct(c Prefix) (*api.Prefix, error) {
-	min, max, err := ParseMaskLength(c.IpPrefix, c.MasklengthRange)
+	min, max, err := ParseMaskLength(c.IpPrefix.String(), c.MasklengthRange)
 	if err != nil {
 		return nil, err
 	}
 	return &api.Prefix{
-		IpPrefix:      c.IpPrefix,
+		IpPrefix:      c.IpPrefix.String(),
 		MaskLengthMin: uint32(min),
 		MaskLengthMax: uint32(max),
 	}, nil

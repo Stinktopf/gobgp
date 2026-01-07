@@ -18,6 +18,7 @@ package bgp
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,17 +27,16 @@ import (
 	"net/netip"
 	"reflect"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 type MarshallingOption struct {
-	AddPath    map[Family]BGPAddPathMode
-	Attributes map[BGPAttrType]bool
-	MRT        bool
+	AddPath map[Family]BGPAddPathMode
+	MRT     bool
+
+	attributes map[BGPAttrType]bool
 }
 
 func IsMRTSerialization(options []*MarshallingOption) bool {
@@ -67,12 +67,12 @@ func IsAddPathEnabled(decode bool, f Family, options []*MarshallingOption) bool 
 	return false
 }
 
-func IsAttributePresent(attr BGPAttrType, options []*MarshallingOption) bool {
+func isAttributePresent(attr BGPAttrType, options []*MarshallingOption) bool {
 	for _, opt := range options {
 		if opt == nil {
 			continue
 		}
-		if o := opt.Attributes; o != nil {
+		if o := opt.attributes; o != nil {
 			_, ok := o[attr]
 			return ok
 		}
@@ -1283,7 +1283,7 @@ type BGPOpen struct {
 	Version     uint8
 	MyAS        uint16
 	HoldTime    uint16
-	ID          net.IP
+	ID          netip.Addr
 	OptParamLen uint8
 	OptParams   []OptionParameterInterface
 }
@@ -1295,7 +1295,7 @@ func (msg *BGPOpen) DecodeFromBytes(data []byte, options ...*MarshallingOption) 
 	msg.Version = data[0]
 	msg.MyAS = binary.BigEndian.Uint16(data[1:3])
 	msg.HoldTime = binary.BigEndian.Uint16(data[3:5])
-	msg.ID = net.IP(data[5:9]).To4()
+	msg.ID, _ = netip.AddrFromSlice(data[5:9])
 	msg.OptParamLen = data[9]
 	data = data[10:]
 	if len(data) < int(msg.OptParamLen) {
@@ -1339,7 +1339,7 @@ func (msg *BGPOpen) Serialize(options ...*MarshallingOption) ([]byte, error) {
 	buf[0] = msg.Version
 	binary.BigEndian.PutUint16(buf[1:3], msg.MyAS)
 	binary.BigEndian.PutUint16(buf[3:5], msg.HoldTime)
-	copy(buf[5:9], msg.ID.To4())
+	copy(buf[5:9], msg.ID.AsSlice())
 	pbuf := make([]byte, 0)
 	for _, p := range msg.OptParams {
 		onepbuf, err := p.Serialize()
@@ -1353,74 +1353,32 @@ func (msg *BGPOpen) Serialize(options ...*MarshallingOption) ([]byte, error) {
 	return append(buf, pbuf...), nil
 }
 
-func NewBGPOpenMessage(myas uint16, holdtime uint16, id string, optparams []OptionParameterInterface) *BGPMessage {
+func NewBGPOpenMessage(myas uint16, holdtime uint16, id netip.Addr, optparams []OptionParameterInterface) (*BGPMessage, error) {
+	if !id.Is4() {
+		return nil, fmt.Errorf("invalid address")
+	}
 	return &BGPMessage{
 		Header: BGPHeader{Type: BGP_MSG_OPEN},
-		Body:   &BGPOpen{4, myas, holdtime, net.ParseIP(id).To4(), 0, optparams},
-	}
+		Body:   &BGPOpen{4, myas, holdtime, id, 0, optparams},
+	}, nil
 }
 
-type AddrPrefixInterface interface {
-	DecodeFromBytes([]byte, ...*MarshallingOption) error
+type NLRI interface {
 	Serialize(...*MarshallingOption) ([]byte, error)
-	AFI() uint16
-	SAFI() uint8
 	Len(...*MarshallingOption) int
 	String() string
 	MarshalJSON() ([]byte, error)
 	// Create a flat map to describe attributes and their
 	// values. This can be used to create structured outputs.
 	Flat() map[string]string
-	PathIdentifier() uint32
-	SetPathIdentifier(uint32)
-	PathLocalIdentifier() uint32
-	SetPathLocalIdentifier(uint32)
 }
 
-func addrPrefixOnlySerialize(nlri AddrPrefixInterface) []byte {
-	switch T := nlri.(type) {
-	case *IPAddrPrefix:
-		b := make([]byte, 5)
-		copy(b, T.Prefix.To4())
-		b[4] = T.Length
-		return b
-	case *IPv6AddrPrefix:
-		b := make([]byte, 17)
-		copy(b, T.Prefix.To16())
-		b[16] = T.Length
-		return b
-	case *LabeledVPNIPAddrPrefix:
-		b := make([]byte, 13)
-		serializedRD, _ := T.RD.Serialize()
-		copy(b, serializedRD)
-		copy(b[8:12], T.Prefix.To4())
-		b[12] = T.Length - 8*uint8(T.Labels.Len())
-		return b
-	case *LabeledVPNIPv6AddrPrefix:
-		b := make([]byte, 25)
-		serializedRD, _ := T.RD.Serialize()
-		copy(b, serializedRD)
-		copy(b[8:24], T.Prefix.To16())
-		b[24] = T.Length - 8*uint8(T.Labels.Len())
-		return b
-	}
-	return []byte(nlri.String())
-}
-
-func AddrPrefixOnlyCompare(a, b AddrPrefixInterface) int {
-	return bytes.Compare(addrPrefixOnlySerialize(a), addrPrefixOnlySerialize(b))
-}
-
-func LabelString(nlri AddrPrefixInterface) string {
+func LabelString(nlri NLRI) string {
 	label := ""
 	switch n := nlri.(type) {
 	case *LabeledIPAddrPrefix:
 		label = n.Labels.String()
-	case *LabeledIPv6AddrPrefix:
-		label = n.Labels.String()
 	case *LabeledVPNIPAddrPrefix:
-		label = n.Labels.String()
-	case *LabeledVPNIPv6AddrPrefix:
 		label = n.Labels.String()
 	case *EVPNNLRI:
 		switch route := n.RouteTypeData.(type) {
@@ -1439,76 +1397,25 @@ func LabelString(nlri AddrPrefixInterface) string {
 	return label
 }
 
-type PrefixDefault struct {
-	mu      sync.Mutex
-	id      uint32
-	localId uint32
-}
-
-func (p *PrefixDefault) PathIdentifier() uint32 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	return p.id
-}
-
-func (p *PrefixDefault) SetPathIdentifier(id uint32) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.id = id
-}
-
-func (p *PrefixDefault) PathLocalIdentifier() uint32 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	return p.localId
-}
-
-func (p *PrefixDefault) SetPathLocalIdentifier(id uint32) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.localId = id
-}
-
-func (p *PrefixDefault) decodePathIdentifier(data []byte) ([]byte, error) {
-	if len(data) < 4 {
-		code := uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR)
-		subcode := uint8(BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST)
-		return nil, NewMessageError(code, subcode, nil, "prefix misses path identifier field")
-	}
-	p.SetPathIdentifier(binary.BigEndian.Uint32(data[:4]))
-	return data[4:], nil
-}
-
-func (p *PrefixDefault) serializeIdentifier() ([]byte, error) {
-	buf := make([]byte, 4)
-	binary.BigEndian.PutUint32(buf, p.PathLocalIdentifier())
-	return buf, nil
-}
-
 type IPAddrPrefixDefault struct {
-	PrefixDefault
-	Length uint8
-	Prefix net.IP
+	Prefix netip.Prefix
 }
 
-func (r *IPAddrPrefixDefault) decodePrefix(data []byte, bitlen uint8, addrlen uint8) error {
+func (r *IPAddrPrefixDefault) decodePrefix(data []byte, bitlen uint8, addrlen int) error {
+	if addrlen != 4 && addrlen != 16 {
+		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_INVALID_NETWORK_FIELD, nil, "invalid address length")
+	}
+
 	bytelen := (int(bitlen) + 7) / 8
 	if len(data) < bytelen {
-		eCode := uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR)
-		eSubCode := uint8(BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST)
-		return NewMessageError(eCode, eSubCode, nil, "network bytes is short")
+		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_INVALID_NETWORK_FIELD, nil, "network bytes is short")
 	}
-	if bitlen > addrlen*8 {
-		eCode := uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR)
-		eSubCode := uint8(BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST)
-		return NewMessageError(eCode, eSubCode, nil, "network bit length is too long")
+	if int(bitlen) > addrlen*8 {
+		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_INVALID_NETWORK_FIELD, nil, "network bit length is too long")
 	}
-	b := make([]byte, addrlen)
-	copy(b, data[:bytelen])
+
+	var b [16]byte
+	copy(b[:], data[:bytelen])
 	// clear trailing bits in the last byte. rfc doesn't require
 	// this but some bgp implementations need this...
 	rem := bitlen % 8
@@ -1517,135 +1424,70 @@ func (r *IPAddrPrefixDefault) decodePrefix(data []byte, bitlen uint8, addrlen ui
 		lastByte := b[bytelen-1] & byte(mask)
 		b[bytelen-1] = lastByte
 	}
-	r.Prefix = b
+	addr, _ := netip.AddrFromSlice(b[:addrlen])
+	r.Prefix = netip.PrefixFrom(addr, int(bitlen))
 	return nil
 }
 
-func (r *IPAddrPrefixDefault) serializePrefix(bitLen uint8) ([]byte, error) {
-	byteLen := (int(bitLen) + 7) / 8
+func (r *IPAddrPrefixDefault) serializePrefix() []byte {
+	byteLen := (r.Prefix.Bits() + 7) / 8
 	buf := make([]byte, byteLen)
-	copy(buf, r.Prefix)
-	return buf, nil
-}
+	copy(buf, r.Prefix.Addr().AsSlice()[:byteLen])
 
-func (r *IPAddrPrefixDefault) String() string {
-	return r.Prefix.String() + "/" + strconv.FormatUint(uint64(r.Length), 10)
-}
-
-func (r *IPAddrPrefixDefault) MarshalJSON() ([]byte, error) {
-	return json.Marshal(struct {
-		Prefix string `json:"prefix"`
-	}{
-		Prefix: r.String(),
-	})
+	return buf
 }
 
 type IPAddrPrefix struct {
 	IPAddrPrefixDefault
-	addrlen uint8
 }
 
-func (r *IPAddrPrefix) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
-	if r.addrlen == 0 {
-		r.addrlen = 4
-	}
-	f := RF_IPv4_UC
-	if r.addrlen == 16 {
-		f = RF_IPv6_UC
-	}
-	if IsAddPathEnabled(true, f, options) {
-		var err error
-		data, err = r.decodePathIdentifier(data)
-		if err != nil {
-			return err
-		}
-	}
+func (r *IPAddrPrefix) decodeFromBytes(data []byte, addrlen int, options ...*MarshallingOption) error {
 	if len(data) < 1 {
 		eCode := uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR)
 		eSubCode := uint8(BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST)
 		return NewMessageError(eCode, eSubCode, nil, "prefix misses length field")
 	}
-	r.Length = data[0]
-	return r.decodePrefix(data[1:], r.Length, r.addrlen)
+
+	return r.decodePrefix(data[1:], data[0], addrlen)
 }
 
 func (r *IPAddrPrefix) Serialize(options ...*MarshallingOption) ([]byte, error) {
-	f := RF_IPv4_UC
-	if r.addrlen == 16 {
-		f = RF_IPv6_UC
-	}
-	var buf []byte
-	if IsAddPathEnabled(false, f, options) {
-		var err error
-		buf, err = r.serializeIdentifier()
-		if err != nil {
-			return nil, err
-		}
-	}
-	buf = append(buf, r.Length)
-	pbuf, err := r.serializePrefix(r.Length)
-	if err != nil {
-		return nil, err
-	}
-	return append(buf, pbuf...), nil
-}
-
-func (r *IPAddrPrefix) AFI() uint16 {
-	return AFI_IP
-}
-
-func (r *IPAddrPrefix) SAFI() uint8 {
-	return SAFI_UNICAST
+	buf := []byte{uint8(r.Prefix.Bits())}
+	return append(buf, r.serializePrefix()...), nil
 }
 
 func (r *IPAddrPrefix) Len(options ...*MarshallingOption) int {
-	return 1 + (int(r.Length)+7)/8
+	return 1 + (r.Prefix.Bits()+7)/8
 }
 
-func NewIPAddrPrefix(length uint8, prefix string) *IPAddrPrefix {
-	p := &IPAddrPrefix{
-		IPAddrPrefixDefault{
-			Length: length,
+func (r *IPAddrPrefix) String() string {
+	return r.Prefix.String()
+}
+
+func (p *IPAddrPrefix) Flat() map[string]string {
+	return map[string]string{
+		"Prefix":    p.Prefix.Addr().String(),
+		"PrefixLen": strconv.Itoa(p.Prefix.Bits()),
+	}
+}
+
+func (r *IPAddrPrefix) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Prefix string `json:"prefix"`
+	}{
+		Prefix: r.Prefix.String(),
+	})
+}
+
+func NewIPAddrPrefix(prefix netip.Prefix) (*IPAddrPrefix, error) {
+	if !prefix.IsValid() {
+		return nil, fmt.Errorf("invalid prefix")
+	}
+	return &IPAddrPrefix{
+		IPAddrPrefixDefault: IPAddrPrefixDefault{
+			Prefix: prefix.Masked(),
 		},
-		4,
-	}
-	// TODO: pass the error to the caller
-	_ = p.decodePrefix(net.ParseIP(prefix).To4(), length, 4)
-	return p
-}
-
-func isIPv4MappedIPv6(ip net.IP) bool {
-	return len(ip) == net.IPv6len && ip.To4() != nil
-}
-
-type IPv6AddrPrefix struct {
-	IPAddrPrefix
-}
-
-func (r *IPv6AddrPrefix) AFI() uint16 {
-	return AFI_IP6
-}
-
-func (r *IPv6AddrPrefix) String() string {
-	prefix := r.Prefix.String()
-	if isIPv4MappedIPv6(r.Prefix) {
-		prefix = "::ffff:" + prefix
-	}
-	return prefix + "/" + strconv.FormatUint(uint64(r.Length), 10)
-}
-
-func NewIPv6AddrPrefix(length uint8, prefix string) *IPv6AddrPrefix {
-	p := &IPv6AddrPrefix{
-		IPAddrPrefix{
-			IPAddrPrefixDefault{
-				Length: length,
-			},
-			16,
-		},
-	}
-	// TODO: pass the error to the caller
-	_ = p.decodePrefix(net.ParseIP(prefix), length, 16)
-	return p
+	}, nil
 }
 
 const (
@@ -1728,7 +1570,7 @@ func NewRouteDistinguisherTwoOctetAS(admin uint16, assigned uint32) *RouteDistin
 
 type RouteDistinguisherIPAddressAS struct {
 	DefaultRouteDistinguisher
-	Admin    net.IP
+	Admin    netip.Addr
 	Assigned uint16
 }
 
@@ -1736,14 +1578,14 @@ func (rd *RouteDistinguisherIPAddressAS) DecodeFromBytes(data []byte) error {
 	if len(data) < 6 {
 		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "Not enough RouteDistinguisherIPAddressAS bytes available")
 	}
-	rd.Admin = data[:4]
+	rd.Admin, _ = netip.AddrFromSlice(data[:4])
 	rd.Assigned = binary.BigEndian.Uint16(data[4:6])
 	return nil
 }
 
 func (rd *RouteDistinguisherIPAddressAS) Serialize() ([]byte, error) {
 	buf := make([]byte, 6)
-	copy(buf[:4], rd.Admin.To4())
+	copy(buf[:4], rd.Admin.AsSlice())
 	binary.BigEndian.PutUint16(buf[4:6], rd.Assigned)
 	return rd.serialize(buf)
 }
@@ -1764,14 +1606,17 @@ func (rd *RouteDistinguisherIPAddressAS) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func NewRouteDistinguisherIPAddressAS(admin string, assigned uint16) *RouteDistinguisherIPAddressAS {
+func NewRouteDistinguisherIPAddressAS(admin netip.Addr, assigned uint16) (*RouteDistinguisherIPAddressAS, error) {
+	if !admin.Is4() {
+		return nil, fmt.Errorf("invalid address")
+	}
 	return &RouteDistinguisherIPAddressAS{
 		DefaultRouteDistinguisher: DefaultRouteDistinguisher{
 			Type: BGP_RD_IPV4_ADDRESS,
 		},
-		Admin:    net.ParseIP(admin).To4(),
+		Admin:    admin,
 		Assigned: assigned,
-	}
+	}, nil
 }
 
 type RouteDistinguisherFourOctetAS struct {
@@ -1861,7 +1706,9 @@ func GetRouteDistinguisher(data []byte) RouteDistinguisherInterface {
 	case BGP_RD_TWO_OCTET_AS:
 		return NewRouteDistinguisherTwoOctetAS(binary.BigEndian.Uint16(data[2:4]), binary.BigEndian.Uint32(data[4:8]))
 	case BGP_RD_IPV4_ADDRESS:
-		return NewRouteDistinguisherIPAddressAS(net.IP(data[2:6]).String(), binary.BigEndian.Uint16(data[6:8]))
+		addr, _ := netip.AddrFromSlice(data[2:6])
+		rd, _ := NewRouteDistinguisherIPAddressAS(addr, binary.BigEndian.Uint16(data[6:8]))
+		return rd
 	case BGP_RD_FOUR_OCTET_AS:
 		return NewRouteDistinguisherFourOctetAS(binary.BigEndian.Uint32(data[2:6]), binary.BigEndian.Uint16(data[6:8]))
 	}
@@ -1887,10 +1734,10 @@ func ParseRouteDistinguisher(rd string) (RouteDistinguisherInterface, error) {
 		return nil, err
 	}
 	assigned, _ := strconv.ParseUint(elems[10], 10, 32)
-	ip := net.ParseIP(elems[1])
+	ip, _ := netip.ParseAddr(elems[1])
 	switch {
-	case ip.To4() != nil:
-		return NewRouteDistinguisherIPAddressAS(elems[1], uint16(assigned)), nil
+	case ip.Is4():
+		return NewRouteDistinguisherIPAddressAS(ip, uint16(assigned))
 	case elems[6] == "" && elems[7] == "":
 		asn, _ := strconv.ParseUint(elems[8], 10, 16)
 		return NewRouteDistinguisherTwoOctetAS(uint16(asn), uint32(assigned)), nil
@@ -1903,26 +1750,22 @@ func ParseRouteDistinguisher(rd string) (RouteDistinguisherInterface, error) {
 }
 
 // ParseVPNPrefix parses VPNv4/VPNv6 prefix.
-func ParseVPNPrefix(prefix string) (RouteDistinguisherInterface, net.IP, *net.IPNet, error) {
+func ParseVPNPrefix(prefix string) (RouteDistinguisherInterface, netip.Prefix, error) {
 	elems := strings.SplitN(prefix, ":", 3)
 	if len(elems) < 3 {
-		return nil, nil, nil, fmt.Errorf("invalid VPN prefix format: %q", prefix)
+		return nil, netip.Prefix{}, fmt.Errorf("invalid VPN prefix format: %q", prefix)
 	}
 
 	rd, err := ParseRouteDistinguisher(elems[0] + ":" + elems[1])
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, netip.Prefix{}, err
 	}
 
-	addr, network, err := net.ParseCIDR(elems[2])
-	return rd, addr, network, err
-}
-
-// ContainsCIDR checks if one IPNet is a subnet of another.
-func ContainsCIDR(n1, n2 *net.IPNet) bool {
-	ones1, _ := n1.Mask.Size()
-	ones2, _ := n2.Mask.Size()
-	return ones1 <= ones2 && n1.Contains(n2.IP)
+	p, err := netip.ParsePrefix(elems[2])
+	if err != nil {
+		return rd, netip.Prefix{}, err
+	}
+	return rd, p, err
 }
 
 //
@@ -1966,7 +1809,7 @@ type MPLSLabelStack struct {
 func (l *MPLSLabelStack) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
 	labels := []uint32{}
 	foundBottom := false
-	bottomExpected := !IsAttributePresent(BGP_ATTR_TYPE_PREFIX_SID, options)
+	bottomExpected := !isAttributePresent(BGP_ATTR_TYPE_PREFIX_SID, options)
 
 	for len(data) >= 3 {
 		label := uint32(data[0])<<16 | uint32(data[1])<<8 | uint32(data[2])
@@ -2081,32 +1924,20 @@ ERR:
 
 type LabeledVPNIPAddrPrefix struct {
 	IPAddrPrefixDefault
-	Labels  MPLSLabelStack
-	RD      RouteDistinguisherInterface
-	addrlen uint8
+	Labels MPLSLabelStack
+	RD     RouteDistinguisherInterface
 }
 
-func (l *LabeledVPNIPAddrPrefix) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
-	f := RF_IPv4_VPN
-	if l.addrlen == 16 {
-		f = RF_IPv6_VPN
-	}
-	if IsAddPathEnabled(true, f, options) {
-		var err error
-		data, err = l.decodePathIdentifier(data)
-		if err != nil {
-			return err
-		}
-	}
+func (l *LabeledVPNIPAddrPrefix) decodeFromBytes(data []byte, addrlen int, options ...*MarshallingOption) error {
 	if len(data) < 1 {
 		return NewMessageError(uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR), uint8(BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST), nil, "LabeledVPNIPAddrPrefix not enough data")
 	}
-	l.Length = data[0]
+	bits := int(data[0])
 	data = data[1:]
 	if err := l.Labels.DecodeFromBytes(data, options...); err != nil {
 		return err
 	}
-	if int(l.Length)-8*l.Labels.Len() < 0 {
+	if bits-8*l.Labels.Len() < 0 {
 		l.Labels.Labels = []uint32{}
 	}
 	if len(data) < l.Labels.Len()+8 {
@@ -2119,24 +1950,14 @@ func (l *LabeledVPNIPAddrPrefix) DecodeFromBytes(data []byte, options ...*Marsha
 		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "bad labeled VPN-IPv4 NLRI length")
 	}
 	data = data[l.RD.Len():]
-	restbits := int(l.Length) - 8*(l.Labels.Len()+l.RD.Len())
-	return l.decodePrefix(data, uint8(restbits), l.addrlen)
+	restbits := bits - 8*(l.Labels.Len()+l.RD.Len())
+	return l.decodePrefix(data, uint8(restbits), addrlen)
 }
 
 func (l *LabeledVPNIPAddrPrefix) Serialize(options ...*MarshallingOption) ([]byte, error) {
-	f := RF_IPv4_VPN
-	if l.addrlen == 16 {
-		f = RF_IPv6_VPN
-	}
 	var buf []byte
-	if IsAddPathEnabled(false, f, options) {
-		var err error
-		buf, err = l.serializeIdentifier()
-		if err != nil {
-			return nil, err
-		}
-	}
-	buf = append(buf, l.Length)
+	bits := 8*(l.Labels.Len()+l.RD.Len()) + l.Prefix.Bits()
+	buf = append(buf, uint8(bits))
 	lbuf, err := l.Labels.Serialize(options...)
 	if err != nil {
 		return nil, err
@@ -2147,25 +1968,12 @@ func (l *LabeledVPNIPAddrPrefix) Serialize(options ...*MarshallingOption) ([]byt
 		return nil, err
 	}
 	buf = append(buf, rbuf...)
-	restbits := int(l.Length) - 8*(l.Labels.Len()+l.RD.Len())
-	pbuf, err := l.serializePrefix(uint8(restbits))
-	if err != nil {
-		return nil, err
-	}
-	buf = append(buf, pbuf...)
+	buf = append(buf, l.serializePrefix()...)
 	return buf, nil
 }
 
-func (l *LabeledVPNIPAddrPrefix) AFI() uint16 {
-	return AFI_IP
-}
-
-func (l *LabeledVPNIPAddrPrefix) SAFI() uint8 {
-	return SAFI_MPLS_VPN
-}
-
 func (l *LabeledVPNIPAddrPrefix) IPPrefixLen() uint8 {
-	return l.Length - 8*uint8(l.Labels.Len()+l.RD.Len())
+	return uint8(l.Prefix.Bits())
 }
 
 func (l *LabeledVPNIPAddrPrefix) Len(options ...*MarshallingOption) int {
@@ -2177,158 +1985,83 @@ func (l *LabeledVPNIPAddrPrefix) String() string {
 }
 
 func (l *LabeledVPNIPAddrPrefix) IPPrefix() string {
-	masklen := l.Length - uint8(8*(l.Labels.Len()+l.RD.Len()))
-	prefix := l.Prefix.String()
-	if isIPv4MappedIPv6(l.Prefix) {
-		prefix = "::ffff:" + prefix
-	}
-	return prefix + "/" + strconv.FormatUint(uint64(masklen), 10)
+	return l.Prefix.String()
 }
 
 func (l *LabeledVPNIPAddrPrefix) MarshalJSON() ([]byte, error) {
-	masklen := l.Length - uint8(8*(l.Labels.Len()+l.RD.Len()))
 	return json.Marshal(struct {
 		Prefix string                      `json:"prefix"`
 		Labels []uint32                    `json:"labels"`
 		RD     RouteDistinguisherInterface `json:"rd"`
 	}{
-		Prefix: fmt.Sprintf("%s/%d", l.Prefix, masklen),
+		Prefix: l.Prefix.String(),
 		Labels: l.Labels.Labels,
 		RD:     l.RD,
 	})
 }
 
-func NewLabeledVPNIPAddrPrefix(length uint8, prefix string, label MPLSLabelStack, rd RouteDistinguisherInterface) *LabeledVPNIPAddrPrefix {
-	rdlen := 0
-	if rd != nil {
-		rdlen = rd.Len()
+func NewLabeledVPNIPAddrPrefix(prefix netip.Prefix, label MPLSLabelStack, rd RouteDistinguisherInterface) (*LabeledVPNIPAddrPrefix, error) {
+	if !prefix.IsValid() {
+		return nil, fmt.Errorf("invalid prefix")
 	}
 	return &LabeledVPNIPAddrPrefix{
-		IPAddrPrefixDefault{
-			Length: length + uint8(8*(label.Len()+rdlen)),
-			Prefix: net.ParseIP(prefix).To4(),
+		IPAddrPrefixDefault: IPAddrPrefixDefault{
+			Prefix: prefix,
 		},
-		label,
-		rd,
-		4,
-	}
-}
-
-type LabeledVPNIPv6AddrPrefix struct {
-	LabeledVPNIPAddrPrefix
-}
-
-func (l *LabeledVPNIPv6AddrPrefix) AFI() uint16 {
-	return AFI_IP6
-}
-
-func NewLabeledVPNIPv6AddrPrefix(length uint8, prefix string, label MPLSLabelStack, rd RouteDistinguisherInterface) *LabeledVPNIPv6AddrPrefix {
-	rdlen := 0
-	if rd != nil {
-		rdlen = rd.Len()
-	}
-	return &LabeledVPNIPv6AddrPrefix{
-		LabeledVPNIPAddrPrefix{
-			IPAddrPrefixDefault{
-				Length: length + uint8(8*(label.Len()+rdlen)),
-				Prefix: net.ParseIP(prefix),
-			},
-			label,
-			rd,
-			16,
-		},
-	}
+		Labels: label,
+		RD:     rd,
+	}, nil
 }
 
 type LabeledIPAddrPrefix struct {
 	IPAddrPrefixDefault
-	Labels  MPLSLabelStack
-	addrlen uint8
-}
-
-func (r *LabeledIPAddrPrefix) AFI() uint16 {
-	return AFI_IP
-}
-
-func (r *LabeledIPAddrPrefix) SAFI() uint8 {
-	return SAFI_MPLS_LABEL
+	Labels MPLSLabelStack
 }
 
 func (l *LabeledIPAddrPrefix) IPPrefixLen() uint8 {
-	return l.Length - 8*uint8(l.Labels.Len())
+	return uint8(l.Prefix.Bits())
 }
 
 func (l *LabeledIPAddrPrefix) Len(options ...*MarshallingOption) int {
 	return 1 + l.Labels.Len() + int((l.IPPrefixLen()+7)/8)
 }
 
-func (l *LabeledIPAddrPrefix) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
-	f := RF_IPv4_MPLS
-	if l.addrlen == 16 {
-		f = RF_IPv6_MPLS
-	}
-	if IsAddPathEnabled(true, f, options) {
-		var err error
-		data, err = l.decodePathIdentifier(data)
-		if err != nil {
-			return err
-		}
-	}
+func (l *LabeledIPAddrPrefix) decodeFromBytes(data []byte, addrlen int, options ...*MarshallingOption) error {
 	if len(data) < 1 {
 		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "LabeledIPAddrPrefix not enough data")
 	}
-	l.Length = data[0]
+	bits := int(data[0])
 	data = data[1:]
-	if err := l.Labels.DecodeFromBytes(data); err != nil {
+	if err := l.Labels.DecodeFromBytes(data, options...); err != nil {
 		return err
 	}
 
-	if int(l.Length)-8*l.Labels.Len() < 0 {
+	if bits-8*l.Labels.Len() < 0 {
 		l.Labels.Labels = []uint32{}
 	}
 	if len(data) < l.Labels.Len() {
 		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "LabeledIPAddrPrefix not enough data")
 	}
 	data = data[l.Labels.Len():]
-	restbits := int(l.Length) - 8*l.Labels.Len()
-	return l.decodePrefix(data, uint8(restbits), l.addrlen)
+	restbits := bits - 8*l.Labels.Len()
+	return l.decodePrefix(data, uint8(restbits), addrlen)
 }
 
 func (l *LabeledIPAddrPrefix) Serialize(options ...*MarshallingOption) ([]byte, error) {
-	f := RF_IPv4_MPLS
-	if l.addrlen == 16 {
-		f = RF_IPv6_MPLS
-	}
 	var buf []byte
-	if IsAddPathEnabled(false, f, options) {
-		var err error
-		buf, err = l.serializeIdentifier()
-		if err != nil {
-			return nil, err
-		}
-	}
-	buf = append(buf, l.Length)
-	restbits := int(l.Length) - 8*l.Labels.Len()
+	bits := 8*l.Labels.Len() + l.Prefix.Bits()
+	buf = append(buf, uint8(bits))
 	lbuf, err := l.Labels.Serialize()
 	if err != nil {
 		return nil, err
 	}
 	buf = append(buf, lbuf...)
-	pbuf, err := l.serializePrefix(uint8(restbits))
-	if err != nil {
-		return nil, err
-	}
-	buf = append(buf, pbuf...)
+	buf = append(buf, l.serializePrefix()...)
 	return buf, nil
 }
 
 func (l *LabeledIPAddrPrefix) String() string {
-	prefix := l.Prefix.String()
-	if isIPv4MappedIPv6(l.Prefix) {
-		prefix = "::ffff:" + prefix
-	}
-	masklen := int(l.Length) - l.Labels.Len()*8
-	return prefix + "/" + strconv.FormatUint(uint64(masklen), 10)
+	return l.Prefix.String()
 }
 
 func (l *LabeledIPAddrPrefix) MarshalJSON() ([]byte, error) {
@@ -2341,53 +2074,34 @@ func (l *LabeledIPAddrPrefix) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func NewLabeledIPAddrPrefix(length uint8, prefix string, label MPLSLabelStack) *LabeledIPAddrPrefix {
+func (l *LabeledIPAddrPrefix) Flat() map[string]string {
+	return map[string]string{
+		"Prefix":    l.Prefix.Addr().String(),
+		"PrefixLen": fmt.Sprintf("%d", l.Prefix.Bits()),
+		"NLRI":      l.String(),
+		"Label":     l.Labels.String(),
+	}
+}
+
+func NewLabeledIPAddrPrefix(prefix netip.Prefix, label MPLSLabelStack) (*LabeledIPAddrPrefix, error) {
+	if !prefix.IsValid() {
+		return nil, fmt.Errorf("invalid prefix")
+	}
 	return &LabeledIPAddrPrefix{
-		IPAddrPrefixDefault{
-			Length: length + uint8(label.Len()*8),
-			Prefix: net.ParseIP(prefix).To4(),
+		IPAddrPrefixDefault: IPAddrPrefixDefault{
+			Prefix: prefix,
 		},
-		label,
-		4,
-	}
-}
-
-type LabeledIPv6AddrPrefix struct {
-	LabeledIPAddrPrefix
-}
-
-func (l *LabeledIPv6AddrPrefix) AFI() uint16 {
-	return AFI_IP6
-}
-
-func NewLabeledIPv6AddrPrefix(length uint8, prefix string, label MPLSLabelStack) *LabeledIPv6AddrPrefix {
-	return &LabeledIPv6AddrPrefix{
-		LabeledIPAddrPrefix{
-			IPAddrPrefixDefault{
-				Length: length + uint8(label.Len()*8),
-				Prefix: net.ParseIP(prefix),
-			},
-			label,
-			16,
-		},
-	}
+		Labels: label,
+	}, nil
 }
 
 type RouteTargetMembershipNLRI struct {
-	PrefixDefault
 	Length      uint8
 	AS          uint32
 	RouteTarget ExtendedCommunityInterface
 }
 
-func (n *RouteTargetMembershipNLRI) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
-	if IsAddPathEnabled(true, RF_RTC_UC, options) {
-		var err error
-		data, err = n.decodePathIdentifier(data)
-		if err != nil {
-			return err
-		}
-	}
+func (n *RouteTargetMembershipNLRI) decodeFromBytes(data []byte, options ...*MarshallingOption) error {
 	if len(data) < 1 {
 		eCode := uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR)
 		eSubCode := uint8(BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST)
@@ -2417,13 +2131,6 @@ func (n *RouteTargetMembershipNLRI) DecodeFromBytes(data []byte, options ...*Mar
 
 func (n *RouteTargetMembershipNLRI) Serialize(options ...*MarshallingOption) ([]byte, error) {
 	var buf []byte
-	if IsAddPathEnabled(false, RF_RTC_UC, options) {
-		var err error
-		buf, err = n.serializeIdentifier()
-		if err != nil {
-			return nil, err
-		}
-	}
 	if n.Length == 0 {
 		return append(buf, 0), nil
 	}
@@ -2439,14 +2146,6 @@ func (n *RouteTargetMembershipNLRI) Serialize(options ...*MarshallingOption) ([]
 		return nil, err
 	}
 	return append(buf, ebuf...), nil
-}
-
-func (n *RouteTargetMembershipNLRI) AFI() uint16 {
-	return AFI_IP
-}
-
-func (n *RouteTargetMembershipNLRI) SAFI() uint8 {
-	return SAFI_ROUTE_TARGET_CONSTRAINTS
 }
 
 func (n *RouteTargetMembershipNLRI) Len(options ...*MarshallingOption) int {
@@ -2854,7 +2553,7 @@ type EVPNMacIPAdvertisementRoute struct {
 	MacAddressLength uint8
 	MacAddress       net.HardwareAddr
 	IPAddressLength  uint8
-	IPAddress        net.IP
+	IPAddress        netip.Addr
 	Labels           []uint32
 }
 
@@ -2889,7 +2588,8 @@ func (er *EVPNMacIPAdvertisementRoute) DecodeFromBytes(data []byte) error {
 		if len(data) < int(er.IPAddressLength/8) {
 			return malformedAttrListErr("bad length of MAC/IP Advertisement Route")
 		}
-		er.IPAddress = net.IP(data[:er.IPAddressLength/8])
+		// The length was validated above
+		er.IPAddress, _ = netip.AddrFromSlice(data[:er.IPAddressLength/8])
 	} else if er.IPAddressLength != 0 {
 		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, fmt.Sprintf("Invalid IP address length: %d", er.IPAddressLength))
 	}
@@ -2945,9 +2645,11 @@ func (er *EVPNMacIPAdvertisementRoute) Serialize() ([]byte, error) {
 	case 0:
 		// IP address omitted
 	case 32:
-		buf = append(buf, []byte(er.IPAddress.To4())...)
+		addr := er.IPAddress.As4()
+		buf = append(buf, addr[:]...)
 	case 128:
-		buf = append(buf, []byte(er.IPAddress.To16())...)
+		addr := er.IPAddress.As16()
+		buf = append(buf, addr[:]...)
 	default:
 		return nil, fmt.Errorf("invalid IP address length: %d", er.IPAddressLength)
 	}
@@ -2996,35 +2698,29 @@ func (er *EVPNMacIPAdvertisementRoute) rd() RouteDistinguisherInterface {
 	return er.RD
 }
 
-func NewEVPNMacIPAdvertisementRoute(rd RouteDistinguisherInterface, esi EthernetSegmentIdentifier, etag uint32, macAddress string, ipAddress string, labels []uint32) *EVPNNLRI {
+func NewEVPNMacIPAdvertisementRoute(rd RouteDistinguisherInterface, esi EthernetSegmentIdentifier, etag uint32, macAddress string, ipAddress netip.Addr, labels []uint32) (*EVPNNLRI, error) {
 	mac, _ := net.ParseMAC(macAddress)
-	var ipLen uint8
-	ip := net.ParseIP(ipAddress)
-	if ip != nil {
-		if ipv4 := ip.To4(); ipv4 != nil {
-			ipLen = 32
-			ip = ipv4
-		} else {
-			ipLen = 128
-		}
+	if !ipAddress.IsValid() {
+		return nil, fmt.Errorf("invalid IP address")
 	}
+
 	return NewEVPNNLRI(EVPN_ROUTE_TYPE_MAC_IP_ADVERTISEMENT, &EVPNMacIPAdvertisementRoute{
 		RD:               rd,
 		ESI:              esi,
 		ETag:             etag,
 		MacAddressLength: 48,
 		MacAddress:       mac,
-		IPAddressLength:  ipLen,
-		IPAddress:        ip,
+		IPAddressLength:  uint8(ipAddress.BitLen()),
+		IPAddress:        ipAddress,
 		Labels:           labels,
-	})
+	}), nil
 }
 
 type EVPNMulticastEthernetTagRoute struct {
 	RD              RouteDistinguisherInterface
 	ETag            uint32
 	IPAddressLength uint8
-	IPAddress       net.IP
+	IPAddress       netip.Addr
 }
 
 func (er *EVPNMulticastEthernetTagRoute) Len() int {
@@ -3049,7 +2745,7 @@ func (er *EVPNMulticastEthernetTagRoute) DecodeFromBytes(data []byte) error {
 		if len(data) < int(er.IPAddressLength/8) {
 			return malformedAttrListErr("invalid length of multicast ethernet tag route")
 		}
-		er.IPAddress = net.IP(data[:er.IPAddressLength/8])
+		er.IPAddress, _ = netip.AddrFromSlice(data[:er.IPAddressLength/8])
 	} else {
 		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, fmt.Sprintf("Invalid IP address length: %d", er.IPAddressLength))
 	}
@@ -3071,11 +2767,12 @@ func (er *EVPNMulticastEthernetTagRoute) Serialize() ([]byte, error) {
 	binary.BigEndian.PutUint32(tbuf[:4], er.ETag)
 	buf = append(buf, tbuf[:4]...)
 	buf = append(buf, er.IPAddressLength)
+	if !er.IPAddress.IsValid() {
+		return nil, fmt.Errorf("invalid IP address")
+	}
 	switch er.IPAddressLength {
-	case 32:
-		buf = append(buf, []byte(er.IPAddress.To4())...)
-	case 128:
-		buf = append(buf, []byte(er.IPAddress.To16())...)
+	case 32, 128:
+		buf = append(buf, er.IPAddress.AsSlice()...)
 	default:
 		return nil, fmt.Errorf("invalid IP address length: %d", er.IPAddressLength)
 	}
@@ -3108,27 +2805,24 @@ func (er *EVPNMulticastEthernetTagRoute) rd() RouteDistinguisherInterface {
 	return er.RD
 }
 
-func NewEVPNMulticastEthernetTagRoute(rd RouteDistinguisherInterface, etag uint32, ipAddress string) *EVPNNLRI {
-	ipLen := uint8(32)
-	ip := net.ParseIP(ipAddress)
-	if ipv4 := ip.To4(); ipv4 != nil {
-		ip = ipv4
-	} else {
-		ipLen = 128
+func NewEVPNMulticastEthernetTagRoute(rd RouteDistinguisherInterface, etag uint32, ipAddress netip.Addr) (*EVPNNLRI, error) {
+	if !ipAddress.IsValid() {
+		return nil, fmt.Errorf("invalid IP address: %v", ipAddress)
 	}
+
 	return NewEVPNNLRI(EVPN_INCLUSIVE_MULTICAST_ETHERNET_TAG, &EVPNMulticastEthernetTagRoute{
 		RD:              rd,
 		ETag:            etag,
-		IPAddressLength: ipLen,
-		IPAddress:       ip,
-	})
+		IPAddressLength: uint8(ipAddress.BitLen()),
+		IPAddress:       ipAddress,
+	}), nil
 }
 
 type EVPNEthernetSegmentRoute struct {
 	RD              RouteDistinguisherInterface
 	ESI             EthernetSegmentIdentifier
 	IPAddressLength uint8
-	IPAddress       net.IP
+	IPAddress       netip.Addr
 }
 
 func (er *EVPNEthernetSegmentRoute) Len() int {
@@ -3156,7 +2850,7 @@ func (er *EVPNEthernetSegmentRoute) DecodeFromBytes(data []byte) error {
 		if len(data) < int(er.IPAddressLength/8) {
 			return malformedAttrListErr("invalid Ethernet Segment Route length")
 		}
-		er.IPAddress = net.IP(data[:er.IPAddressLength/8])
+		er.IPAddress, _ = netip.AddrFromSlice(data[:er.IPAddressLength/8])
 	} else {
 		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, fmt.Sprintf("Invalid IP address length: %d", er.IPAddressLength))
 	}
@@ -3180,11 +2874,12 @@ func (er *EVPNEthernetSegmentRoute) Serialize() ([]byte, error) {
 	}
 	buf = append(buf, tbuf...)
 	buf = append(buf, er.IPAddressLength)
+	if !er.IPAddress.IsValid() {
+		return nil, fmt.Errorf("invalid IP address")
+	}
 	switch er.IPAddressLength {
-	case 32:
-		buf = append(buf, []byte(er.IPAddress.To4())...)
-	case 128:
-		buf = append(buf, []byte(er.IPAddress.To16())...)
+	case 32, 128:
+		buf = append(buf, er.IPAddress.AsSlice()...)
 	default:
 		return nil, fmt.Errorf("invalid IP address length: %d", er.IPAddressLength)
 	}
@@ -3216,20 +2911,16 @@ func (er *EVPNEthernetSegmentRoute) rd() RouteDistinguisherInterface {
 	return er.RD
 }
 
-func NewEVPNEthernetSegmentRoute(rd RouteDistinguisherInterface, esi EthernetSegmentIdentifier, ipAddress string) *EVPNNLRI {
-	ipLen := uint8(32)
-	ip := net.ParseIP(ipAddress)
-	if ipv4 := ip.To4(); ipv4 != nil {
-		ip = ipv4
-	} else {
-		ipLen = 128
+func NewEVPNEthernetSegmentRoute(rd RouteDistinguisherInterface, esi EthernetSegmentIdentifier, ipAddress netip.Addr) (*EVPNNLRI, error) {
+	if !ipAddress.IsValid() {
+		return nil, fmt.Errorf("invalid IP address")
 	}
 	return NewEVPNNLRI(EVPN_ETHERNET_SEGMENT_ROUTE, &EVPNEthernetSegmentRoute{
 		RD:              rd,
 		ESI:             esi,
-		IPAddressLength: ipLen,
-		IPAddress:       ip,
-	})
+		IPAddressLength: uint8(ipAddress.BitLen()),
+		IPAddress:       ipAddress,
+	}), nil
 }
 
 type EVPNIPPrefixRoute struct {
@@ -3237,13 +2928,13 @@ type EVPNIPPrefixRoute struct {
 	ESI            EthernetSegmentIdentifier
 	ETag           uint32
 	IPPrefixLength uint8
-	IPPrefix       net.IP
-	GWIPAddress    net.IP
+	IPPrefix       netip.Addr
+	GWIPAddress    netip.Addr
 	Label          uint32
 }
 
 func (er *EVPNIPPrefixRoute) Len() int {
-	if er.IPPrefix.To4() != nil {
+	if er.IPPrefix.Is4() {
 		return 34
 	}
 	return 58
@@ -3273,10 +2964,10 @@ func (er *EVPNIPPrefixRoute) DecodeFromBytes(data []byte) error {
 	er.IPPrefixLength = data[22]
 
 	offset := 23 // RD(8) + ESI(10) + ETag(4) + IPPrefixLength(1)
-	er.IPPrefix = data[offset : offset+addrLen]
+	er.IPPrefix, _ = netip.AddrFromSlice(data[offset : offset+addrLen])
 	offset += addrLen
 
-	er.GWIPAddress = data[offset : offset+addrLen]
+	er.GWIPAddress, _ = netip.AddrFromSlice(data[offset : offset+addrLen])
 	offset += addrLen
 
 	if er.Label, err = labelDecode(data[offset : offset+3]); err != nil {
@@ -3308,22 +2999,22 @@ func (er *EVPNIPPrefixRoute) Serialize() ([]byte, error) {
 
 	buf[22] = er.IPPrefixLength
 
-	if er.IPPrefix == nil {
+	if !er.IPPrefix.IsValid() {
 		return nil, NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "IP Prefix is nil")
-	} else if er.IPPrefix.To4() != nil {
-		buf = append(buf, er.IPPrefix.To4()...)
-		if er.GWIPAddress == nil {
+	} else if er.IPPrefix.Is4() {
+		buf = append(buf, er.IPPrefix.AsSlice()...)
+		if !er.GWIPAddress.IsValid() {
 			// draft-ietf-bess-evpn-prefix-advertisement: IP Prefix Advertisement in EVPN
 			// The GW IP field SHOULD be zero if it is not used as an Overlay Index.
-			er.GWIPAddress = net.IPv4zero
+			er.GWIPAddress = netip.IPv4Unspecified()
 		}
-		buf = append(buf, er.GWIPAddress.To4()...)
+		buf = append(buf, er.GWIPAddress.AsSlice()...)
 	} else {
-		buf = append(buf, er.IPPrefix.To16()...)
-		if er.GWIPAddress == nil {
-			er.GWIPAddress = net.IPv6zero
+		buf = append(buf, er.IPPrefix.AsSlice()...)
+		if !er.GWIPAddress.IsValid() {
+			er.GWIPAddress, _ = netip.AddrFromSlice(net.IPv6zero)
 		}
-		buf = append(buf, er.GWIPAddress.To16()...)
+		buf = append(buf, er.GWIPAddress.AsSlice()...)
 	}
 
 	tbuf, err = labelSerialize(er.Label)
@@ -3366,22 +3057,19 @@ func (er *EVPNIPPrefixRoute) rd() RouteDistinguisherInterface {
 	return er.RD
 }
 
-func NewEVPNIPPrefixRoute(rd RouteDistinguisherInterface, esi EthernetSegmentIdentifier, etag uint32, ipPrefixLength uint8, ipPrefix string, gateway string, label uint32) *EVPNNLRI {
-	ip := net.ParseIP(ipPrefix)
-	gw := net.ParseIP(gateway)
-	if ipv4 := ip.To4(); ipv4 != nil {
-		ip = ipv4
-		gw = gw.To4()
+func NewEVPNIPPrefixRoute(rd RouteDistinguisherInterface, esi EthernetSegmentIdentifier, etag uint32, ipPrefixLength uint8, ipPrefix netip.Addr, gateway netip.Addr, label uint32) (*EVPNNLRI, error) {
+	if !ipPrefix.IsValid() || !gateway.IsValid() {
+		return nil, fmt.Errorf("invalid IP address")
 	}
 	return NewEVPNNLRI(EVPN_IP_PREFIX, &EVPNIPPrefixRoute{
 		RD:             rd,
 		ESI:            esi,
 		ETag:           etag,
 		IPPrefixLength: ipPrefixLength,
-		IPPrefix:       ip,
-		GWIPAddress:    gw,
+		IPPrefix:       ipPrefix,
+		GWIPAddress:    gateway,
 		Label:          label,
-	})
+	}), nil
 }
 
 type EVPNIPMSIRoute struct {
@@ -3510,20 +3198,12 @@ const (
 )
 
 type EVPNNLRI struct {
-	PrefixDefault
 	RouteType     uint8
 	Length        uint8
 	RouteTypeData EVPNRouteTypeInterface
 }
 
-func (n *EVPNNLRI) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
-	if IsAddPathEnabled(true, RF_EVPN, options) {
-		var err error
-		data, err = n.decodePathIdentifier(data)
-		if err != nil {
-			return err
-		}
-	}
+func (n *EVPNNLRI) decodeFromBytes(data []byte, options ...*MarshallingOption) error {
 	if len(data) < 2 {
 		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "Not all EVPNNLRI bytes available")
 	}
@@ -3543,13 +3223,6 @@ func (n *EVPNNLRI) DecodeFromBytes(data []byte, options ...*MarshallingOption) e
 
 func (n *EVPNNLRI) Serialize(options ...*MarshallingOption) ([]byte, error) {
 	var buf []byte
-	if IsAddPathEnabled(false, RF_EVPN, options) {
-		var err error
-		buf, err = n.serializeIdentifier()
-		if err != nil {
-			return nil, err
-		}
-	}
 	offset := len(buf)
 	buf = append(buf, make([]byte, 2)...)
 	buf[offset] = n.RouteType
@@ -3559,14 +3232,6 @@ func (n *EVPNNLRI) Serialize(options ...*MarshallingOption) ([]byte, error) {
 		return nil, err
 	}
 	return append(buf, tbuf...), nil
-}
-
-func (n *EVPNNLRI) AFI() uint16 {
-	return AFI_L2VPN
-}
-
-func (n *EVPNNLRI) SAFI() uint8 {
-	return SAFI_EVPN
 }
 
 func (n *EVPNNLRI) Len(options ...*MarshallingOption) int {
@@ -3607,26 +3272,10 @@ func NewEVPNNLRI(routeType uint8, routeTypeData EVPNRouteTypeInterface) *EVPNNLR
 }
 
 type EncapNLRI struct {
-	PrefixDefault
 	Endpoint netip.Addr
-	addrlen  uint8
 }
 
-func (n *EncapNLRI) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
-	if n.addrlen == 0 {
-		n.addrlen = 4
-	}
-	f := RF_IPv4_ENCAP
-	if n.addrlen == 16 {
-		f = RF_IPv6_ENCAP
-	}
-	if IsAddPathEnabled(true, f, options) {
-		var err error
-		data, err = n.decodePathIdentifier(data)
-		if err != nil {
-			return err
-		}
-	}
+func (n *EncapNLRI) decodeFromBytes(data []byte, options ...*MarshallingOption) error {
 	if len(data) < 1 {
 		eCode := uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR)
 		eSubCode := uint8(BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST)
@@ -3644,17 +3293,6 @@ func (n *EncapNLRI) DecodeFromBytes(data []byte, options ...*MarshallingOption) 
 
 func (n *EncapNLRI) Serialize(options ...*MarshallingOption) ([]byte, error) {
 	var buf []byte
-	f := RF_IPv4_ENCAP
-	if n.addrlen == 16 {
-		f = RF_IPv6_ENCAP
-	}
-	if IsAddPathEnabled(false, f, options) {
-		var err error
-		buf, err = n.serializeIdentifier()
-		if err != nil {
-			return nil, err
-		}
-	}
 	if n.Endpoint.Is4() {
 		buf = append(buf, net.IPv4len*8)
 	} else {
@@ -3666,14 +3304,6 @@ func (n *EncapNLRI) Serialize(options ...*MarshallingOption) ([]byte, error) {
 
 func (n *EncapNLRI) String() string {
 	return n.Endpoint.String()
-}
-
-func (n *EncapNLRI) AFI() uint16 {
-	return AFI_IP
-}
-
-func (n *EncapNLRI) SAFI() uint8 {
-	return SAFI_ENCAPSULATION
 }
 
 func (n *EncapNLRI) Len(options ...*MarshallingOption) int {
@@ -3694,50 +3324,13 @@ func (n *EncapNLRI) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func NewEncapNLRI(endpoint string) *EncapNLRI {
-	var addr netip.Addr
-	if endpoint != "" {
-		addr = netip.MustParseAddr(endpoint)
+func NewEncapNLRI(endpoint netip.Addr) (*EncapNLRI, error) {
+	if !endpoint.IsValid() {
+		return nil, fmt.Errorf("invalid address")
 	}
 	return &EncapNLRI{
-		Endpoint: addr,
-		addrlen:  4,
-	}
-}
-
-type Encapv6NLRI struct {
-	EncapNLRI
-}
-
-func (n *Encapv6NLRI) AFI() uint16 {
-	return AFI_IP6
-}
-
-func (n *Encapv6NLRI) Flat() map[string]string {
-	return map[string]string{
-		"Endpoint": n.Endpoint.String(),
-	}
-}
-
-func (n *Encapv6NLRI) MarshalJSON() ([]byte, error) {
-	return json.Marshal(struct {
-		Endpoint string `json:"endpoint"`
-	}{
-		Endpoint: n.Endpoint.String(),
-	})
-}
-
-func NewEncapv6NLRI(endpoint string) *Encapv6NLRI {
-	var addr netip.Addr
-	if endpoint != "" {
-		addr = netip.MustParseAddr(endpoint)
-	}
-	return &Encapv6NLRI{
-		EncapNLRI{
-			Endpoint: addr,
-			addrlen:  16,
-		},
-	}
+		Endpoint: endpoint,
+	}, nil
 }
 
 type BGPFlowSpecType uint8
@@ -3873,6 +3466,9 @@ func parseFlowSpecNumericOperator(submatch []string) (operator uint8, err error)
 // e.g.) "&==100", ">=200" or "&<300"
 func parseFlowSpecNumericOpValues(typ BGPFlowSpecType, args []string, validationFunc func(uint64) error) (FlowSpecComponentInterface, error) {
 	argsLen := len(args)
+	if argsLen == 0 {
+		return nil, fmt.Errorf("invalid argument for %s: %q", typ.String(), args)
+	}
 	items := make([]*FlowSpecComponentItem, 0, argsLen)
 	for idx, arg := range args {
 		m := _regexpFlowSpecNumericType.FindStringSubmatch(arg)
@@ -3990,9 +3586,11 @@ func flowSpecPrefixParser(rf Family, typ BGPFlowSpecType, args []string) (FlowSp
 		}
 		switch typ {
 		case FLOW_SPEC_TYPE_DST_PREFIX:
-			return NewFlowSpecDestinationPrefix(NewIPAddrPrefix(uint8(prefixLen), prefix.String())), nil
+			ipPrefix, _ := NewIPAddrPrefix(netip.MustParsePrefix(fmt.Sprintf("%s/%d", prefix.String(), prefixLen)))
+			return NewFlowSpecDestinationPrefix(ipPrefix), nil
 		case FLOW_SPEC_TYPE_SRC_PREFIX:
-			return NewFlowSpecSourcePrefix(NewIPAddrPrefix(uint8(prefixLen), prefix.String())), nil
+			ipPrefix, _ := NewIPAddrPrefix(netip.MustParsePrefix(fmt.Sprintf("%s/%d", prefix.String(), prefixLen)))
+			return NewFlowSpecSourcePrefix(ipPrefix), nil
 		}
 		return nil, fmt.Errorf("invalid traffic filtering rule type: %s", typ.String())
 	case AFI_IP6:
@@ -4033,11 +3631,13 @@ func flowSpecPrefixParser(rf Family, typ BGPFlowSpecType, args []string) (FlowSp
 				return nil, fmt.Errorf("invalid ipv6 prefix offset: %s", args[1])
 			}
 		}
+		// validated above
+		nlri, _ := NewIPAddrPrefix(netip.MustParsePrefix(fmt.Sprintf("%s/%d", prefix.String(), prefixLen)))
 		switch typ {
 		case FLOW_SPEC_TYPE_DST_PREFIX:
-			return NewFlowSpecDestinationPrefix6(NewIPv6AddrPrefix(uint8(prefixLen), prefix.String()), uint8(offset)), nil
+			return NewFlowSpecDestinationPrefix6(nlri, uint8(offset)), nil
 		case FLOW_SPEC_TYPE_SRC_PREFIX:
-			return NewFlowSpecSourcePrefix6(NewIPv6AddrPrefix(uint8(prefixLen), prefix.String()), uint8(offset)), nil
+			return NewFlowSpecSourcePrefix6(nlri, uint8(offset)), nil
 		}
 		return nil, fmt.Errorf("invalid traffic filtering rule type: %s", typ.String())
 	}
@@ -4078,6 +3678,9 @@ func flowSpecTcpFlagParser(_ Family, typ BGPFlowSpecType, args []string) (FlowSp
 	// - Not FIN and not URG
 	//   args := []string{"!=F", "&!=U"}
 	args = normalizeFlowSpecOpValues(args)
+	if len(args) == 0 {
+		return nil, fmt.Errorf("invalid argument for %s: %q", typ.String(), args)
+	}
 
 	argsLen := len(args)
 	items := make([]*FlowSpecComponentItem, 0, argsLen)
@@ -4130,6 +3733,9 @@ func flowSpecFragmentParser(_ Family, typ BGPFlowSpecType, args []string) (FlowS
 	// - is-fragment and last-fragment (exact match)
 	//   args := []string{"==is-fragment+last-fragment"}
 	args = normalizeFlowSpecOpValues(args)
+	if len(args) == 0 {
+		return nil, fmt.Errorf("invalid argument for %s: %q", typ.String(), args)
+	}
 
 	argsLen := len(args)
 	items := make([]*FlowSpecComponentItem, 0, argsLen)
@@ -4382,7 +3988,7 @@ type FlowSpecComponentInterface interface {
 }
 
 type flowSpecPrefix struct {
-	Prefix AddrPrefixInterface
+	Prefix *IPAddrPrefix
 	typ    BGPFlowSpecType
 }
 
@@ -4394,7 +4000,7 @@ func (p *flowSpecPrefix) DecodeFromBytes(data []byte, options ...*MarshallingOpt
 	if p.Prefix == nil {
 		return malformedAttrListErr("flowSpecPrefix: Prefix is nil")
 	}
-	return p.Prefix.DecodeFromBytes(data[1:], options...)
+	return p.Prefix.decodeFromBytes(data[1:], net.IPv4len, options...)
 }
 
 func (p *flowSpecPrefix) Serialize(options ...*MarshallingOption) ([]byte, error) {
@@ -4426,8 +4032,8 @@ func (p *flowSpecPrefix) String() string {
 
 func (p *flowSpecPrefix) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Type  BGPFlowSpecType     `json:"type"`
-		Value AddrPrefixInterface `json:"value"`
+		Type  BGPFlowSpecType `json:"type"`
+		Value *IPAddrPrefix   `json:"value"`
 	}{
 		Type:  p.Type(),
 		Value: p.Prefix,
@@ -4435,7 +4041,7 @@ func (p *flowSpecPrefix) MarshalJSON() ([]byte, error) {
 }
 
 type flowSpecPrefix6 struct {
-	Prefix AddrPrefixInterface
+	Prefix *IPAddrPrefix
 	Offset uint8
 	typ    BGPFlowSpecType
 }
@@ -4452,7 +4058,7 @@ func (p *flowSpecPrefix6) DecodeFromBytes(data []byte, options ...*MarshallingOp
 	if p.Prefix == nil {
 		return malformedAttrListErr("flowSpecPrefix6: Prefix is nil")
 	}
-	return p.Prefix.DecodeFromBytes(prefix, options...)
+	return p.Prefix.decodeFromBytes(prefix, net.IPv6len, options...)
 }
 
 func (p *flowSpecPrefix6) Serialize(options ...*MarshallingOption) ([]byte, error) {
@@ -4484,9 +4090,9 @@ func (p *flowSpecPrefix6) String() string {
 
 func (p *flowSpecPrefix6) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Type   BGPFlowSpecType     `json:"type"`
-		Value  AddrPrefixInterface `json:"value"`
-		Offset uint8               `json:"offset"`
+		Type   BGPFlowSpecType `json:"type"`
+		Value  *IPAddrPrefix   `json:"value"`
+		Offset uint8           `json:"offset"`
 	}{
 		Type:   p.Type(),
 		Value:  p.Prefix,
@@ -4498,7 +4104,7 @@ type FlowSpecDestinationPrefix struct {
 	flowSpecPrefix
 }
 
-func NewFlowSpecDestinationPrefix(prefix AddrPrefixInterface) *FlowSpecDestinationPrefix {
+func NewFlowSpecDestinationPrefix(prefix *IPAddrPrefix) *FlowSpecDestinationPrefix {
 	return &FlowSpecDestinationPrefix{flowSpecPrefix{prefix, FLOW_SPEC_TYPE_DST_PREFIX}}
 }
 
@@ -4506,7 +4112,7 @@ type FlowSpecSourcePrefix struct {
 	flowSpecPrefix
 }
 
-func NewFlowSpecSourcePrefix(prefix AddrPrefixInterface) *FlowSpecSourcePrefix {
+func NewFlowSpecSourcePrefix(prefix *IPAddrPrefix) *FlowSpecSourcePrefix {
 	return &FlowSpecSourcePrefix{flowSpecPrefix{prefix, FLOW_SPEC_TYPE_SRC_PREFIX}}
 }
 
@@ -4514,7 +4120,7 @@ type FlowSpecDestinationPrefix6 struct {
 	flowSpecPrefix6
 }
 
-func NewFlowSpecDestinationPrefix6(prefix AddrPrefixInterface, offset uint8) *FlowSpecDestinationPrefix6 {
+func NewFlowSpecDestinationPrefix6(prefix *IPAddrPrefix, offset uint8) *FlowSpecDestinationPrefix6 {
 	return &FlowSpecDestinationPrefix6{flowSpecPrefix6{prefix, offset, FLOW_SPEC_TYPE_DST_PREFIX}}
 }
 
@@ -4522,7 +4128,7 @@ type FlowSpecSourcePrefix6 struct {
 	flowSpecPrefix6
 }
 
-func NewFlowSpecSourcePrefix6(prefix AddrPrefixInterface, offset uint8) *FlowSpecSourcePrefix6 {
+func NewFlowSpecSourcePrefix6(prefix *IPAddrPrefix, offset uint8) *FlowSpecSourcePrefix6 {
 	return &FlowSpecSourcePrefix6{flowSpecPrefix6{prefix, offset, FLOW_SPEC_TYPE_SRC_PREFIX}}
 }
 
@@ -4839,32 +4445,20 @@ func (p *FlowSpecUnknown) MarshalJSON() ([]byte, error) {
 }
 
 type FlowSpecNLRI struct {
-	PrefixDefault
 	Value []FlowSpecComponentInterface
 	rf    Family
 	rd    RouteDistinguisherInterface
 }
 
-func (n *FlowSpecNLRI) AFI() uint16 {
-	return n.rf.Afi()
-}
-
-func (n *FlowSpecNLRI) SAFI() uint8 {
-	return n.rf.Safi()
+func (n *FlowSpecNLRI) Flat() map[string]string {
+	return map[string]string{}
 }
 
 func (n *FlowSpecNLRI) RD() RouteDistinguisherInterface {
 	return n.rd
 }
 
-func (n *FlowSpecNLRI) decodeFromBytes(rf Family, data []byte, options ...*MarshallingOption) error {
-	if IsAddPathEnabled(true, rf, options) {
-		var err error
-		data, err = n.decodePathIdentifier(data)
-		if err != nil {
-			return err
-		}
-	}
+func (n *FlowSpecNLRI) decodeFromBytes(data []byte, options ...*MarshallingOption) error {
 	if len(data) < 1 {
 		return malformedAttrListErr("not all flowspec component bytes available")
 	}
@@ -4882,9 +4476,7 @@ func (n *FlowSpecNLRI) decodeFromBytes(rf Family, data []byte, options ...*Marsh
 		return malformedAttrListErr("not all flowspec component bytes available")
 	}
 
-	n.rf = rf
-
-	if n.SAFI() == SAFI_FLOW_SPEC_VPN {
+	if n.rf.Safi() == SAFI_FLOW_SPEC_VPN {
 		if length < 8 {
 			return malformedAttrListErr("not all flowspec component bytes available")
 		}
@@ -4901,36 +4493,38 @@ func (n *FlowSpecNLRI) decodeFromBytes(rf Family, data []byte, options ...*Marsh
 		var i FlowSpecComponentInterface
 		switch t {
 		case FLOW_SPEC_TYPE_DST_PREFIX:
-			switch rf >> 16 {
+			switch n.rf >> 16 {
 			case AFI_IP:
-				i = NewFlowSpecDestinationPrefix(NewIPAddrPrefix(0, ""))
+				ipPrefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("0.0.0.0/0"))
+				i = NewFlowSpecDestinationPrefix(ipPrefix)
 			case AFI_IP6:
-				i = NewFlowSpecDestinationPrefix6(NewIPv6AddrPrefix(0, ""), 0)
+				i = NewFlowSpecDestinationPrefix6(&IPAddrPrefix{}, 0)
 			default:
-				return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, fmt.Sprintf("Invalid address family: %v", rf))
+				return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, fmt.Sprintf("Invalid address family: %v", n.rf))
 			}
 		case FLOW_SPEC_TYPE_SRC_PREFIX:
-			switch rf >> 16 {
+			switch n.rf >> 16 {
 			case AFI_IP:
-				i = NewFlowSpecSourcePrefix(NewIPAddrPrefix(0, ""))
+				ipPrefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("0.0.0.0/0"))
+				i = NewFlowSpecSourcePrefix(ipPrefix)
 			case AFI_IP6:
-				i = NewFlowSpecSourcePrefix6(NewIPv6AddrPrefix(0, ""), 0)
+				i = NewFlowSpecSourcePrefix6(&IPAddrPrefix{}, 0)
 			default:
-				return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, fmt.Sprintf("Invalid address family: %v", rf))
+				return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, fmt.Sprintf("Invalid address family: %v", n.rf))
 			}
 		case FLOW_SPEC_TYPE_SRC_MAC:
-			switch rf {
+			switch n.rf {
 			case RF_FS_L2_VPN:
 				i = NewFlowSpecSourceMac(nil)
 			default:
-				return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, fmt.Sprintf("Invalid address family: %v", rf))
+				return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, fmt.Sprintf("Invalid address family: %v", n.rf))
 			}
 		case FLOW_SPEC_TYPE_DST_MAC:
-			switch rf {
+			switch n.rf {
 			case RF_FS_L2_VPN:
 				i = NewFlowSpecDestinationMac(nil)
 			default:
-				return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, fmt.Sprintf("Invalid address family: %v", rf))
+				return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, fmt.Sprintf("Invalid address family: %v", n.rf))
 			}
 		case FLOW_SPEC_TYPE_IP_PROTO, FLOW_SPEC_TYPE_PORT, FLOW_SPEC_TYPE_DST_PORT, FLOW_SPEC_TYPE_SRC_PORT,
 			FLOW_SPEC_TYPE_ICMP_TYPE, FLOW_SPEC_TYPE_ICMP_CODE, FLOW_SPEC_TYPE_TCP_FLAG, FLOW_SPEC_TYPE_PKT_LEN,
@@ -4960,7 +4554,7 @@ func (n *FlowSpecNLRI) decodeFromBytes(rf Family, data []byte, options ...*Marsh
 
 func (n *FlowSpecNLRI) Serialize(options ...*MarshallingOption) ([]byte, error) {
 	buf := make([]byte, 0, 32)
-	if n.SAFI() == SAFI_FLOW_SPEC_VPN {
+	if n.rf.Safi() == SAFI_FLOW_SPEC_VPN {
 		if n.rd == nil {
 			return nil, errors.New("RD is nil")
 		}
@@ -4989,20 +4583,12 @@ func (n *FlowSpecNLRI) Serialize(options ...*MarshallingOption) ([]byte, error) 
 		binary.BigEndian.PutUint16(buf, uint16(length))
 		buf = append(b, buf...)
 	}
-
-	if IsAddPathEnabled(false, n.rf, options) {
-		id, err := n.serializeIdentifier()
-		if err != nil {
-			return nil, err
-		}
-		return append(id, buf...), nil
-	}
 	return buf, nil
 }
 
 func (n *FlowSpecNLRI) Len(options ...*MarshallingOption) int {
 	l := 0
-	if n.SAFI() == SAFI_FLOW_SPEC_VPN {
+	if n.rf.Safi() == SAFI_FLOW_SPEC_VPN {
 		l += n.RD().Len()
 	}
 	for _, v := range n.Value {
@@ -5017,7 +4603,7 @@ func (n *FlowSpecNLRI) Len(options ...*MarshallingOption) int {
 
 func (n *FlowSpecNLRI) String() string {
 	buf := bytes.NewBuffer(make([]byte, 0, 32))
-	if n.SAFI() == SAFI_FLOW_SPEC_VPN {
+	if n.rf.Safi() == SAFI_FLOW_SPEC_VPN {
 		buf.WriteString("[rd: ")
 		buf.WriteString(n.rd.String())
 		buf.WriteString("]")
@@ -5051,14 +4637,13 @@ func (n *FlowSpecNLRI) MarshalJSON() ([]byte, error) {
 //	0 when n and m have same precedence
 //	1 when n has precedence
 func CompareFlowSpecNLRI(n, m *FlowSpecNLRI) (int, error) {
-	family := NewFamily(n.AFI(), n.SAFI())
-	if family != NewFamily(m.AFI(), m.SAFI()) {
+	if n.rf != m.rf {
 		return 0, errors.New("address family mismatch")
 	}
 	longer := n.Value
 	shorter := m.Value
 	invert := 1
-	if n.SAFI() == SAFI_FLOW_SPEC_VPN {
+	if n.rf.Safi() == SAFI_FLOW_SPEC_VPN {
 		k, _ := n.Serialize()
 		l, _ := m.Serialize()
 		if result := bytes.Compare(k, l); result != 0 {
@@ -5085,44 +4670,44 @@ func CompareFlowSpecNLRI(n, m *FlowSpecNLRI) (int, error) {
 			// For IP prefix values (IP destination and source prefix) precedence is
 			// given to the lowest IP value of the common prefix length; if the
 			// common prefix is equal, then the most specific prefix has precedence.
-			var p, q *IPAddrPrefixDefault
+			var p, q *netip.Prefix
 			var pCommon, qCommon uint64
-			if n.AFI() == AFI_IP {
+			if n.rf.Afi() == AFI_IP {
 				if v.Type() == FLOW_SPEC_TYPE_DST_PREFIX {
-					p = &v.(*FlowSpecDestinationPrefix).Prefix.(*IPAddrPrefix).IPAddrPrefixDefault
-					q = &w.(*FlowSpecDestinationPrefix).Prefix.(*IPAddrPrefix).IPAddrPrefixDefault
+					p = &v.(*FlowSpecDestinationPrefix).Prefix.Prefix
+					q = &w.(*FlowSpecDestinationPrefix).Prefix.Prefix
 				} else {
-					p = &v.(*FlowSpecSourcePrefix).Prefix.(*IPAddrPrefix).IPAddrPrefixDefault
-					q = &w.(*FlowSpecSourcePrefix).Prefix.(*IPAddrPrefix).IPAddrPrefixDefault
+					p = &v.(*FlowSpecSourcePrefix).Prefix.Prefix
+					q = &w.(*FlowSpecSourcePrefix).Prefix.Prefix
 				}
-				min := p.Length
-				if q.Length < p.Length {
-					min = q.Length
+				min := p.Bits()
+				if q.Bits() < p.Bits() {
+					min = q.Bits()
 				}
-				pCommon = uint64(binary.BigEndian.Uint32([]byte(p.Prefix.To4())) >> (32 - min))
-				qCommon = uint64(binary.BigEndian.Uint32([]byte(q.Prefix.To4())) >> (32 - min))
-			} else if n.AFI() == AFI_IP6 {
+				pCommon = uint64(binary.BigEndian.Uint32(p.Addr().AsSlice()) >> (32 - min))
+				qCommon = uint64(binary.BigEndian.Uint32(q.Addr().AsSlice()) >> (32 - min))
+			} else if n.rf.Afi() == AFI_IP6 {
 				if v.Type() == FLOW_SPEC_TYPE_DST_PREFIX {
-					p = &v.(*FlowSpecDestinationPrefix6).Prefix.(*IPv6AddrPrefix).IPAddrPrefixDefault
-					q = &w.(*FlowSpecDestinationPrefix6).Prefix.(*IPv6AddrPrefix).IPAddrPrefixDefault
+					p = &v.(*FlowSpecDestinationPrefix6).Prefix.Prefix
+					q = &w.(*FlowSpecDestinationPrefix6).Prefix.Prefix
 				} else {
-					p = &v.(*FlowSpecSourcePrefix6).Prefix.(*IPv6AddrPrefix).IPAddrPrefixDefault
-					q = &w.(*FlowSpecSourcePrefix6).Prefix.(*IPv6AddrPrefix).IPAddrPrefixDefault
+					p = &v.(*FlowSpecSourcePrefix6).Prefix.Prefix
+					q = &w.(*FlowSpecSourcePrefix6).Prefix.Prefix
 				}
-				min := uint(p.Length)
-				if q.Length < p.Length {
-					min = uint(q.Length)
+				min := uint(p.Bits())
+				if q.Bits() < p.Bits() {
+					min = uint(q.Bits())
 				}
 				var mask uint
 				if min-64 > 0 {
 					mask = min - 64
 				}
-				pCommon = binary.BigEndian.Uint64([]byte(p.Prefix.To16()[:8])) >> mask
-				qCommon = binary.BigEndian.Uint64([]byte(q.Prefix.To16()[:8])) >> mask
+				pCommon = binary.BigEndian.Uint64(p.Addr().AsSlice()[:8]) >> mask
+				qCommon = binary.BigEndian.Uint64(q.Addr().AsSlice()[:8]) >> mask
 				if pCommon == qCommon && mask == 0 {
 					mask = 64 - min
-					pCommon = binary.BigEndian.Uint64([]byte(p.Prefix.To16()[8:])) >> mask
-					qCommon = binary.BigEndian.Uint64([]byte(q.Prefix.To16()[8:])) >> mask
+					pCommon = binary.BigEndian.Uint64(p.Addr().AsSlice()[8:]) >> mask
+					qCommon = binary.BigEndian.Uint64(q.Addr().AsSlice()[8:]) >> mask
 				}
 			}
 
@@ -5130,9 +4715,9 @@ func CompareFlowSpecNLRI(n, m *FlowSpecNLRI) (int, error) {
 				return invert, nil
 			} else if pCommon > qCommon {
 				return invert * -1, nil
-			} else if p.Length > q.Length {
+			} else if p.Bits() > q.Bits() {
 				return invert, nil
-			} else if p.Length < q.Length {
+			} else if p.Bits() < q.Bits() {
 				return invert * -1, nil
 			}
 		} else {
@@ -5164,116 +4749,44 @@ func CompareFlowSpecNLRI(n, m *FlowSpecNLRI) (int, error) {
 	return 0, nil
 }
 
-type FlowSpecIPv4Unicast struct {
-	FlowSpecNLRI
-}
-
-func (n *FlowSpecIPv4Unicast) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
-	return n.decodeFromBytes(NewFamily(n.AFI(), n.SAFI()), data, options...)
-}
-
-func NewFlowSpecIPv4Unicast(value []FlowSpecComponentInterface) *FlowSpecIPv4Unicast {
-	sort.SliceStable(value, func(i, j int) bool { return value[i].Type() < value[j].Type() })
-	return &FlowSpecIPv4Unicast{
-		FlowSpecNLRI: FlowSpecNLRI{
-			Value: value,
-			rf:    RF_FS_IPv4_UC,
-		},
+func NewFlowSpecUnicast(family Family, value []FlowSpecComponentInterface) (*FlowSpecNLRI, error) {
+	switch family {
+	case RF_FS_IPv4_UC, RF_FS_IPv6_UC:
+		// ok
+	default:
+		return nil, fmt.Errorf("invalid family: %v", family)
 	}
-}
-
-type FlowSpecIPv4VPN struct {
-	FlowSpecNLRI
-}
-
-func (n *FlowSpecIPv4VPN) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
-	return n.decodeFromBytes(NewFamily(n.AFI(), n.SAFI()), data, options...)
-}
-
-func NewFlowSpecIPv4VPN(rd RouteDistinguisherInterface, value []FlowSpecComponentInterface) *FlowSpecIPv4VPN {
 	sort.SliceStable(value, func(i, j int) bool { return value[i].Type() < value[j].Type() })
-	return &FlowSpecIPv4VPN{
-		FlowSpecNLRI: FlowSpecNLRI{
-			Value: value,
-			rf:    RF_FS_IPv4_VPN,
-			rd:    rd,
-		},
+	return &FlowSpecNLRI{
+		Value: value,
+		rf:    family,
+	}, nil
+}
+
+func NewFlowSpecVPN(family Family, rd RouteDistinguisherInterface, value []FlowSpecComponentInterface) (*FlowSpecNLRI, error) {
+	switch family {
+	case RF_FS_IPv4_VPN, RF_FS_IPv6_VPN, RF_FS_L2_VPN:
+		// ok
+	default:
+		return nil, fmt.Errorf("invalid family: %v", rd)
 	}
-}
-
-type FlowSpecIPv6Unicast struct {
-	FlowSpecNLRI
-}
-
-func (n *FlowSpecIPv6Unicast) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
-	return n.decodeFromBytes(NewFamily(n.AFI(), n.SAFI()), data, options...)
-}
-
-func NewFlowSpecIPv6Unicast(value []FlowSpecComponentInterface) *FlowSpecIPv6Unicast {
 	sort.SliceStable(value, func(i, j int) bool { return value[i].Type() < value[j].Type() })
-	return &FlowSpecIPv6Unicast{
-		FlowSpecNLRI: FlowSpecNLRI{
-			Value: value,
-			rf:    RF_FS_IPv6_UC,
-		},
-	}
-}
-
-type FlowSpecIPv6VPN struct {
-	FlowSpecNLRI
-}
-
-func (n *FlowSpecIPv6VPN) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
-	return n.decodeFromBytes(NewFamily(n.AFI(), n.SAFI()), data, options...)
-}
-
-func NewFlowSpecIPv6VPN(rd RouteDistinguisherInterface, value []FlowSpecComponentInterface) *FlowSpecIPv6VPN {
-	sort.SliceStable(value, func(i, j int) bool { return value[i].Type() < value[j].Type() })
-	return &FlowSpecIPv6VPN{
-		FlowSpecNLRI: FlowSpecNLRI{
-			Value: value,
-			rf:    RF_FS_IPv6_VPN,
-			rd:    rd,
-		},
-	}
-}
-
-type FlowSpecL2VPN struct {
-	FlowSpecNLRI
-}
-
-func (n *FlowSpecL2VPN) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
-	return n.decodeFromBytes(NewFamily(n.AFI(), n.SAFI()), data)
-}
-
-func NewFlowSpecL2VPN(rd RouteDistinguisherInterface, value []FlowSpecComponentInterface) *FlowSpecL2VPN {
-	sort.SliceStable(value, func(i, j int) bool { return value[i].Type() < value[j].Type() })
-	return &FlowSpecL2VPN{
-		FlowSpecNLRI: FlowSpecNLRI{
-			Value: value,
-			rf:    RF_FS_L2_VPN,
-			rd:    rd,
-		},
-	}
+	return &FlowSpecNLRI{
+		Value: value,
+		rf:    family,
+		rd:    rd,
+	}, nil
 }
 
 type OpaqueNLRI struct {
-	PrefixDefault
 	Length uint16
 	Key    []byte
 	Value  []byte
 }
 
-func (n *OpaqueNLRI) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
+func (n *OpaqueNLRI) decodeFromBytes(data []byte, options ...*MarshallingOption) error {
 	if len(data) < 2 {
 		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "Not all OpaqueNLRI bytes available")
-	}
-	if IsAddPathEnabled(true, RF_OPAQUE, options) {
-		var err error
-		data, err = n.decodePathIdentifier(data)
-		if err != nil {
-			return err
-		}
 	}
 	n.Length = binary.BigEndian.Uint16(data[:2])
 	if len(data) < 2+int(n.Length) {
@@ -5293,22 +4806,7 @@ func (n *OpaqueNLRI) Serialize(options ...*MarshallingOption) ([]byte, error) {
 	binary.BigEndian.PutUint16(buf[:2], uint16(keyLen))
 	buf = append(buf, n.Key...)
 	buf = append(buf, n.Value...)
-	if IsAddPathEnabled(false, RF_OPAQUE, options) {
-		id, err := n.serializeIdentifier()
-		if err != nil {
-			return nil, err
-		}
-		return append(id, buf...), nil
-	}
 	return buf, nil
-}
-
-func (n *OpaqueNLRI) AFI() uint16 {
-	return AFI_OPAQUE
-}
-
-func (n *OpaqueNLRI) SAFI() uint8 {
-	return SAFI_KEY_VALUE
 }
 
 func (n *OpaqueNLRI) Len(options ...*MarshallingOption) int {
@@ -5489,10 +4987,10 @@ func (l *LsNodeNLRI) MarshalJSON() ([]byte, error) {
 type LsLinkDescriptor struct {
 	LinkLocalID       *uint32
 	LinkRemoteID      *uint32
-	InterfaceAddrIPv4 *net.IP
-	NeighborAddrIPv4  *net.IP
-	InterfaceAddrIPv6 *net.IP
-	NeighborAddrIPv6  *net.IP
+	InterfaceAddrIPv4 *netip.Addr
+	NeighborAddrIPv4  *netip.Addr
+	InterfaceAddrIPv6 *netip.Addr
+	NeighborAddrIPv6  *netip.Addr
 }
 
 func (l *LsLinkDescriptor) ParseTLVs(tlvs []LsTLVInterface) {
@@ -5739,7 +5237,7 @@ func (l *LsLinkNLRI) MarshalJSON() ([]byte, error) {
 }
 
 type LsPrefixDescriptor struct {
-	IPReachability []net.IPNet
+	IPReachability []netip.Prefix
 	OSPFRouteType  LsOspfRouteType
 }
 
@@ -5747,7 +5245,7 @@ func (l *LsPrefixDescriptor) ParseTLVs(tlvs []LsTLVInterface, ipv6 bool) {
 	for _, tlv := range tlvs {
 		switch v := tlv.(type) {
 		case *LsTLVIPReachability:
-			l.IPReachability = append(l.IPReachability, v.ToIPNet(ipv6))
+			l.IPReachability = append(l.IPReachability, v.toPrefix(ipv6))
 
 		case *LsTLVOspfRouteType:
 			l.OSPFRouteType = v.RouteType
@@ -5886,43 +5384,45 @@ func (l *LsPrefixV4NLRI) MarshalJSON() ([]byte, error) {
 func NewLsPrefixTLVs(pd *LsPrefixDescriptor) []LsTLVInterface {
 	lsTLVs := []LsTLVInterface{}
 	for _, ipReach := range pd.IPReachability {
-		prefixSize, _ := ipReach.Mask.Size()
+		prefixSize := ipReach.Bits()
 		lenIpPrefix := (prefixSize-1)/8 + 1
 		lenIpReach := uint16(lenIpPrefix + 1)
 		var tlv *LsTLVIPReachability
 
-		if ipReach.IP.To4() != nil {
-			ip := ipReach.IP.To4()
+		if ipReach.Addr().Is4() {
+			ip := ipReach.Addr().AsSlice()
 			tlv = &LsTLVIPReachability{
 				LsTLV: LsTLV{
 					Type:   LS_TLV_IP_REACH_INFO,
 					Length: lenIpReach,
 				},
 				PrefixLength: uint8(prefixSize),
-				Prefix:       []byte(ip)[:(lenIpPrefix-1)/8+1],
+				Prefix:       ip[:lenIpPrefix],
 			}
-		} else if ipReach.IP.To16() != nil {
-			ip := ipReach.IP.To16()
+		} else if ipReach.Addr().Is6() {
+			ip := ipReach.Addr().AsSlice()
 			tlv = &LsTLVIPReachability{
 				LsTLV: LsTLV{
 					Type:   LS_TLV_IP_REACH_INFO,
 					Length: lenIpReach,
 				},
 				PrefixLength: uint8(prefixSize),
-				Prefix:       []byte(ip)[:(lenIpPrefix-1)/8+1],
+				Prefix:       ip[:lenIpPrefix],
 			}
 		}
 		lsTLVs = append(lsTLVs, tlv)
 	}
 
-	lsTLVs = append(lsTLVs,
-		&LsTLVOspfRouteType{
-			LsTLV: LsTLV{
-				Type:   LS_TLV_OSPF_ROUTE_TYPE,
-				Length: 1,
-			},
-			RouteType: pd.OSPFRouteType,
-		})
+	if pd.OSPFRouteType != 0 {
+		lsTLVs = append(lsTLVs,
+			&LsTLVOspfRouteType{
+				LsTLV: LsTLV{
+					Type:   LS_TLV_OSPF_ROUTE_TYPE,
+					Length: 1,
+				},
+				RouteType: pd.OSPFRouteType,
+			})
+	}
 	return lsTLVs
 }
 
@@ -6049,7 +5549,7 @@ func (l *LsPrefixV6NLRI) MarshalJSON() ([]byte, error) {
 
 type LsTLVSrv6SIDInfo struct {
 	LsTLV
-	SIDs []net.IP
+	SIDs []netip.Addr
 }
 
 func (l *LsTLVSrv6SIDInfo) DecodeFromBytes(data []byte) error {
@@ -6059,7 +5559,8 @@ func (l *LsTLVSrv6SIDInfo) DecodeFromBytes(data []byte) error {
 	}
 
 	for i := range len(sid) / 16 {
-		l.SIDs = append(l.SIDs, net.IP(sid[i*16:i*16+16]))
+		addr, _ := netip.AddrFromSlice(sid[i*16 : i*16+16])
+		l.SIDs = append(l.SIDs, addr)
 	}
 
 	return nil
@@ -6069,7 +5570,7 @@ func (l *LsTLVSrv6SIDInfo) Serialize() ([]byte, error) {
 	buf := []byte{}
 
 	for _, sid := range l.SIDs {
-		buf = append(buf, sid...)
+		buf = append(buf, sid.AsSlice()...)
 	}
 
 	return l.LsTLV.Serialize(buf)
@@ -6331,6 +5832,7 @@ const (
 	LS_TLV_PEER_SET_SID             = 1103 // RFC9086
 
 	LS_TLV_RTM_CAPABILITY = 1105 // RFC8169, TODO
+	LS_TLV_SRV6_END_X_SID = 1106 // RFC9514
 
 	LS_TLV_IGP_FLAGS              = 1152
 	LS_TLV_IGP_ROUTE_TAG          = 1153 // TODO
@@ -6344,6 +5846,10 @@ const (
 	LS_TLV_PREFIX_ATTRIBUTE_FLAGS = 1170 // draft-ietf-idr-bgp-ls-segment-routing-ext, TODO
 	LS_TLV_SOURCE_ROUTER_ID       = 1171 // draft-ietf-idr-bgp-ls-segment-routing-ext, TODO
 	LS_TLV_L2_BUNDLE_MEMBER_TLV   = 1172 // draft-ietf-idr-bgp-ls-segment-routing-ext, TODO
+
+	LS_TLV_SRV6_ENDPOINT_BEHAVIOR = 1250 // RFC9514
+	LS_TLV_SRV6_BGP_PEER_NODE_SID = 1251 // RFC9514
+	LS_TLV_SRV6_SID_STRUCTURE     = 1252 // RFC9514
 )
 
 type LsTLVInterface interface {
@@ -6370,10 +5876,10 @@ func NewLsAttributeTLVs(lsAttr *LsAttribute) []LsTLVInterface {
 	if lsAttr.Node.IsisArea != nil {
 		tlvs = append(tlvs, NewLsTLVIsisArea(lsAttr.Node.IsisArea))
 	}
-	if lsAttr.Node.LocalRouterID != (*net.IP)(nil) {
+	if lsAttr.Node.LocalRouterID != nil {
 		tlvs = append(tlvs, NewLsTLVLocalIPv4RouterID(lsAttr.Node.LocalRouterID))
 	}
-	if lsAttr.Node.LocalRouterIDv6 != (*net.IP)(nil) {
+	if lsAttr.Node.LocalRouterIDv6 != nil {
 		tlvs = append(tlvs, NewLsTLVLocalIPv6RouterID(lsAttr.Node.LocalRouterIDv6))
 	}
 	if lsAttr.Node.SrCapabilties != nil {
@@ -6389,16 +5895,16 @@ func NewLsAttributeTLVs(lsAttr *LsAttribute) []LsTLVInterface {
 	if lsAttr.Link.Name != nil {
 		tlvs = append(tlvs, NewLsTLVLinkName(lsAttr.Link.Name))
 	}
-	if lsAttr.Link.LocalRouterID != (*net.IP)(nil) {
+	if lsAttr.Link.LocalRouterID != nil {
 		tlvs = append(tlvs, NewLsTLVLocalIPv4RouterID(lsAttr.Link.LocalRouterID))
 	}
-	if lsAttr.Link.LocalRouterIDv6 != (*net.IP)(nil) {
+	if lsAttr.Link.LocalRouterIDv6 != nil {
 		tlvs = append(tlvs, NewLsTLVLocalIPv6RouterID(lsAttr.Link.LocalRouterIDv6))
 	}
-	if lsAttr.Link.RemoteRouterID != (*net.IP)(nil) {
+	if lsAttr.Link.RemoteRouterID != nil {
 		tlvs = append(tlvs, NewLsTLVRemoteIPv4RouterID(lsAttr.Link.RemoteRouterID))
 	}
-	if lsAttr.Link.RemoteRouterIDv6 != (*net.IP)(nil) {
+	if lsAttr.Link.RemoteRouterIDv6 != nil {
 		tlvs = append(tlvs, NewLsTLVRemoteIPv6RouterID(lsAttr.Link.RemoteRouterIDv6))
 	}
 	if lsAttr.Link.AdminGroup != nil {
@@ -6428,6 +5934,9 @@ func NewLsAttributeTLVs(lsAttr *LsAttribute) []LsTLVInterface {
 	if lsAttr.Link.SrAdjacencySID != nil {
 		tlvs = append(tlvs, NewLsTLVAdjacencySID(lsAttr.Link.SrAdjacencySID))
 	}
+	if lsAttr.Link.Srv6EndXSID != nil && len(lsAttr.Link.Srv6EndXSID.SIDs) > 0 {
+		tlvs = append(tlvs, NewLsTLVSrv6EndXSID(lsAttr.Link.Srv6EndXSID))
+	}
 
 	if lsAttr.Prefix.IGPFlags != nil {
 		tlvs = append(tlvs, NewLsTLVIGPFlags(lsAttr.Prefix.IGPFlags))
@@ -6447,6 +5956,18 @@ func NewLsAttributeTLVs(lsAttr *LsAttribute) []LsTLVInterface {
 	}
 	if lsAttr.BgpPeerSegment.BgpPeerSetSid != nil {
 		tlvs = append(tlvs, NewLsTLVPeerSetSID(lsAttr.BgpPeerSegment.BgpPeerSetSid))
+	}
+
+	if lsAttr.Srv6SID.Srv6SIDStructure != nil {
+		tlvs = append(tlvs, NewLsTLVSrv6SIDStructure(lsAttr.Srv6SID.Srv6SIDStructure))
+	}
+
+	if lsAttr.Srv6SID.Srv6BgpPeerNodeSID != nil {
+		tlvs = append(tlvs, NewLsTLVSrv6BgpPeerNodeSID(lsAttr.Srv6SID.Srv6BgpPeerNodeSID))
+	}
+
+	if lsAttr.Srv6SID.Srv6EndpointBehavior != nil {
+		tlvs = append(tlvs, NewLsTLVSrv6EndpointBehavior(lsAttr.Srv6SID.Srv6EndpointBehavior))
 	}
 
 	return tlvs
@@ -6551,7 +6072,7 @@ func (l *LsTLVLinkID) GetLsTLV() LsTLV {
 
 type LsTLVIPv4InterfaceAddr struct {
 	LsTLV
-	IP net.IP
+	IP netip.Addr
 }
 
 func (l *LsTLVIPv4InterfaceAddr) DecodeFromBytes(data []byte) error {
@@ -6569,13 +6090,17 @@ func (l *LsTLVIPv4InterfaceAddr) DecodeFromBytes(data []byte) error {
 		return malformedAttrListErr("Unexpected address size")
 	}
 
-	l.IP = net.IP(value)
+	ip, ok := netip.AddrFromSlice(value)
+	if !ok {
+		return malformedAttrListErr("Failed to parse IPv4 interface address")
+	}
+	l.IP = ip
 
 	return nil
 }
 
 func (l *LsTLVIPv4InterfaceAddr) Serialize() ([]byte, error) {
-	return l.LsTLV.Serialize(l.IP)
+	return l.LsTLV.Serialize(l.IP.AsSlice())
 }
 
 func (l *LsTLVIPv4InterfaceAddr) String() string {
@@ -6598,7 +6123,7 @@ func (l *LsTLVIPv4InterfaceAddr) GetLsTLV() LsTLV {
 
 type LsTLVIPv4NeighborAddr struct {
 	LsTLV
-	IP net.IP
+	IP netip.Addr
 }
 
 func (l *LsTLVIPv4NeighborAddr) DecodeFromBytes(data []byte) error {
@@ -6616,13 +6141,17 @@ func (l *LsTLVIPv4NeighborAddr) DecodeFromBytes(data []byte) error {
 		return malformedAttrListErr("Unexpected address size")
 	}
 
-	l.IP = net.IP(value)
+	ip, ok := netip.AddrFromSlice(value)
+	if !ok {
+		return malformedAttrListErr("Failed to parse IPv4 neighbor address")
+	}
+	l.IP = ip
 
 	return nil
 }
 
 func (l *LsTLVIPv4NeighborAddr) Serialize() ([]byte, error) {
-	return l.LsTLV.Serialize(l.IP)
+	return l.LsTLV.Serialize(l.IP.AsSlice())
 }
 
 func (l *LsTLVIPv4NeighborAddr) String() string {
@@ -6645,7 +6174,7 @@ func (l *LsTLVIPv4NeighborAddr) GetLsTLV() LsTLV {
 
 type LsTLVIPv6InterfaceAddr struct {
 	LsTLV
-	IP net.IP
+	IP netip.Addr
 }
 
 func (l *LsTLVIPv6InterfaceAddr) DecodeFromBytes(data []byte) error {
@@ -6663,7 +6192,7 @@ func (l *LsTLVIPv6InterfaceAddr) DecodeFromBytes(data []byte) error {
 		return malformedAttrListErr("Unexpected address size")
 	}
 
-	l.IP = net.IP(value)
+	l.IP, _ = netip.AddrFromSlice(value)
 
 	if l.IP.IsLinkLocalUnicast() {
 		return malformedAttrListErr("Unexpected link local address")
@@ -6673,7 +6202,7 @@ func (l *LsTLVIPv6InterfaceAddr) DecodeFromBytes(data []byte) error {
 }
 
 func (l *LsTLVIPv6InterfaceAddr) Serialize() ([]byte, error) {
-	return l.LsTLV.Serialize(l.IP)
+	return l.LsTLV.Serialize(l.IP.AsSlice())
 }
 
 func (l *LsTLVIPv6InterfaceAddr) String() string {
@@ -6696,7 +6225,7 @@ func (l *LsTLVIPv6InterfaceAddr) GetLsTLV() LsTLV {
 
 type LsTLVIPv6NeighborAddr struct {
 	LsTLV
-	IP net.IP
+	IP netip.Addr
 }
 
 func (l *LsTLVIPv6NeighborAddr) DecodeFromBytes(data []byte) error {
@@ -6714,7 +6243,7 @@ func (l *LsTLVIPv6NeighborAddr) DecodeFromBytes(data []byte) error {
 		return malformedAttrListErr("Unexpected address size")
 	}
 
-	l.IP = net.IP(value)
+	l.IP, _ = netip.AddrFromSlice(value)
 
 	if l.IP.IsLinkLocalUnicast() {
 		return malformedAttrListErr("Unexpected link local address")
@@ -6724,7 +6253,7 @@ func (l *LsTLVIPv6NeighborAddr) DecodeFromBytes(data []byte) error {
 }
 
 func (l *LsTLVIPv6NeighborAddr) Serialize() ([]byte, error) {
-	return l.LsTLV.Serialize(l.IP)
+	return l.LsTLV.Serialize(l.IP.AsSlice())
 }
 
 func (l *LsTLVIPv6NeighborAddr) String() string {
@@ -6918,7 +6447,7 @@ type LsTLVIsisArea struct {
 func NewLsTLVIsisArea(l *[]byte) *LsTLVIsisArea {
 	return &LsTLVIsisArea{
 		LsTLV: LsTLV{
-			Type:   BGP_ASPATH_ATTR_TYPE_SET,
+			Type:   LS_TLV_ISIS_AREA,
 			Length: uint16(len(*l)),
 		},
 		Area: *l,
@@ -6968,10 +6497,10 @@ func (l *LsTLVIsisArea) GetLsTLV() LsTLV {
 
 type LsTLVLocalIPv4RouterID struct {
 	LsTLV
-	IP net.IP
+	IP netip.Addr
 }
 
-func NewLsTLVLocalIPv4RouterID(l *net.IP) *LsTLVLocalIPv4RouterID {
+func NewLsTLVLocalIPv4RouterID(l *netip.Addr) *LsTLVLocalIPv4RouterID {
 	return &LsTLVLocalIPv4RouterID{
 		LsTLV: LsTLV{
 			Type:   LS_TLV_IPV4_LOCAL_ROUTER_ID,
@@ -6996,13 +6525,13 @@ func (l *LsTLVLocalIPv4RouterID) DecodeFromBytes(data []byte) error {
 		return malformedAttrListErr("Unexpected address size")
 	}
 
-	l.IP = net.IP(value)
+	l.IP, _ = netip.AddrFromSlice(value)
 
 	return nil
 }
 
 func (l *LsTLVLocalIPv4RouterID) Serialize() ([]byte, error) {
-	return l.LsTLV.Serialize(l.IP)
+	return l.LsTLV.Serialize(l.IP.AsSlice())
 }
 
 func (l *LsTLVLocalIPv4RouterID) String() string {
@@ -7025,10 +6554,10 @@ func (l *LsTLVLocalIPv4RouterID) GetLsTLV() LsTLV {
 
 type LsTLVRemoteIPv4RouterID struct {
 	LsTLV
-	IP net.IP
+	IP netip.Addr
 }
 
-func NewLsTLVRemoteIPv4RouterID(l *net.IP) *LsTLVRemoteIPv4RouterID {
+func NewLsTLVRemoteIPv4RouterID(l *netip.Addr) *LsTLVRemoteIPv4RouterID {
 	return &LsTLVRemoteIPv4RouterID{
 		LsTLV: LsTLV{
 			Type:   LS_TLV_IPV4_REMOTE_ROUTER_ID,
@@ -7053,13 +6582,13 @@ func (l *LsTLVRemoteIPv4RouterID) DecodeFromBytes(data []byte) error {
 		return malformedAttrListErr("Unexpected address size")
 	}
 
-	l.IP = net.IP(value)
+	l.IP, _ = netip.AddrFromSlice(value)
 
 	return nil
 }
 
 func (l *LsTLVRemoteIPv4RouterID) Serialize() ([]byte, error) {
-	return l.LsTLV.Serialize(l.IP)
+	return l.LsTLV.Serialize(l.IP.AsSlice())
 }
 
 func (l *LsTLVRemoteIPv4RouterID) String() string {
@@ -7082,10 +6611,10 @@ func (l *LsTLVRemoteIPv4RouterID) GetLsTLV() LsTLV {
 
 type LsTLVLocalIPv6RouterID struct {
 	LsTLV
-	IP net.IP
+	IP netip.Addr
 }
 
-func NewLsTLVLocalIPv6RouterID(l *net.IP) *LsTLVLocalIPv6RouterID {
+func NewLsTLVLocalIPv6RouterID(l *netip.Addr) *LsTLVLocalIPv6RouterID {
 	return &LsTLVLocalIPv6RouterID{
 		LsTLV: LsTLV{
 			Type:   LS_TLV_IPV6_LOCAL_ROUTER_ID,
@@ -7110,13 +6639,13 @@ func (l *LsTLVLocalIPv6RouterID) DecodeFromBytes(data []byte) error {
 		return malformedAttrListErr("Unexpected address size")
 	}
 
-	l.IP = net.IP(value)
+	l.IP, _ = netip.AddrFromSlice(value)
 
 	return nil
 }
 
 func (l *LsTLVLocalIPv6RouterID) Serialize() ([]byte, error) {
-	return l.LsTLV.Serialize(l.IP)
+	return l.LsTLV.Serialize(l.IP.AsSlice())
 }
 
 func (l *LsTLVLocalIPv6RouterID) String() string {
@@ -7139,10 +6668,10 @@ func (l *LsTLVLocalIPv6RouterID) GetLsTLV() LsTLV {
 
 type LsTLVRemoteIPv6RouterID struct {
 	LsTLV
-	IP net.IP
+	IP netip.Addr
 }
 
-func NewLsTLVRemoteIPv6RouterID(l *net.IP) *LsTLVRemoteIPv6RouterID {
+func NewLsTLVRemoteIPv6RouterID(l *netip.Addr) *LsTLVRemoteIPv6RouterID {
 	return &LsTLVRemoteIPv6RouterID{
 		LsTLV: LsTLV{
 			Type:   LS_TLV_IPV6_REMOTE_ROUTER_ID,
@@ -7167,13 +6696,13 @@ func (l *LsTLVRemoteIPv6RouterID) DecodeFromBytes(data []byte) error {
 		return malformedAttrListErr("Unexpected address size")
 	}
 
-	l.IP = net.IP(value)
+	l.IP, _ = netip.AddrFromSlice(value)
 
 	return nil
 }
 
 func (l *LsTLVRemoteIPv6RouterID) Serialize() ([]byte, error) {
-	return l.LsTLV.Serialize(l.IP)
+	return l.LsTLV.Serialize(l.IP.AsSlice())
 }
 
 func (l *LsTLVRemoteIPv6RouterID) String() string {
@@ -7449,7 +6978,7 @@ func (l *LsTLVOspfAreaID) GetLsTLV() LsTLV {
 
 type LsTLVBgpRouterID struct {
 	LsTLV
-	RouterID net.IP
+	RouterID netip.Addr
 }
 
 func (l *LsTLVBgpRouterID) DecodeFromBytes(data []byte) error {
@@ -7468,20 +6997,20 @@ func (l *LsTLVBgpRouterID) DecodeFromBytes(data []byte) error {
 		return malformedAttrListErr(fmt.Sprintf("Incorrect BGP Router ID length: %d", len(value)))
 	}
 
-	l.RouterID = net.IP(value)
+	l.RouterID = netip.AddrFrom4([4]byte(value))
 
 	return nil
 }
 
 func (l *LsTLVBgpRouterID) Serialize() ([]byte, error) {
 	tmpaddr := l.RouterID
-	if tmpaddr.To4() != nil {
+	if tmpaddr.Is4() {
 		var buf [4]byte
-		copy(buf[:], l.RouterID.To4())
+		copy(buf[:], l.RouterID.AsSlice())
 		return l.LsTLV.Serialize(buf[:])
 	}
 	var buf [16]byte
-	copy(buf[:], l.RouterID.To16())
+	copy(buf[:], l.RouterID.AsSlice())
 	return l.LsTLV.Serialize(buf[:])
 }
 
@@ -7645,9 +7174,13 @@ type LsTLVIPReachability struct {
 	Prefix       []byte
 }
 
-func (l *LsTLVIPReachability) ToIPNet(ipv6 bool) net.IPNet {
+func (l *LsTLVIPReachability) toPrefix(ipv6 bool) netip.Prefix {
 	b := make([]byte, 16)
-	for i := range (int(l.PrefixLength)-1)/8 + 1 {
+	bytes := (int(l.PrefixLength)-1)/8 + 1
+	for i := range bytes {
+		if i >= len(l.Prefix) {
+			break
+		}
 		b[i] = l.Prefix[i]
 	}
 
@@ -7656,12 +7189,14 @@ func (l *LsTLVIPReachability) ToIPNet(ipv6 bool) net.IPNet {
 		ip = net.IP(b).To16()
 	}
 
-	_, n, err := net.ParseCIDR(fmt.Sprintf("%v/%v", ip, l.PrefixLength))
+	p, err := netip.ParsePrefix(fmt.Sprintf("%v/%v", ip, l.PrefixLength))
 	if err != nil {
-		return net.IPNet{}
+		return netip.Prefix{}
 	}
+	// backwards compatibility
+	p = p.Masked()
 
-	return *n
+	return p
 }
 
 func (l *LsTLVIPReachability) DecodeFromBytes(data []byte) error {
@@ -7696,7 +7231,6 @@ func (l *LsTLVIPReachability) DecodeFromBytes(data []byte) error {
 
 func (l *LsTLVIPReachability) Serialize() ([]byte, error) {
 	b := []byte{l.PrefixLength}
-
 	return l.LsTLV.Serialize(append(b, l.Prefix...))
 }
 
@@ -7788,7 +7322,7 @@ type LsTLVMaxLinkBw struct {
 func NewLsTLVMaxLinkBw(l *float32) *LsTLVMaxLinkBw {
 	return &LsTLVMaxLinkBw{
 		LsTLV: LsTLV{
-			Type:   BGP_ASPATH_ATTR_TYPE_SET,
+			Type:   LS_TLV_MAX_LINK_BANDWIDTH,
 			Length: 4,
 		},
 		Bandwidth: *l,
@@ -7852,7 +7386,7 @@ type LsTLVMaxReservableLinkBw struct {
 func NewLsTLVMaxReservableLinkBw(l *float32) *LsTLVMaxReservableLinkBw {
 	return &LsTLVMaxReservableLinkBw{
 		LsTLV: LsTLV{
-			Type:   BGP_ASPATH_ATTR_TYPE_SET,
+			Type:   LS_TLV_MAX_RESERVABLE_BANDWIDTH,
 			Length: 4,
 		},
 		Bandwidth: *l,
@@ -7916,7 +7450,7 @@ type LsTLVUnreservedBw struct {
 func NewLsTLVUnreservedBw(l *[8]float32) *LsTLVUnreservedBw {
 	return &LsTLVUnreservedBw{
 		LsTLV: LsTLV{
-			Type:   BGP_ASPATH_ATTR_TYPE_SET,
+			Type:   LS_TLV_UNRESERVED_BANDWIDTH,
 			Length: 32,
 		},
 		Bandwidth: *l,
@@ -7988,7 +7522,7 @@ type LsTLVTEDefaultMetric struct {
 func NewLsTLVTEDefaultMetric(l *uint32) *LsTLVTEDefaultMetric {
 	return &LsTLVTEDefaultMetric{
 		LsTLV: LsTLV{
-			Type:   BGP_ASPATH_ATTR_TYPE_SET,
+			Type:   LS_TLV_TE_DEFAULT_METRIC,
 			Length: 4,
 		},
 		Metric: *l,
@@ -8048,7 +7582,7 @@ type LsTLVIGPMetric struct {
 func NewLsTLVIGPMetric(l *uint32) *LsTLVIGPMetric {
 	return &LsTLVIGPMetric{
 		LsTLV: LsTLV{
-			Type:   BGP_ASPATH_ATTR_TYPE_SET,
+			Type:   LS_TLV_IGP_METRIC,
 			Length: 3, // TODO: implementation for IS-IS small metrics and OSPF link metrics.
 		},
 		Metric: *l,
@@ -8186,7 +7720,7 @@ type LsTLVSrAlgorithm struct {
 func NewLsTLVSrAlgorithm(l *[]byte) *LsTLVSrAlgorithm {
 	return &LsTLVSrAlgorithm{
 		LsTLV: LsTLV{
-			Type:   BGP_ASPATH_ATTR_TYPE_SET,
+			Type:   LS_TLV_SR_ALGORITHM,
 			Length: uint16(len(*l)),
 		},
 		Algorithm: *l,
@@ -8775,6 +8309,512 @@ func (l *LsTLVPeerNodeSID) MarshalJSON() ([]byte, error) {
 
 func (l *LsTLVPeerNodeSID) GetLsTLV() LsTLV {
 	return l.LsTLV
+}
+
+type LsTLVSrv6EndXSID struct {
+	LsTLV
+	EndpointBehavior uint16
+	Flags            uint8
+	Algorithm        uint8
+	Weight           uint8
+	Reserved         uint8
+	SIDs             []netip.Addr
+	Srv6SIDStructure LsTLVSrv6SIDStructure
+}
+
+func NewLsTLVSrv6EndXSID(l *LsSrv6EndXSID) *LsTLVSrv6EndXSID {
+	var length uint16 = 6
+
+	sids := []netip.Addr{}
+	for _, sid := range l.SIDs {
+		sids = append(sids, sid)
+		length += 16 // each SID is 16 bytes
+	}
+
+	srv6SIDStructure := LsTLVSrv6SIDStructure{
+		LsTLV: LsTLV{
+			Type:   LS_TLV_SRV6_SID_STRUCTURE,
+			Length: 4,
+		},
+		LocalBlock: l.Srv6SIDStructure.LocalBlock,
+		LocalNode:  l.Srv6SIDStructure.LocalNode,
+		LocalFunc:  l.Srv6SIDStructure.LocalFunc,
+		LocalArg:   l.Srv6SIDStructure.LocalArg,
+	}
+
+	if l.Srv6SIDStructure.LocalBlock != 0 || l.Srv6SIDStructure.LocalNode != 0 ||
+		l.Srv6SIDStructure.LocalFunc != 0 || l.Srv6SIDStructure.LocalArg != 0 {
+		length += 8 // Sub-TLV header (4 bytes) + payload (4 bytes)
+	}
+
+	return &LsTLVSrv6EndXSID{
+		LsTLV: LsTLV{
+			Type:   LS_TLV_SRV6_END_X_SID,
+			Length: length,
+		},
+		EndpointBehavior: l.EndpointBehavior,
+		Flags:            l.Flags,
+		Algorithm:        l.Algorithm,
+		Weight:           l.Weight,
+		Reserved:         l.Reserved,
+		SIDs:             sids,
+		Srv6SIDStructure: srv6SIDStructure,
+	}
+}
+
+func (l *LsTLVSrv6EndXSID) GetLsTLV() LsTLV {
+	return l.LsTLV
+}
+
+type LsSrv6EndXSID struct {
+	EndpointBehavior uint16             `json:"endpoint_behavior"`
+	Flags            uint8              `json:"flags"`
+	Algorithm        uint8              `json:"algorithm"`
+	Weight           uint8              `json:"weight"`
+	Reserved         uint8              `json:"reserved"`
+	SIDs             []netip.Addr       `json:"sids"`
+	Srv6SIDStructure LsSrv6SIDStructure `json:"sid_structure"`
+}
+
+func (l *LsTLVSrv6EndXSID) Extract() *LsSrv6EndXSID {
+	les := &LsSrv6EndXSID{
+		EndpointBehavior: l.EndpointBehavior,
+		Flags:            l.Flags,
+		Algorithm:        l.Algorithm,
+		Weight:           l.Weight,
+		Reserved:         l.Reserved,
+		SIDs:             l.SIDs,
+		Srv6SIDStructure: *l.Srv6SIDStructure.Extract(),
+	}
+
+	return les
+}
+
+func (l *LsTLVSrv6EndXSID) DecodeFromBytes(data []byte) error {
+	value, err := l.LsTLV.DecodeFromBytes(data)
+	if err != nil {
+		return err
+	}
+
+	if l.Type != LS_TLV_SRV6_END_X_SID {
+		return malformedAttrListErr("Unexpected TLV type")
+	}
+
+	// RFC 9514: minimum length = 6 bytes header + 16 bytes SID = 22 bytes
+	if len(value) < 22 {
+		return malformedAttrListErr("Incorrect SRv6 End.X SID length")
+	}
+
+	l.EndpointBehavior = binary.BigEndian.Uint16(value[:2])
+	l.Flags = value[2]
+	l.Algorithm = value[3]
+	l.Weight = value[4]
+	l.Reserved = value[5]
+
+	value = value[6:]
+
+	// parse variable data: SIDs followed by Sub-TLVs
+	return l.parseVariableData(value)
+}
+
+func (l *LsTLVSrv6EndXSID) parseVariableData(data []byte) error {
+	pos := 0
+
+	// if data length is not multiple of 16, there must be Sub-TLVs at the end
+	dataLen := len(data)
+	sidDataLen := dataLen / 16 * 16
+
+	for pos < sidDataLen {
+		sid := make([]byte, 16)
+		copy(sid, data[pos:pos+16])
+		addr, _ := netip.AddrFromSlice(sid)
+		l.SIDs = append(l.SIDs, addr)
+		pos += 16
+	}
+
+	if pos < dataLen {
+		return l.parseSubTLVs(data[pos:])
+	}
+
+	return nil
+}
+
+func (l *LsTLVSrv6EndXSID) parseSubTLVs(data []byte) error {
+	for len(data) >= 4 {
+		tlvType := binary.BigEndian.Uint16(data[:2])
+		tlvLen := binary.BigEndian.Uint16(data[2:4])
+		need := 4 + int(tlvLen)
+		if len(data) < need {
+			return malformedAttrListErr("SRv6 End.X SID Sub-TLV is truncated")
+		}
+
+		switch tlvType {
+		case LS_TLV_SRV6_SID_STRUCTURE:
+			if tlvLen != 4 {
+				data = data[need:]
+				continue
+			}
+			l.Srv6SIDStructure.LocalBlock = data[4]
+			l.Srv6SIDStructure.LocalNode = data[5]
+			l.Srv6SIDStructure.LocalFunc = data[6]
+			l.Srv6SIDStructure.LocalArg = data[7]
+		default:
+			// TODO: handle unknown Sub-TLVs
+		}
+
+		data = data[need:]
+	}
+
+	return nil
+}
+
+func (l *LsTLVSrv6EndXSID) Serialize() ([]byte, error) {
+	buf := make([]byte, 0)
+
+	temp := make([]byte, 2)
+	binary.BigEndian.PutUint16(temp, l.EndpointBehavior)
+	buf = append(buf, temp...)
+	buf = append(buf, l.Flags)
+	buf = append(buf, l.Algorithm)
+	buf = append(buf, l.Weight)
+	buf = append(buf, l.Reserved)
+
+	for _, sid := range l.SIDs {
+		buf = append(buf, sid.AsSlice()...)
+	}
+
+	return l.serializeSubTLVs(buf)
+}
+
+func (l *LsTLVSrv6EndXSID) serializeSubTLVs(buf []byte) ([]byte, error) {
+	if l.Srv6SIDStructure.LocalBlock != 0 || l.Srv6SIDStructure.LocalNode != 0 ||
+		l.Srv6SIDStructure.LocalFunc != 0 || l.Srv6SIDStructure.LocalArg != 0 {
+		subTLVHeader := make([]byte, 4)
+		binary.BigEndian.PutUint16(subTLVHeader[:2], LS_TLV_SRV6_SID_STRUCTURE)
+		binary.BigEndian.PutUint16(subTLVHeader[2:4], 4) // Length = 4 bytes
+		buf = append(buf, subTLVHeader...)
+
+		buf = append(buf, l.Srv6SIDStructure.LocalBlock)
+		buf = append(buf, l.Srv6SIDStructure.LocalNode)
+		buf = append(buf, l.Srv6SIDStructure.LocalFunc)
+		buf = append(buf, l.Srv6SIDStructure.LocalArg)
+	}
+
+	return l.LsTLV.Serialize(buf)
+}
+
+func (l *LsTLVSrv6EndXSID) String() string {
+	var buf bytes.Buffer
+	for _, sid := range l.SIDs {
+		buf.WriteString(fmt.Sprintf("%s ", sid.String()))
+	}
+	return fmt.Sprintf("{SRv6 End.X SID: EndpointBehavior:%d SIDs: %s LocalBlock:%d LocalNode:%d LocalFunc:%d LocalArg:%d}", l.EndpointBehavior, buf.String(), l.Srv6SIDStructure.LocalBlock, l.Srv6SIDStructure.LocalNode, l.Srv6SIDStructure.LocalFunc, l.Srv6SIDStructure.LocalArg)
+}
+
+func (l *LsTLVSrv6EndXSID) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Type             LsTLVType             `json:"type"`
+		EndpointBehavior uint16                `json:"endpoint_behavior"`
+		SIDs             []netip.Addr          `json:"sids"`
+		Srv6SIDStructure LsTLVSrv6SIDStructure `json:"sid_structure"`
+	}{
+		Type:             l.Type,
+		EndpointBehavior: l.EndpointBehavior,
+		SIDs:             l.SIDs,
+		Srv6SIDStructure: l.Srv6SIDStructure,
+	})
+}
+
+type LsTLVSrv6SIDStructure struct {
+	LsTLV
+	LocalBlock uint8
+	LocalNode  uint8
+	LocalFunc  uint8
+	LocalArg   uint8
+}
+
+func NewLsTLVSrv6SIDStructure(l *LsSrv6SIDStructure) *LsTLVSrv6SIDStructure {
+	return &LsTLVSrv6SIDStructure{
+		LsTLV: LsTLV{
+			Type:   LS_TLV_SRV6_SID_STRUCTURE,
+			Length: 4,
+		},
+		LocalBlock: l.LocalBlock,
+		LocalNode:  l.LocalNode,
+		LocalFunc:  l.LocalFunc,
+		LocalArg:   l.LocalArg,
+	}
+}
+
+func (l *LsTLVSrv6SIDStructure) GetLsTLV() LsTLV {
+	return l.LsTLV
+}
+
+type LsSrv6SIDStructure struct {
+	LocalBlock uint8 `json:"local_block"`
+	LocalNode  uint8 `json:"local_node"`
+	LocalFunc  uint8 `json:"local_func"`
+	LocalArg   uint8 `json:"local_arg"`
+}
+
+func (l *LsTLVSrv6SIDStructure) Extract() *LsSrv6SIDStructure {
+	lsss := &LsSrv6SIDStructure{
+		LocalBlock: l.LocalBlock,
+		LocalNode:  l.LocalNode,
+		LocalFunc:  l.LocalFunc,
+		LocalArg:   l.LocalArg,
+	}
+	return lsss
+}
+
+func (l *LsTLVSrv6SIDStructure) DecodeFromBytes(data []byte) error {
+	value, err := l.LsTLV.DecodeFromBytes(data)
+	if err != nil {
+		return err
+	}
+
+	if l.Type != LS_TLV_SRV6_SID_STRUCTURE {
+		return malformedAttrListErr("Unexpected TLV type")
+	}
+
+	if len(value) != 4 {
+		return malformedAttrListErr("Incorrect SRv6 SID Structure length")
+	}
+
+	l.LocalBlock = value[0]
+	l.LocalNode = value[1]
+	l.LocalFunc = value[2]
+	l.LocalArg = value[3]
+
+	sum := uint16(l.LocalBlock) + uint16(l.LocalNode) + uint16(l.LocalFunc) + uint16(l.LocalArg)
+	if sum > 128 {
+		return malformedAttrListErr("SRv6 SID Structure length sum exceeds 128 bits")
+	}
+
+	return nil
+}
+
+func (l *LsTLVSrv6SIDStructure) Serialize() ([]byte, error) {
+	buf := make([]byte, 0)
+	buf = append(buf, l.LocalBlock)
+	buf = append(buf, l.LocalNode)
+	buf = append(buf, l.LocalFunc)
+	buf = append(buf, l.LocalArg)
+
+	return l.LsTLV.Serialize(buf)
+}
+
+func (l *LsTLVSrv6SIDStructure) String() string {
+	return fmt.Sprintf("{SRv6 SID Structure: LocalBlock:%v LocalNode:%v LocalFunc:%v LocalArg:%v}", l.LocalBlock, l.LocalNode, l.LocalFunc, l.LocalArg)
+}
+
+func (l *LsTLVSrv6SIDStructure) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Type       LsTLVType `json:"type"`
+		LocalBlock uint8     `json:"local_block"`
+		LocalNode  uint8     `json:"local_node"`
+		LocalFunc  uint8     `json:"local_func"`
+		LocalArg   uint8     `json:"local_arg"`
+	}{
+		Type:       l.Type,
+		LocalBlock: l.LocalBlock,
+		LocalNode:  l.LocalNode,
+		LocalFunc:  l.LocalFunc,
+		LocalArg:   l.LocalArg,
+	})
+}
+
+type LsTLVSrv6BgpPeerNodeSID struct {
+	LsTLV
+	Flags        uint8
+	Weight       uint8
+	Reserved     uint16
+	PeerASNumber uint32
+	PeerBgpID    uint32
+}
+
+type LsSrv6BgpPeerNodeSID struct {
+	Flags     uint8  `json:"flags"`
+	Weight    uint8  `json:"weight"`
+	PeerAS    uint32 `json:"peer_as"`
+	PeerBgpID string `json:"peer_bgp_id"`
+}
+
+func NewLsTLVSrv6BgpPeerNodeSID(l *LsSrv6BgpPeerNodeSID) *LsTLVSrv6BgpPeerNodeSID {
+	addr, err := netip.ParseAddr(l.PeerBgpID)
+	if err != nil || !addr.Is4() {
+		return nil
+	}
+	peerBgpID := addr.As4()
+
+	return &LsTLVSrv6BgpPeerNodeSID{
+		LsTLV: LsTLV{
+			Type:   LS_TLV_SRV6_BGP_PEER_NODE_SID,
+			Length: 12,
+		},
+		Flags:        l.Flags,
+		Weight:       l.Weight,
+		Reserved:     0,
+		PeerASNumber: l.PeerAS,
+		PeerBgpID:    binary.BigEndian.Uint32(peerBgpID[:]),
+	}
+}
+
+func (l *LsTLVSrv6BgpPeerNodeSID) GetLsTLV() LsTLV {
+	return l.LsTLV
+}
+
+func (l *LsTLVSrv6BgpPeerNodeSID) Extract() *LsSrv6BgpPeerNodeSID {
+	peerBgpIP := make(net.IP, 4)
+	binary.BigEndian.PutUint32(peerBgpIP, l.PeerBgpID)
+
+	return &LsSrv6BgpPeerNodeSID{
+		Flags:     l.Flags,
+		Weight:    l.Weight,
+		PeerAS:    l.PeerASNumber,
+		PeerBgpID: peerBgpIP.String(),
+	}
+}
+
+func (l *LsTLVSrv6BgpPeerNodeSID) DecodeFromBytes(data []byte) error {
+	value, err := l.LsTLV.DecodeFromBytes(data)
+	if err != nil {
+		return err
+	}
+
+	if l.Type != LS_TLV_SRV6_BGP_PEER_NODE_SID {
+		return malformedAttrListErr("Incorrect SRv6 BGP PeerNode SID TLV type")
+	}
+
+	if l.Length != 12 {
+		return malformedAttrListErr("Incorrect SRv6 BGP PeerNode SID TLV length")
+	}
+	l.Flags = value[0]
+	l.Weight = value[1]
+	l.Reserved = binary.BigEndian.Uint16(value[2:4])
+	l.PeerASNumber = binary.BigEndian.Uint32(value[4:8])
+	l.PeerBgpID = binary.BigEndian.Uint32(value[8:12])
+
+	return nil
+}
+
+func (l *LsTLVSrv6BgpPeerNodeSID) Serialize() ([]byte, error) {
+	buf := make([]byte, 12)
+	buf[0] = l.Flags
+	buf[1] = l.Weight
+	binary.BigEndian.PutUint16(buf[2:4], l.Reserved)
+	binary.BigEndian.PutUint32(buf[4:8], l.PeerASNumber)
+	binary.BigEndian.PutUint32(buf[8:12], l.PeerBgpID)
+
+	return l.LsTLV.Serialize(buf)
+}
+
+func (l *LsTLVSrv6BgpPeerNodeSID) String() string {
+	peerBgpIP := make(net.IP, 4)
+	binary.BigEndian.PutUint32(peerBgpIP, l.PeerBgpID)
+	return fmt.Sprintf("{SRv6 BGP PeerNode SID: Flags:%d Weight:%d PeerAS:%d PeerBgpID:%s}",
+		l.Flags, l.Weight, l.PeerASNumber, peerBgpIP.String())
+}
+
+func (l *LsTLVSrv6BgpPeerNodeSID) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Type      LsTLVType `json:"type"`
+		Flags     uint8     `json:"flags"`
+		Weight    uint8     `json:"weight"`
+		PeerAS    uint32    `json:"peer_as"`
+		PeerBgpID string    `json:"peer_bgp_id"`
+	}{
+		Type:      l.Type,
+		Flags:     l.Flags,
+		Weight:    l.Weight,
+		PeerAS:    l.PeerASNumber,
+		PeerBgpID: l.Extract().PeerBgpID,
+	})
+}
+
+type LsTLVSrv6EndpointBehavior struct {
+	LsTLV
+	EndpointBehavior uint16
+	Flags            uint8
+	Algorithm        uint8
+}
+
+func NewLsTLVSrv6EndpointBehavior(l *LsSrv6EndpointBehavior) *LsTLVSrv6EndpointBehavior {
+	return &LsTLVSrv6EndpointBehavior{
+		LsTLV: LsTLV{
+			Type:   LS_TLV_SRV6_ENDPOINT_BEHAVIOR,
+			Length: 4,
+		},
+		EndpointBehavior: l.EndpointBehavior,
+		Flags:            l.Flags,
+		Algorithm:        l.Algorithm,
+	}
+}
+
+func (l *LsTLVSrv6EndpointBehavior) GetLsTLV() LsTLV {
+	return l.LsTLV
+}
+
+type LsSrv6EndpointBehavior struct {
+	EndpointBehavior uint16 `json:"endpoint_behavior"`
+	Flags            uint8  `json:"flags"`
+	Algorithm        uint8  `json:"algorithm"`
+}
+
+func (l *LsTLVSrv6EndpointBehavior) Extract() *LsSrv6EndpointBehavior {
+	lseb := &LsSrv6EndpointBehavior{
+		EndpointBehavior: l.EndpointBehavior,
+		Flags:            l.Flags,
+		Algorithm:        l.Algorithm,
+	}
+	return lseb
+}
+
+func (l *LsTLVSrv6EndpointBehavior) DecodeFromBytes(data []byte) error {
+	value, err := l.LsTLV.DecodeFromBytes(data)
+	if err != nil {
+		return err
+	}
+
+	if l.Type != LS_TLV_SRV6_ENDPOINT_BEHAVIOR {
+		return malformedAttrListErr("Unexpected TLV type")
+	}
+
+	if len(value) != 4 {
+		return malformedAttrListErr("Incorrect SRv6 Endpoint Behavior length")
+	}
+
+	l.EndpointBehavior = binary.BigEndian.Uint16(value[:2])
+	l.Flags = value[2]
+	l.Algorithm = value[3]
+
+	return nil
+}
+
+func (l *LsTLVSrv6EndpointBehavior) Serialize() ([]byte, error) {
+	buf := make([]byte, 2)
+	binary.BigEndian.PutUint16(buf, l.EndpointBehavior)
+	buf = append(buf, l.Flags)
+	buf = append(buf, l.Algorithm)
+	return l.LsTLV.Serialize(buf)
+}
+
+func (l *LsTLVSrv6EndpointBehavior) String() string {
+	return fmt.Sprintf("{SRv6 Endpoint Behavior: EndpointBehavior:%v Flags:%v Algorithm:%v}", l.EndpointBehavior, l.Flags, l.Algorithm)
+}
+
+func (l *LsTLVSrv6EndpointBehavior) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Type             LsTLVType `json:"type"`
+		EndpointBehavior uint16    `json:"endpoint_behavior"`
+		Flags            uint8     `json:"flags"`
+		Algorithm        uint8     `json:"algorithm"`
+	}{
+		Type:             l.Type,
+		EndpointBehavior: l.EndpointBehavior,
+		Flags:            l.Flags,
+		Algorithm:        l.Algorithm,
+	})
 }
 
 type LsTLVPeerAdjacencySID struct {
@@ -9558,13 +9598,13 @@ func (l *LsTLVNodeDescriptor) String() string {
 }
 
 type LsNodeDescriptor struct {
-	Asn                    uint32 `json:"asn"`
-	BGPLsID                uint32 `json:"bgp_ls_id"`
-	OspfAreaID             uint32 `json:"ospf_area_id"`
-	PseudoNode             bool   `json:"pseudo_node"`
-	IGPRouterID            string `json:"igp_router_id"`
-	BGPRouterID            net.IP `json:"bgp_router_id"`
-	BGPConfederationMember uint32 `json:"bgp_confederation_member"`
+	Asn                    uint32     `json:"asn"`
+	BGPLsID                uint32     `json:"bgp_ls_id"`
+	OspfAreaID             uint32     `json:"ospf_area_id"`
+	PseudoNode             bool       `json:"pseudo_node"`
+	IGPRouterID            string     `json:"igp_router_id"`
+	BGPRouterID            netip.Addr `json:"bgp_router_id"`
+	BGPConfederationMember uint32     `json:"bgp_confederation_member"`
 }
 
 func (l *LsTLVNodeDescriptor) GetLsTLV() LsTLV {
@@ -9572,11 +9612,77 @@ func (l *LsTLVNodeDescriptor) GetLsTLV() LsTLV {
 }
 
 func (l *LsNodeDescriptor) String() string {
-	if l.BGPRouterID == nil {
+	if !l.BGPRouterID.IsValid() || !l.BGPRouterID.Is4() {
 		return fmt.Sprintf("{ASN: %v, BGP LS ID: %v, OSPF AREA: %v, IGP ROUTER ID: %v}", l.Asn, l.BGPLsID, l.OspfAreaID, l.IGPRouterID)
 	}
 
 	return fmt.Sprintf("{ASN: %v, BGP LS ID: %v, BGP ROUTER ID: %v}", l.Asn, l.BGPLsID, l.BGPRouterID)
+}
+
+func igpRouterIDStringToBytes(routerID string) []byte {
+	if len(routerID) == 0 {
+		return nil
+	}
+	// ISIS non-pseudonode format: 0000.0000.0001
+	if len(routerID) == 14 && strings.Count(routerID, ".") == 2 {
+		parts := strings.Split(routerID, ".")
+		if len(parts) == 3 && len(parts[0]) == 4 && len(parts[1]) == 4 && len(parts[2]) == 4 {
+			var result []byte
+			for _, part := range parts {
+				if bytes, err := hex.DecodeString(part); err == nil {
+					result = append(result, bytes...)
+				} else {
+					return []byte(routerID)
+				}
+			}
+			if len(result) == 6 {
+				return result
+			}
+		}
+	}
+	// IPv4 format
+	if ip := net.ParseIP(routerID); ip != nil && ip.To4() != nil {
+		return ip.To4()
+	}
+	// ISIS pseudonode format: 0000.0000.0001-01
+	if strings.Contains(routerID, "-") && len(routerID) == 17 {
+		parts := strings.Split(routerID, "-")
+		if len(parts) == 2 && len(parts[1]) == 2 {
+			idParts := strings.Split(parts[0], ".")
+			if len(idParts) == 3 && len(idParts[0]) == 4 && len(idParts[1]) == 4 && len(idParts[2]) == 4 {
+				var result []byte
+				for _, part := range idParts {
+					if bytes, err := hex.DecodeString(part); err == nil {
+						result = append(result, bytes...)
+					} else {
+						return []byte(routerID)
+					}
+				}
+				if pseudoByte, err := hex.DecodeString(parts[1]); err == nil && len(pseudoByte) == 1 {
+					result = append(result, pseudoByte[0])
+				}
+				if len(result) == 7 {
+					return result
+				}
+			}
+		}
+	}
+	// OSPF pseudonode format: IP:IP
+	if strings.Contains(routerID, ":") {
+		parts := strings.Split(routerID, ":")
+		if len(parts) == 2 {
+			ip1 := net.ParseIP(parts[0])
+			ip2 := net.ParseIP(parts[1])
+			if ip1 != nil && ip2 != nil && ip1.To4() != nil && ip2.To4() != nil {
+				result := make([]byte, 8)
+				copy(result[:4], ip1.To4())
+				copy(result[4:8], ip2.To4())
+				return result
+			}
+		}
+	}
+
+	return []byte(routerID)
 }
 
 func parseIGPRouterID(id []byte) (string, bool) {
@@ -9622,8 +9728,8 @@ func NewLsTLVNodeDescriptor(nd *LsNodeDescriptor, tlvType LsTLVType) LsTLVNodeDe
 
 	// For IGP
 	if nd.IGPRouterID != "" {
-		routerIdBytes := []byte(nd.IGPRouterID)
-		routerIdLength := len([]byte(nd.IGPRouterID))
+		routerIdBytes := igpRouterIDStringToBytes(nd.IGPRouterID)
+		routerIdLength := len(routerIdBytes)
 		isOspf := false
 		// OSPF/OSPFv3 non-pseudonode or pseudonode
 		if routerIdLength == 4 || routerIdLength == 8 {
@@ -9653,7 +9759,7 @@ func NewLsTLVNodeDescriptor(nd *LsNodeDescriptor, tlvType LsTLVType) LsTLVNodeDe
 
 	// For BGP
 	// TLV Code Point 516 BGP Router-ID
-	if nd.BGPRouterID != nil {
+	if nd.BGPRouterID.IsValid() && nd.BGPRouterID.Is4() {
 		subTLVs = append(subTLVs,
 			&LsTLVBgpRouterID{
 				LsTLV: LsTLV{
@@ -9702,25 +9808,16 @@ func NewLsTLVNodeDescriptor(nd *LsNodeDescriptor, tlvType LsTLVType) LsTLVNodeDe
 }
 
 type LsAddrPrefix struct {
-	PrefixDefault
 	Type   LsNLRIType
 	Length uint16
 	NLRI   LsNLRIInterface
-}
-
-func (l *LsAddrPrefix) AFI() uint16 {
-	return AFI_LS
-}
-
-func (l *LsAddrPrefix) SAFI() uint8 {
-	return SAFI_LS
 }
 
 func (l *LsAddrPrefix) Len(...*MarshallingOption) int {
 	return 4 + int(l.Length)
 }
 
-func (l *LsAddrPrefix) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
+func (l *LsAddrPrefix) decodeFromBytes(data []byte, options ...*MarshallingOption) error {
 	if len(data) < 4 {
 		return malformedAttrListErr("Malformed BGP-LS Address Prefix")
 	}
@@ -9819,8 +9916,8 @@ type LsAttributeNode struct {
 	Opaque          *[]byte      `json:"opaque,omitempty"`
 	Name            *string      `json:"name,omitempty"`
 	IsisArea        *[]byte      `json:"isis_area,omitempty"`
-	LocalRouterID   *net.IP      `json:"local_router_id_ipv4,omitempty"`
-	LocalRouterIDv6 *net.IP      `json:"local_router_id_ipv6,omitempty"`
+	LocalRouterID   *netip.Addr  `json:"local_router_id_ipv4,omitempty"`
+	LocalRouterIDv6 *netip.Addr  `json:"local_router_id_ipv6,omitempty"`
 
 	// Segment Routing
 	SrCapabilties *LsSrCapabilities `json:"sr_capabilities,omitempty"`
@@ -9829,15 +9926,15 @@ type LsAttributeNode struct {
 }
 
 type LsAttributeLink struct {
-	Name             *string `json:"name,omitempty"`
-	LocalRouterID    *net.IP `json:"local_router_id_ipv4,omitempty"`
-	LocalRouterIDv6  *net.IP `json:"local_router_id_ipv6,omitempty"`
-	RemoteRouterID   *net.IP `json:"remote_router_id_ipv4,omitempty"`
-	RemoteRouterIDv6 *net.IP `json:"remote_router_id_ipv6,omitempty"`
-	AdminGroup       *uint32 `json:"admin_group,omitempty"`
-	DefaultTEMetric  *uint32 `json:"default_te_metric,omitempty"`
-	IGPMetric        *uint32 `json:"igp_metric,omitempty"`
-	Opaque           *[]byte `json:"opaque,omitempty"`
+	Name             *string     `json:"name,omitempty"`
+	LocalRouterID    *netip.Addr `json:"local_router_id_ipv4,omitempty"`
+	LocalRouterIDv6  *netip.Addr `json:"local_router_id_ipv6,omitempty"`
+	RemoteRouterID   *netip.Addr `json:"remote_router_id_ipv4,omitempty"`
+	RemoteRouterIDv6 *netip.Addr `json:"remote_router_id_ipv6,omitempty"`
+	AdminGroup       *uint32     `json:"admin_group,omitempty"`
+	DefaultTEMetric  *uint32     `json:"default_te_metric,omitempty"`
+	IGPMetric        *uint32     `json:"igp_metric,omitempty"`
+	Opaque           *[]byte     `json:"opaque,omitempty"`
 
 	// Bandwidth is expressed in bytes (not bits) per second.
 	Bandwidth           *float32    `json:"bandwidth,omitempty"`
@@ -9847,6 +9944,8 @@ type LsAttributeLink struct {
 
 	// TODO flag
 	SrAdjacencySID *uint32 `json:"adjacency_sid,omitempty"`
+
+	Srv6EndXSID *LsSrv6EndXSID `json:"srv6_end_x_sid,omitempty"`
 }
 
 type LsAttributePrefix struct {
@@ -9862,11 +9961,18 @@ type LsAttributeBgpPeerSegment struct {
 	BgpPeerSetSid       *LsBgpPeerSegmentSID `json:"bgp_peer_set_sid,omitempty"`
 }
 
+type LsAttributeSrv6SID struct {
+	Srv6SIDStructure     *LsSrv6SIDStructure     `json:"srv6_sid_structure,omitempty"`
+	Srv6BgpPeerNodeSID   *LsSrv6BgpPeerNodeSID   `json:"srv6_bgp_peer_node_sid,omitempty"`
+	Srv6EndpointBehavior *LsSrv6EndpointBehavior `json:"srv6_endpoint_behavior,omitempty"`
+}
+
 type LsAttribute struct {
 	Node           LsAttributeNode           `json:"node"`
 	Link           LsAttributeLink           `json:"link"`
 	Prefix         LsAttributePrefix         `json:"prefix"`
 	BgpPeerSegment LsAttributeBgpPeerSegment `json:"bgp_peer_segment"`
+	Srv6SID        LsAttributeSrv6SID        `json:"srv6_sid"`
 }
 
 type PathAttributeLs struct {
@@ -9944,6 +10050,9 @@ func (p *PathAttributeLs) Extract() *LsAttribute {
 		case *LsTLVAdjacencySID:
 			l.Link.SrAdjacencySID = &v.SID
 
+		case *LsTLVSrv6EndXSID:
+			l.Link.Srv6EndXSID = v.Extract()
+
 		case *LsTLVIGPFlags:
 			l.Prefix.IGPFlags = v.Extract()
 
@@ -9961,6 +10070,15 @@ func (p *PathAttributeLs) Extract() *LsAttribute {
 
 		case *LsTLVPeerSetSID:
 			l.BgpPeerSegment.BgpPeerSetSid = v.Extract()
+
+		case *LsTLVSrv6SIDStructure:
+			l.Srv6SID.Srv6SIDStructure = v.Extract()
+
+		case *LsTLVSrv6BgpPeerNodeSID:
+			l.Srv6SID.Srv6BgpPeerNodeSID = v.Extract()
+
+		case *LsTLVSrv6EndpointBehavior:
+			l.Srv6SID.Srv6EndpointBehavior = v.Extract()
 		}
 	}
 
@@ -10072,6 +10190,18 @@ func (p *PathAttributeLs) DecodeFromBytes(data []byte, options ...*MarshallingOp
 		case LS_TLV_PEER_SET_SID:
 			tlv = &LsTLVPeerSetSID{}
 
+		case LS_TLV_SRV6_END_X_SID:
+			tlv = &LsTLVSrv6EndXSID{}
+
+		case LS_TLV_SRV6_SID_STRUCTURE:
+			tlv = &LsTLVSrv6SIDStructure{}
+
+		case LS_TLV_SRV6_BGP_PEER_NODE_SID:
+			tlv = &LsTLVSrv6BgpPeerNodeSID{}
+
+		case LS_TLV_SRV6_ENDPOINT_BEHAVIOR:
+			tlv = &LsTLVSrv6EndpointBehavior{}
+
 		default:
 			tlvs = tlvs[t.Len():]
 			continue
@@ -10099,7 +10229,11 @@ func (p *PathAttributeLs) Serialize(options ...*MarshallingOption) ([]byte, erro
 		buf = append(buf, s...)
 	}
 
-	return p.PathAttribute.Serialize(buf, options...)
+	result, err := p.PathAttribute.Serialize(buf, options...)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (p *PathAttributeLs) String() string {
@@ -10241,123 +10375,113 @@ func GetFamily(name string) (Family, error) {
 	return Family(0), fmt.Errorf("%s isn't a valid route family name", name)
 }
 
-func NewPrefixFromFamily(family Family, prefixStr ...string) (prefix AddrPrefixInterface, err error) {
-	f := func(s string) (AddrPrefixInterface, error) {
-		addr, net, err := net.ParseCIDR(s)
-		if err != nil {
-			return nil, err
-		}
-		len, _ := net.Mask.Size()
-		switch family {
-		case RF_IPv4_UC, RF_IPv4_MC:
-			return NewIPAddrPrefix(uint8(len), addr.String()), nil
-		}
-		return NewIPv6AddrPrefix(uint8(len), addr.String()), nil
-	}
-
-	rdEOR := &RouteDistinguisherUnknown{DefaultRouteDistinguisher{Type: BGP_RD_EOR}, []byte("EOR")}
-
+func NLRIFromSlice(family Family, buf []byte, options ...*MarshallingOption) (nlri NLRI, err error) {
 	switch family {
-	case RF_IPv4_UC, RF_IPv4_MC:
-		if len(prefixStr) > 0 {
-			prefix, err = f(prefixStr[0])
-		} else {
-			prefix = NewIPAddrPrefix(0, "")
+	case RF_IPv4_UC, RF_IPv4_MC, RF_IPv6_UC, RF_IPv6_MC:
+		addrlen := net.IPv4len
+		if family.Afi() == AFI_IP6 {
+			addrlen = net.IPv6len
 		}
-	case RF_IPv6_UC, RF_IPv6_MC:
-		if len(prefixStr) > 0 {
-			prefix, err = f(prefixStr[0])
-		} else {
-			prefix = NewIPv6AddrPrefix(0, "")
-		}
-	case RF_IPv4_VPN:
-		if len(prefixStr) == 0 {
-			prefix = NewLabeledVPNIPAddrPrefix(0, "", *NewMPLSLabelStack(), rdEOR)
-			break
-		}
-
-		rd, addr, network, err := ParseVPNPrefix(prefixStr[0])
+		nlri := &IPAddrPrefix{}
+		err := nlri.decodeFromBytes(buf, addrlen, options...)
 		if err != nil {
 			return nil, err
 		}
-
-		length, _ := network.Mask.Size()
-
-		prefix = NewLabeledVPNIPAddrPrefix(
-			uint8(length),
-			addr.String(),
-			*NewMPLSLabelStack(),
-			rd,
-		)
-	case RF_IPv6_VPN:
-		if len(prefixStr) == 0 {
-			prefix = NewLabeledVPNIPv6AddrPrefix(0, "", *NewMPLSLabelStack(), rdEOR)
-			break
+		return nlri, nil
+	case RF_IPv4_VPN, RF_IPv6_VPN, RF_IPv4_VPN_MC, RF_IPv6_VPN_MC:
+		addrlen := net.IPv4len
+		if family.Afi() == AFI_IP6 {
+			addrlen = net.IPv6len
 		}
-
-		rd, addr, network, err := ParseVPNPrefix(prefixStr[0])
+		nlri := &LabeledVPNIPAddrPrefix{}
+		err := nlri.decodeFromBytes(buf, addrlen, options...)
 		if err != nil {
 			return nil, err
 		}
-
-		length, _ := network.Mask.Size()
-
-		prefix = NewLabeledVPNIPv6AddrPrefix(
-			uint8(length),
-			addr.String(),
-			*NewMPLSLabelStack(),
-			rd,
-		)
-	case RF_IPv4_MPLS:
-		prefix = NewLabeledIPAddrPrefix(0, "", *NewMPLSLabelStack())
-	case RF_IPv6_MPLS:
-		prefix = NewLabeledIPv6AddrPrefix(0, "", *NewMPLSLabelStack())
+		return nlri, nil
+	case RF_IPv4_MPLS, RF_IPv6_MPLS:
+		addrlen := net.IPv4len
+		if family.Afi() == AFI_IP6 {
+			addrlen = net.IPv6len
+		}
+		nlri := &LabeledIPAddrPrefix{}
+		err := nlri.decodeFromBytes(buf, addrlen, options...)
+		if err != nil {
+			return nil, err
+		}
+		return nlri, nil
 	case RF_EVPN:
-		prefix = NewEVPNNLRI(0, nil)
+		nlri := &EVPNNLRI{}
+		err := nlri.decodeFromBytes(buf, options...)
+		if err != nil {
+			return nil, err
+		}
+		return nlri, nil
 	case RF_VPLS:
-		prefix = &VPLSNLRI{}
-
-	// TODO (sbezverk) Add processing SR Policy NLRI
-	case RF_SR_POLICY_IPv4:
-		prefix = &SRPolicyIPv4{
-			SRPolicyNLRI: SRPolicyNLRI{
-				rf: RF_SR_POLICY_IPv4,
-			},
+		nlri := &VPLSNLRI{}
+		err := nlri.decodeFromBytes(buf, options...)
+		if err != nil {
+			return nil, err
 		}
-	case RF_SR_POLICY_IPv6:
-		prefix = &SRPolicyIPv6{
-			SRPolicyNLRI: SRPolicyNLRI{
-				rf: RF_SR_POLICY_IPv6,
-			},
+		return nlri, nil
+	case RF_SR_POLICY_IPv4, RF_SR_POLICY_IPv6:
+		// TODO (sbezverk) Add processing SR Policy NLRI
+		nlri := &SRPolicyNLRI{
+			rf: family,
 		}
+		err := nlri.decodeFromBytes(buf, options...)
+		if err != nil {
+			return nil, err
+		}
+		return nlri, nil
 	case RF_RTC_UC:
-		prefix = &RouteTargetMembershipNLRI{}
-	case RF_IPv4_ENCAP:
-		prefix = NewEncapNLRI("")
-	case RF_IPv6_ENCAP:
-		prefix = NewEncapv6NLRI("")
-	case RF_FS_IPv4_UC:
-		prefix = &FlowSpecIPv4Unicast{FlowSpecNLRI{rf: RF_FS_IPv4_UC}}
-	case RF_FS_IPv4_VPN:
-		prefix = &FlowSpecIPv4VPN{FlowSpecNLRI{rf: RF_FS_IPv4_VPN}}
-	case RF_FS_IPv6_UC:
-		prefix = &FlowSpecIPv6Unicast{FlowSpecNLRI{rf: RF_FS_IPv6_UC}}
-	case RF_FS_IPv6_VPN:
-		prefix = &FlowSpecIPv6VPN{FlowSpecNLRI{rf: RF_FS_IPv6_VPN}}
-	case RF_FS_L2_VPN:
-		prefix = &FlowSpecL2VPN{FlowSpecNLRI{rf: RF_FS_L2_VPN}}
+		nlri := &RouteTargetMembershipNLRI{}
+		err := nlri.decodeFromBytes(buf, options...)
+		if err != nil {
+			return nil, err
+		}
+		return nlri, nil
+	case RF_IPv4_ENCAP, RF_IPv6_ENCAP:
+		nlri := &EncapNLRI{}
+		err := nlri.decodeFromBytes(buf, options...)
+		if err != nil {
+			return nil, err
+		}
+		return nlri, nil
+	case RF_FS_IPv4_UC, RF_FS_IPv6_UC, RF_FS_IPv4_VPN, RF_FS_IPv6_VPN, RF_FS_L2_VPN:
+		nlri := &FlowSpecNLRI{rf: family}
+		err := nlri.decodeFromBytes(buf, options...)
+		if err != nil {
+			return nil, err
+		}
+		return nlri, nil
 	case RF_OPAQUE:
-		prefix = &OpaqueNLRI{}
+		nlri := &OpaqueNLRI{}
+		err := nlri.decodeFromBytes(buf, options...)
+		if err != nil {
+			return nil, err
+		}
+		return nlri, nil
 	case RF_LS:
-		prefix = &LsAddrPrefix{}
-	case RF_MUP_IPv4:
-		prefix = NewMUPNLRI(AFI_IP, 0, 0, nil)
-	case RF_MUP_IPv6:
-		prefix = NewMUPNLRI(AFI_IP6, 0, 0, nil)
+		nlri := &LsAddrPrefix{}
+		err := nlri.decodeFromBytes(buf, options...)
+		if err != nil {
+			return nil, err
+		}
+		return nlri, nil
+	case RF_MUP_IPv4, RF_MUP_IPv6:
+		nlri := &MUPNLRI{
+			Afi: family.Afi(),
+		}
+		err := nlri.decodeFromBytes(buf, options...)
+		if err != nil {
+			return nil, err
+		}
+		return nlri, nil
 	default:
 		err = fmt.Errorf("unknown route family. AFI: %d, SAFI: %d", family.Afi(), family.Safi())
 	}
-	return prefix, err
+	return nlri, err
 }
 
 type BGPAttrFlag uint8
@@ -11118,7 +11242,7 @@ func NewPathAttributeAsPath(value []AsPathParamInterface) *PathAttributeAsPath {
 
 type PathAttributeNextHop struct {
 	PathAttribute
-	Value net.IP
+	Value netip.Addr
 }
 
 func (p *PathAttributeNextHop) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
@@ -11131,12 +11255,12 @@ func (p *PathAttributeNextHop) DecodeFromBytes(data []byte, options ...*Marshall
 		eSubCode := uint8(BGP_ERROR_SUB_ATTRIBUTE_LENGTH_ERROR)
 		return NewMessageError(eCode, eSubCode, nil, "nexthop length isn't correct")
 	}
-	p.Value = value
+	p.Value, _ = netip.AddrFromSlice(value)
 	return nil
 }
 
 func (p *PathAttributeNextHop) Serialize(options ...*MarshallingOption) ([]byte, error) {
-	return p.PathAttribute.Serialize(p.Value, options...)
+	return p.PathAttribute.Serialize(p.Value.AsSlice(), options...)
 }
 
 func (p *PathAttributeNextHop) String() string {
@@ -11145,7 +11269,7 @@ func (p *PathAttributeNextHop) String() string {
 
 func (p *PathAttributeNextHop) MarshalJSON() ([]byte, error) {
 	value := "0.0.0.0"
-	if p.Value != nil {
+	if p.Value.IsValid() {
 		value = p.Value.String()
 	}
 	return json.Marshal(struct {
@@ -11157,14 +11281,14 @@ func (p *PathAttributeNextHop) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func NewPathAttributeNextHop(addr string) *PathAttributeNextHop {
+func NewPathAttributeNextHop(addr netip.Addr) (*PathAttributeNextHop, error) {
+	if !addr.IsValid() {
+		return nil, errors.New("invalid address")
+	}
 	t := BGP_ATTR_TYPE_NEXT_HOP
-	ip := net.ParseIP(addr)
 	l := net.IPv4len
-	if ip.To4() == nil {
+	if addr.Is6() {
 		l = net.IPv6len
-	} else {
-		ip = ip.To4()
 	}
 	return &PathAttributeNextHop{
 		PathAttribute: PathAttribute{
@@ -11172,8 +11296,8 @@ func NewPathAttributeNextHop(addr string) *PathAttributeNextHop {
 			Type:   t,
 			Length: uint16(l),
 		},
-		Value: ip,
-	}
+		Value: addr,
+	}, nil
 }
 
 type PathAttributeMultiExitDisc struct {
@@ -11325,7 +11449,7 @@ func NewPathAttributeAtomicAggregate() *PathAttributeAtomicAggregate {
 type PathAttributeAggregatorParam struct {
 	AS      uint32
 	Askind  reflect.Kind
-	Address net.IP
+	Address netip.Addr
 }
 
 type PathAttributeAggregator struct {
@@ -11342,11 +11466,11 @@ func (p *PathAttributeAggregator) DecodeFromBytes(data []byte, options ...*Marsh
 	case 6:
 		p.Value.Askind = reflect.Uint16
 		p.Value.AS = uint32(binary.BigEndian.Uint16(value[:2]))
-		p.Value.Address = value[2:]
+		p.Value.Address, _ = netip.AddrFromSlice(value[2:])
 	case 8:
 		p.Value.Askind = reflect.Uint32
 		p.Value.AS = binary.BigEndian.Uint32(value[:4])
-		p.Value.Address = value[4:]
+		p.Value.Address, _ = netip.AddrFromSlice(value[4:])
 	default:
 		eCode := uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR)
 		eSubCode := uint8(BGP_ERROR_SUB_ATTRIBUTE_LENGTH_ERROR)
@@ -11361,11 +11485,11 @@ func (p *PathAttributeAggregator) Serialize(options ...*MarshallingOption) ([]by
 	case reflect.Uint16:
 		buf = make([]byte, 6)
 		binary.BigEndian.PutUint16(buf, uint16(p.Value.AS))
-		copy(buf[2:], p.Value.Address)
+		copy(buf[2:], p.Value.Address.AsSlice())
 	case reflect.Uint32:
 		buf = make([]byte, 8)
 		binary.BigEndian.PutUint32(buf, p.Value.AS)
-		copy(buf[4:], p.Value.Address)
+		copy(buf[4:], p.Value.Address.AsSlice())
 	}
 	return p.PathAttribute.Serialize(buf, options...)
 }
@@ -11387,7 +11511,7 @@ func (p *PathAttributeAggregator) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func NewPathAttributeAggregator(as any, address string) *PathAttributeAggregator {
+func NewPathAttributeAggregator(as any, address netip.Addr) (*PathAttributeAggregator, error) {
 	v := reflect.ValueOf(as)
 	asKind := v.Kind()
 	var l uint16
@@ -11398,7 +11522,10 @@ func NewPathAttributeAggregator(as any, address string) *PathAttributeAggregator
 		l = 8
 	default:
 		// Invalid type
-		return nil
+		return nil, fmt.Errorf("invalid as type: %v", asKind)
+	}
+	if !address.Is4() {
+		return nil, fmt.Errorf("invalid address: %v", address)
 	}
 	t := BGP_ATTR_TYPE_AGGREGATOR
 	return &PathAttributeAggregator{
@@ -11410,9 +11537,9 @@ func NewPathAttributeAggregator(as any, address string) *PathAttributeAggregator
 		Value: PathAttributeAggregatorParam{
 			AS:      uint32(v.Uint()),
 			Askind:  asKind,
-			Address: net.ParseIP(address).To4(),
+			Address: address,
 		},
-	}
+	}, nil
 }
 
 type PathAttributeCommunities struct {
@@ -11537,7 +11664,7 @@ func NewPathAttributeCommunities(value []uint32) *PathAttributeCommunities {
 
 type PathAttributeOriginatorId struct {
 	PathAttribute
-	Value net.IP
+	Value netip.Addr
 }
 
 func (p *PathAttributeOriginatorId) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
@@ -11550,7 +11677,8 @@ func (p *PathAttributeOriginatorId) DecodeFromBytes(data []byte, options ...*Mar
 		eSubCode := uint8(BGP_ERROR_SUB_ATTRIBUTE_LENGTH_ERROR)
 		return NewMessageError(eCode, eSubCode, nil, "originator id length isn't correct")
 	}
-	p.Value = value
+	// It will never fail because the buffer is guaranteed to be 4 bytes long by PathAttribute.DecodeFromBytes().
+	p.Value, _ = netip.AddrFromSlice(value)
 	return nil
 }
 
@@ -11570,11 +11698,14 @@ func (p *PathAttributeOriginatorId) MarshalJSON() ([]byte, error) {
 
 func (p *PathAttributeOriginatorId) Serialize(options ...*MarshallingOption) ([]byte, error) {
 	var buf [4]byte
-	copy(buf[:], p.Value)
+	copy(buf[:], p.Value.AsSlice())
 	return p.PathAttribute.Serialize(buf[:], options...)
 }
 
-func NewPathAttributeOriginatorId(value string) *PathAttributeOriginatorId {
+func NewPathAttributeOriginatorId(addr netip.Addr) (*PathAttributeOriginatorId, error) {
+	if !addr.Is4() {
+		return nil, errors.New("invalid address")
+	}
 	t := BGP_ATTR_TYPE_ORIGINATOR_ID
 	return &PathAttributeOriginatorId{
 		PathAttribute: PathAttribute{
@@ -11582,13 +11713,13 @@ func NewPathAttributeOriginatorId(value string) *PathAttributeOriginatorId {
 			Type:   t,
 			Length: 4,
 		},
-		Value: net.ParseIP(value).To4(),
-	}
+		Value: addr,
+	}, nil
 }
 
 type PathAttributeClusterList struct {
 	PathAttribute
-	Value []net.IP
+	Value []netip.Addr
 }
 
 func (p *PathAttributeClusterList) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
@@ -11602,7 +11733,8 @@ func (p *PathAttributeClusterList) DecodeFromBytes(data []byte, options ...*Mars
 		return NewMessageError(eCode, eSubCode, nil, "clusterlist length isn't correct")
 	}
 	for len(value) >= 4 {
-		p.Value = append(p.Value, value[:4])
+		v, _ := netip.AddrFromSlice(value[:4])
+		p.Value = append(p.Value, v)
 		value = value[4:]
 	}
 	return nil
@@ -11611,7 +11743,7 @@ func (p *PathAttributeClusterList) DecodeFromBytes(data []byte, options ...*Mars
 func (p *PathAttributeClusterList) Serialize(options ...*MarshallingOption) ([]byte, error) {
 	buf := make([]byte, len(p.Value)*4)
 	for i, v := range p.Value {
-		copy(buf[i*4:], v)
+		copy(buf[i*4:], v.AsSlice())
 	}
 	return p.PathAttribute.Serialize(buf, options...)
 }
@@ -11634,11 +11766,14 @@ func (p *PathAttributeClusterList) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func NewPathAttributeClusterList(value []string) *PathAttributeClusterList {
+func NewPathAttributeClusterList(value []netip.Addr) (*PathAttributeClusterList, error) {
 	l := len(value) * 4
-	list := make([]net.IP, len(value))
+	list := make([]netip.Addr, len(value))
 	for i, v := range value {
-		list[i] = net.ParseIP(v).To4()
+		if !v.Is4() {
+			return nil, fmt.Errorf("invalid address")
+		}
+		list[i] = v
 	}
 	t := BGP_ATTR_TYPE_CLUSTER_LIST
 	return &PathAttributeClusterList{
@@ -11648,16 +11783,16 @@ func NewPathAttributeClusterList(value []string) *PathAttributeClusterList {
 			Length: uint16(l),
 		},
 		Value: list,
-	}
+	}, nil
 }
 
 type PathAttributeMpReachNLRI struct {
 	PathAttribute
-	Nexthop          net.IP
-	LinkLocalNexthop net.IP
+	Nexthop          netip.Addr
+	LinkLocalNexthop netip.Addr
 	AFI              uint16
 	SAFI             uint8
-	Value            []AddrPrefixInterface
+	Value            []PathNLRI
 }
 
 func (p *PathAttributeMpReachNLRI) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
@@ -11694,7 +11829,17 @@ func (p *PathAttributeMpReachNLRI) DecodeFromBytes(data []byte, options ...*Mars
 
 	switch nexthoplen {
 	case 2*BGP_ATTR_NHLEN_VPN_RD + BGP_ATTR_NHLEN_IPV6_GLOBAL_AND_LL: // 8 bytes RD + 16 bytes IPv6 Global + 8 bytes RD + 16 bytes IPv6 Link Local
-		nexthopbin = slices.Delete(nexthopbin, BGP_ATTR_NHLEN_VPN_RD+BGP_ATTR_NHLEN_IPV6_GLOBAL, 2*BGP_ATTR_NHLEN_VPN_RD+BGP_ATTR_NHLEN_IPV6_GLOBAL) // skip second RD
+		// NOTE: Do not use slices.Delete on nexthopbin here because nexthopbin aliases the input buffer.
+		// slices.Delete shifts elements and clears tail elements in-place, which would mutate the caller's input.
+		// We instead build a new slice without the second RD.
+		{
+			start := BGP_ATTR_NHLEN_VPN_RD + BGP_ATTR_NHLEN_IPV6_GLOBAL
+			end := 2*BGP_ATTR_NHLEN_VPN_RD + BGP_ATTR_NHLEN_IPV6_GLOBAL
+			tmp := make([]byte, 0, len(nexthopbin)-(end-start))
+			tmp = append(tmp, nexthopbin[:start]...)
+			tmp = append(tmp, nexthopbin[end:]...)
+			nexthopbin = tmp
+		}
 		nexthoplen -= BGP_ATTR_NHLEN_VPN_RD
 		fallthrough
 	case BGP_ATTR_NHLEN_VPN_RD + BGP_ATTR_NHLEN_IPV4, // 8 bytes RD + 4 bytes IPv4
@@ -11706,12 +11851,12 @@ func (p *PathAttributeMpReachNLRI) DecodeFromBytes(data []byte, options ...*Mars
 	switch nexthoplen {
 	case 0: // no nexthop, skip (FlowSpec)
 	case BGP_ATTR_NHLEN_IPV6_GLOBAL_AND_LL: // 16 bytes IPv6 Global + 16 bytes IPv6 Link Local
-		p.LinkLocalNexthop = nexthopbin[BGP_ATTR_NHLEN_IPV6_GLOBAL:BGP_ATTR_NHLEN_IPV6_GLOBAL_AND_LL]
+		p.LinkLocalNexthop, _ = netip.AddrFromSlice(nexthopbin[BGP_ATTR_NHLEN_IPV6_GLOBAL:BGP_ATTR_NHLEN_IPV6_GLOBAL_AND_LL])
 		fallthrough
 	case BGP_ATTR_NHLEN_IPV6_GLOBAL: // 16 bytes IPv6 Global
-		p.Nexthop = nexthopbin[:BGP_ATTR_NHLEN_IPV6_GLOBAL]
+		p.Nexthop, _ = netip.AddrFromSlice(nexthopbin[:BGP_ATTR_NHLEN_IPV6_GLOBAL])
 	case BGP_ATTR_NHLEN_IPV4: // 4 bytes IPv4
-		p.Nexthop = nexthopbin[:BGP_ATTR_NHLEN_IPV4]
+		p.Nexthop, _ = netip.AddrFromSlice(nexthopbin[:BGP_ATTR_NHLEN_IPV4])
 	default:
 		return NewMessageError(eCode, eSubCode, eData, "mpreach nexthop length is incorrect")
 	}
@@ -11730,20 +11875,23 @@ func (p *PathAttributeMpReachNLRI) DecodeFromBytes(data []byte, options ...*Mars
 		addpathLen = 4
 	}
 	for len(value) > 0 {
-		prefix, err := NewPrefixFromFamily(family)
+		id := uint32(0)
+		if addpathLen != 0 {
+			if len(value) < addpathLen {
+				return NewMessageError(eCode, eSubCode, value, "addpath length is incorrect")
+			}
+			id = binary.BigEndian.Uint32(value[:addpathLen])
+			value = value[addpathLen:]
+		}
+		prefix, err := NLRIFromSlice(family, value, options...)
 		if err != nil {
 			return NewMessageError(eCode, BGP_ERROR_SUB_INVALID_NETWORK_FIELD, eData, err.Error())
 		}
-
-		err = prefix.DecodeFromBytes(value, options...)
-		if err != nil {
-			return err
-		}
-		if len(value) < prefix.Len(options...)+addpathLen {
+		if len(value) < prefix.Len(options...) {
 			return NewMessageError(eCode, eSubCode, value, "prefix length is incorrect")
 		}
-		value = value[prefix.Len(options...)+addpathLen:]
-		p.Value = append(p.Value, prefix)
+		value = value[prefix.Len(options...):]
+		p.Value = append(p.Value, PathNLRI{NLRI: prefix, ID: id})
 	}
 	return nil
 }
@@ -11754,16 +11902,19 @@ func (p *PathAttributeMpReachNLRI) Serialize(options ...*MarshallingOption) ([]b
 	nexthopAddrs := make([]net.IP, 0, 2)
 	nexthoplen := 0
 
-	isNexthopIPv6 := afi == AFI_IP6 || p.Nexthop != nil && p.Nexthop.To4() == nil
+	isNexthopIPv6 := afi == AFI_IP6 || p.Nexthop.IsValid() && p.Nexthop.Is6()
 	if isNexthopIPv6 {
-		nexthopAddrs = append(nexthopAddrs, p.Nexthop.To16())
+		// if nexthop is v4, it needs to be serialized as IPv4-mapped IPv6 address.
+		n := p.Nexthop.As16()
+		nexthopAddrs = append(nexthopAddrs, n[:])
 		nexthoplen = BGP_ATTR_NHLEN_IPV6_GLOBAL
-		if p.LinkLocalNexthop != nil && p.LinkLocalNexthop.IsLinkLocalUnicast() {
-			nexthopAddrs = append(nexthopAddrs, p.LinkLocalNexthop.To16())
+		if p.LinkLocalNexthop.IsValid() && p.LinkLocalNexthop.IsLinkLocalUnicast() {
+			nexthopAddrs = append(nexthopAddrs, p.LinkLocalNexthop.AsSlice())
 			nexthoplen = BGP_ATTR_NHLEN_IPV6_GLOBAL_AND_LL
 		}
-	} else {
-		nexthopAddrs = append(nexthopAddrs, p.Nexthop)
+	} else if p.Nexthop.IsValid() {
+		n := p.Nexthop.As4()
+		nexthopAddrs = append(nexthopAddrs, n[:])
 		nexthoplen = BGP_ATTR_NHLEN_IPV4
 	}
 
@@ -11798,10 +11949,11 @@ func (p *PathAttributeMpReachNLRI) Serialize(options ...*MarshallingOption) ([]b
 
 		buf = append(buf, nexthop...)
 	}
+	isAddpath := IsAddPathEnabled(false, NewFamily(afi, safi), options)
 	if !onlyNexthop {
 		buf = append(buf, 0)
 		for _, prefix := range p.Value {
-			pbuf, err := prefix.Serialize(options...)
+			pbuf, err := prefix.toSlice(isAddpath)
 			if err != nil {
 				return nil, err
 			}
@@ -11813,7 +11965,7 @@ func (p *PathAttributeMpReachNLRI) Serialize(options ...*MarshallingOption) ([]b
 
 func (p *PathAttributeMpReachNLRI) MarshalJSON() ([]byte, error) {
 	nexthop := p.Nexthop.String()
-	if p.Nexthop == nil {
+	if !p.Nexthop.IsValid() {
 		switch p.AFI {
 		case AFI_IP:
 			nexthop = "0.0.0.0"
@@ -11824,11 +11976,11 @@ func (p *PathAttributeMpReachNLRI) MarshalJSON() ([]byte, error) {
 		}
 	}
 	return json.Marshal(struct {
-		Type    BGPAttrType           `json:"type"`
-		Nexthop string                `json:"nexthop"`
-		AFI     uint16                `json:"afi"`
-		SAFI    uint8                 `json:"safi"`
-		Value   []AddrPrefixInterface `json:"value"`
+		Type    BGPAttrType `json:"type"`
+		Nexthop string      `json:"nexthop"`
+		AFI     uint16      `json:"afi"`
+		SAFI    uint8       `json:"safi"`
+		Value   []PathNLRI  `json:"value"`
 	}{
 		Type:    p.GetType(),
 		Nexthop: nexthop,
@@ -11842,20 +11994,33 @@ func (p *PathAttributeMpReachNLRI) String() string {
 	return fmt.Sprintf("{MpReach(%s): {Nexthop: %s, NLRIs: %s}}", NewFamily(p.AFI, p.SAFI), p.Nexthop, p.Value)
 }
 
-func NewPathAttributeMpReachNLRI(nexthop string, nlris ...AddrPrefixInterface) *PathAttributeMpReachNLRI {
+func NewPathAttributeMpReachNLRI(family Family, nlris []PathNLRI, nextHops ...netip.Addr) (*PathAttributeMpReachNLRI, error) {
 	if len(nlris) == 0 {
-		return nil
+		return nil, fmt.Errorf("no NLRI provided")
 	}
 	// AFI(2) + SAFI(1) + NexthopLength(1) + Nexthop(variable)
 	// + Reserved(1) + NLRI(variable)
 	l := 5
-	afi := nlris[0].AFI()
-	safi := nlris[0].SAFI()
-	nh := net.ParseIP(nexthop)
-	nhlen := BGP_ATTR_NHLEN_IPV6_GLOBAL
-	if nh.To4() != nil && afi != AFI_IP6 {
-		nh = nh.To4()
-		nhlen = BGP_ATTR_NHLEN_IPV4
+	afi := family.Afi()
+	safi := family.Safi()
+
+	nhs := []netip.Addr{}
+	nhlen := 0
+
+	if len(nextHops) > 0 {
+		isNexthopIPv6 := afi == AFI_IP6 && nextHops[0].IsValid() && nextHops[0].Is6()
+		if isNexthopIPv6 {
+			nhs = append(nhs, nextHops[0])
+			// if nexthop is v4, it needs to be serialized as IPv4-mapped IPv6 address.
+			nhlen = BGP_ATTR_NHLEN_IPV6_GLOBAL
+			if len(nextHops) > 1 && nextHops[1].IsValid() && nextHops[1].IsLinkLocalUnicast() {
+				nhlen = BGP_ATTR_NHLEN_IPV6_GLOBAL_AND_LL
+				nhs = append(nhs, nextHops[1])
+			}
+		} else if nextHops[0].IsValid() {
+			nhlen = BGP_ATTR_NHLEN_IPV4
+			nhs = append(nhs, nextHops[0])
+		}
 	}
 
 	switch safi {
@@ -11869,27 +12034,36 @@ func NewPathAttributeMpReachNLRI(nexthop string, nlris ...AddrPrefixInterface) *
 	}
 
 	for _, n := range nlris {
-		l += n.Len()
+		l += n.NLRI.Len()
 	}
 	t := BGP_ATTR_TYPE_MP_REACH_NLRI
-	return &PathAttributeMpReachNLRI{
+	p := &PathAttributeMpReachNLRI{
 		PathAttribute: PathAttribute{
 			Flags:  getPathAttrFlags(t, l),
 			Type:   t,
 			Length: uint16(l),
 		},
-		Nexthop: nh,
-		AFI:     afi,
-		SAFI:    safi,
-		Value:   nlris,
+		AFI:   afi,
+		SAFI:  safi,
+		Value: nlris,
 	}
+
+	switch len(nhs) {
+	case 2:
+		p.LinkLocalNexthop = nhs[1]
+		fallthrough
+	case 1:
+		p.Nexthop = nhs[0]
+	}
+
+	return p, nil
 }
 
 type PathAttributeMpUnreachNLRI struct {
 	PathAttribute
 	AFI   uint16
 	SAFI  uint8
-	Value []AddrPrefixInterface
+	Value []PathNLRI
 }
 
 func (p *PathAttributeMpUnreachNLRI) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
@@ -11905,30 +12079,33 @@ func (p *PathAttributeMpUnreachNLRI) DecodeFromBytes(data []byte, options ...*Ma
 	}
 	afi := binary.BigEndian.Uint16(value[:2])
 	safi := value[2]
-	_, err = NewPrefixFromFamily(NewFamily(afi, safi))
-	if err != nil {
-		return NewMessageError(eCode, BGP_ERROR_SUB_INVALID_NETWORK_FIELD, eData, err.Error())
-	}
 	value = value[3:]
 	p.AFI = afi
 	p.SAFI = safi
+	family := NewFamily(afi, safi)
 	addpathLen := 0
-	if IsAddPathEnabled(true, NewFamily(afi, safi), options) {
+	if IsAddPathEnabled(true, family, options) {
 		addpathLen = 4
 	}
 	for len(value) > 0 {
-		prefix, err := NewPrefixFromFamily(NewFamily(afi, safi))
+		id := uint32(0)
+		if addpathLen != 0 {
+			if len(value) < addpathLen {
+				return NewMessageError(eCode, eSubCode, eData, "prefix length is incorrect")
+			}
+			id = binary.BigEndian.Uint32(value[:4])
+			value = value[4:]
+		}
+
+		prefix, err := NLRIFromSlice(family, value, options...)
 		if err != nil {
 			return NewMessageError(eCode, BGP_ERROR_SUB_INVALID_NETWORK_FIELD, eData, err.Error())
 		}
-		if err = prefix.DecodeFromBytes(value, options...); err != nil {
-			return err
-		}
-		if prefix.Len(options...)+addpathLen > len(value) {
+		if prefix.Len(options...) > len(value) {
 			return NewMessageError(eCode, eSubCode, eData, "prefix length is incorrect")
 		}
-		value = value[prefix.Len(options...)+addpathLen:]
-		p.Value = append(p.Value, prefix)
+		value = value[prefix.Len(options...):]
+		p.Value = append(p.Value, PathNLRI{NLRI: prefix, ID: id})
 	}
 	return nil
 }
@@ -11937,8 +12114,10 @@ func (p *PathAttributeMpUnreachNLRI) Serialize(options ...*MarshallingOption) ([
 	buf := make([]byte, 3)
 	binary.BigEndian.PutUint16(buf, p.AFI)
 	buf[2] = p.SAFI
+	addpath := IsAddPathEnabled(false, NewFamily(p.AFI, p.SAFI), options)
+
 	for _, prefix := range p.Value {
-		pbuf, err := prefix.Serialize(options...)
+		pbuf, err := prefix.toSlice(addpath)
 		if err != nil {
 			return nil, err
 		}
@@ -11949,10 +12128,10 @@ func (p *PathAttributeMpUnreachNLRI) Serialize(options ...*MarshallingOption) ([
 
 func (p *PathAttributeMpUnreachNLRI) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Type  BGPAttrType           `json:"type"`
-		AFI   uint16                `json:"afi"`
-		SAFI  uint8                 `json:"safi"`
-		Value []AddrPrefixInterface `json:"value"`
+		Type  BGPAttrType `json:"type"`
+		AFI   uint16      `json:"afi"`
+		SAFI  uint8       `json:"safi"`
+		Value []PathNLRI  `json:"value"`
 	}{
 		Type:  p.GetType(),
 		AFI:   p.AFI,
@@ -11968,17 +12147,11 @@ func (p *PathAttributeMpUnreachNLRI) String() string {
 	return fmt.Sprintf("{MpUnreach(%s): End-of-Rib}", NewFamily(p.AFI, p.SAFI))
 }
 
-func NewPathAttributeMpUnreachNLRI(nlris ...AddrPrefixInterface) *PathAttributeMpUnreachNLRI {
+func NewPathAttributeMpUnreachNLRI(family Family, nlris []PathNLRI) (*PathAttributeMpUnreachNLRI, error) {
 	// AFI(2) + SAFI(1) + NLRI(variable)
 	l := 3
-	var afi uint16
-	var safi uint8
-	if len(nlris) > 0 {
-		afi = nlris[0].AFI()
-		safi = nlris[0].SAFI()
-	}
 	for _, n := range nlris {
-		l += n.Len()
+		l += n.NLRI.Len()
 	}
 	t := BGP_ATTR_TYPE_MP_UNREACH_NLRI
 	return &PathAttributeMpUnreachNLRI{
@@ -11987,10 +12160,10 @@ func NewPathAttributeMpUnreachNLRI(nlris ...AddrPrefixInterface) *PathAttributeM
 			Type:   t,
 			Length: uint16(l),
 		},
-		AFI:   afi,
-		SAFI:  safi,
+		AFI:   family.Afi(),
+		SAFI:  family.Safi(),
 		Value: nlris,
-	}
+	}, nil
 }
 
 type ExtendedCommunityInterface interface {
@@ -12057,7 +12230,7 @@ func NewTwoOctetAsSpecificExtended(subtype ExtendedCommunityAttrSubType, as uint
 
 type IPv4AddressSpecificExtended struct {
 	SubType      ExtendedCommunityAttrSubType
-	IPv4         net.IP
+	IPv4         netip.Addr
 	LocalAdmin   uint16
 	IsTransitive bool
 }
@@ -12070,7 +12243,7 @@ func (e *IPv4AddressSpecificExtended) Serialize() ([]byte, error) {
 		buf[0] = byte(EC_TYPE_NON_TRANSITIVE_IP4_SPECIFIC)
 	}
 	buf[1] = byte(e.SubType)
-	copy(buf[2:6], e.IPv4)
+	copy(buf[2:6], e.IPv4.AsSlice())
 	binary.BigEndian.PutUint16(buf[6:], e.LocalAdmin)
 	return buf[:], nil
 }
@@ -12100,22 +12273,21 @@ func (e *IPv4AddressSpecificExtended) GetTypes() (ExtendedCommunityAttrType, Ext
 	return t, e.SubType
 }
 
-func NewIPv4AddressSpecificExtended(subtype ExtendedCommunityAttrSubType, ip string, localAdmin uint16, isTransitive bool) *IPv4AddressSpecificExtended {
-	ipv4 := net.ParseIP(ip)
-	if ipv4.To4() == nil {
-		return nil
+func NewIPv4AddressSpecificExtended(subtype ExtendedCommunityAttrSubType, ip netip.Addr, localAdmin uint16, isTransitive bool) (*IPv4AddressSpecificExtended, error) {
+	if !ip.Is4() {
+		return nil, fmt.Errorf("invalid IPv4 address")
 	}
 	return &IPv4AddressSpecificExtended{
 		SubType:      subtype,
-		IPv4:         ipv4.To4(),
+		IPv4:         ip,
 		LocalAdmin:   localAdmin,
 		IsTransitive: isTransitive,
-	}
+	}, nil
 }
 
 type IPv6AddressSpecificExtended struct {
 	SubType      ExtendedCommunityAttrSubType
-	IPv6         net.IP
+	IPv6         netip.Addr
 	LocalAdmin   uint16
 	IsTransitive bool
 }
@@ -12128,7 +12300,7 @@ func (e *IPv6AddressSpecificExtended) Serialize() ([]byte, error) {
 		buf[0] = byte(EC_TYPE_NON_TRANSITIVE_IP6_SPECIFIC)
 	}
 	buf[1] = byte(e.SubType)
-	copy(buf[2:18], e.IPv6)
+	copy(buf[2:18], e.IPv6.AsSlice())
 	binary.BigEndian.PutUint16(buf[18:], e.LocalAdmin)
 	return buf, nil
 }
@@ -12158,17 +12330,16 @@ func (e *IPv6AddressSpecificExtended) GetTypes() (ExtendedCommunityAttrType, Ext
 	return t, e.SubType
 }
 
-func NewIPv6AddressSpecificExtended(subtype ExtendedCommunityAttrSubType, ip string, localAdmin uint16, isTransitive bool) *IPv6AddressSpecificExtended {
-	ipv6 := net.ParseIP(ip)
-	if ipv6.To16() == nil {
-		return nil
+func NewIPv6AddressSpecificExtended(subtype ExtendedCommunityAttrSubType, ip netip.Addr, localAdmin uint16, isTransitive bool) (*IPv6AddressSpecificExtended, error) {
+	if !ip.Is6() {
+		return nil, fmt.Errorf("invalid IPv6 address")
 	}
 	return &IPv6AddressSpecificExtended{
 		SubType:      subtype,
-		IPv6:         ipv6.To16(),
+		IPv6:         ip,
 		LocalAdmin:   localAdmin,
 		IsTransitive: isTransitive,
-	}
+	}, nil
 }
 
 type FourOctetAsSpecificExtended struct {
@@ -12304,16 +12475,16 @@ func ParseExtendedCommunity(subtype ExtendedCommunityAttrSubType, com string) (E
 	if subtype == EC_SUBTYPE_SOURCE_AS {
 		localAdmin = 0
 	}
-	ip := net.ParseIP(elems[1])
+	addr, _ := netip.ParseAddr(elems[1])
 	isTransitive := true
 	switch {
 	case subtype == EC_SUBTYPE_LINK_BANDWIDTH:
 		asn, _ := strconv.ParseUint(elems[8], 10, 16)
 		return NewLinkBandwidthExtended(uint16(asn), float32(localAdmin)), nil
-	case ip.To4() != nil:
-		return NewIPv4AddressSpecificExtended(subtype, elems[1], uint16(localAdmin), isTransitive), nil
-	case ip.To16() != nil:
-		return NewIPv6AddressSpecificExtended(subtype, elems[1], uint16(localAdmin), isTransitive), nil
+	case addr.Is4():
+		return NewIPv4AddressSpecificExtended(subtype, addr, uint16(localAdmin), isTransitive)
+	case addr.Is6():
+		return NewIPv6AddressSpecificExtended(subtype, addr, uint16(localAdmin), isTransitive)
 	case elems[6] == "" && elems[7] == "":
 		asn, _ := strconv.ParseUint(elems[8], 10, 16)
 		return NewTwoOctetAsSpecificExtended(subtype, uint16(asn), uint32(localAdmin), isTransitive), nil
@@ -13301,12 +13472,12 @@ func (e *RedirectIPv4AddressSpecificExtended) GetTypes() (ExtendedCommunityAttrT
 	return EC_TYPE_GENERIC_TRANSITIVE_EXPERIMENTAL2, EC_SUBTYPE_FLOWSPEC_REDIRECT
 }
 
-func NewRedirectIPv4AddressSpecificExtended(ipv4 string, localAdmin uint16) *RedirectIPv4AddressSpecificExtended {
-	e := NewIPv4AddressSpecificExtended(EC_SUBTYPE_ROUTE_TARGET, ipv4, localAdmin, false)
-	if e == nil {
-		return nil
+func NewRedirectIPv4AddressSpecificExtended(ipv4 netip.Addr, localAdmin uint16) (*RedirectIPv4AddressSpecificExtended, error) {
+	e, err := NewIPv4AddressSpecificExtended(EC_SUBTYPE_ROUTE_TARGET, ipv4, localAdmin, false)
+	if err != nil {
+		return nil, err
 	}
-	return &RedirectIPv4AddressSpecificExtended{*e}
+	return &RedirectIPv4AddressSpecificExtended{*e}, nil
 }
 
 type RedirectIPv6AddressSpecificExtended struct {
@@ -13337,12 +13508,12 @@ func (e *RedirectIPv6AddressSpecificExtended) GetTypes() (ExtendedCommunityAttrT
 	return EC_TYPE_GENERIC_TRANSITIVE_EXPERIMENTAL, EC_SUBTYPE_FLOWSPEC_REDIRECT_IP6
 }
 
-func NewRedirectIPv6AddressSpecificExtended(ipv6 string, localAdmin uint16) *RedirectIPv6AddressSpecificExtended {
-	e := NewIPv6AddressSpecificExtended(EC_SUBTYPE_ROUTE_TARGET, ipv6, localAdmin, false)
-	if e == nil {
-		return nil
+func NewRedirectIPv6AddressSpecificExtended(ipv6 netip.Addr, localAdmin uint16) (*RedirectIPv6AddressSpecificExtended, error) {
+	e, err := NewIPv6AddressSpecificExtended(EC_SUBTYPE_ROUTE_TARGET, ipv6, localAdmin, false)
+	if err != nil {
+		return nil, err
 	}
-	return &RedirectIPv6AddressSpecificExtended{*e}
+	return &RedirectIPv6AddressSpecificExtended{*e}, nil
 }
 
 type RedirectFourOctetAsSpecificExtended struct {
@@ -13436,9 +13607,9 @@ func parseGenericTransitiveExperimentalExtended(data []byte) (ExtendedCommunityI
 			localAdmin := binary.BigEndian.Uint32(data[4:8])
 			return NewRedirectTwoOctetAsSpecificExtended(as, localAdmin), nil
 		case EC_TYPE_GENERIC_TRANSITIVE_EXPERIMENTAL2:
-			ipv4 := net.IP(data[2:6]).String()
+			ipv4, _ := netip.AddrFromSlice(data[2:6])
 			localAdmin := binary.BigEndian.Uint16(data[6:8])
-			return NewRedirectIPv4AddressSpecificExtended(ipv4, localAdmin), nil
+			return NewRedirectIPv4AddressSpecificExtended(ipv4, localAdmin)
 		case EC_TYPE_GENERIC_TRANSITIVE_EXPERIMENTAL3:
 			as := binary.BigEndian.Uint32(data[2:6])
 			localAdmin := binary.BigEndian.Uint16(data[6:8])
@@ -13452,9 +13623,9 @@ func parseGenericTransitiveExperimentalExtended(data []byte) (ExtendedCommunityI
 			return nil, NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "not all extended community bytes for IPv6 FlowSpec are available")
 		}
 
-		ipv6 := net.IP(data[2:18]).String()
+		ipv6, _ := netip.AddrFromSlice(data[2:18])
 		localAdmin := binary.BigEndian.Uint16(data[18:20])
-		return NewRedirectIPv6AddressSpecificExtended(ipv6, localAdmin), nil
+		return NewRedirectIPv6AddressSpecificExtended(ipv6, localAdmin)
 	case EC_SUBTYPE_L2_INFO:
 		switch data[2] {
 		case byte(LAYER2ENCAPSULATION_TYPE_VPLS):
@@ -13480,9 +13651,9 @@ func parseIP6FlowSpecExtended(data []byte) (ExtendedCommunityInterface, error) {
 		// RFC7674
 		switch typ {
 		case EC_TYPE_GENERIC_TRANSITIVE_EXPERIMENTAL:
-			ipv6 := net.IP(data[2:18]).String()
+			ipv6, _ := netip.AddrFromSlice(data[2:18])
 			localAdmin := binary.BigEndian.Uint16(data[18:20])
-			return NewRedirectIPv6AddressSpecificExtended(ipv6, localAdmin), nil
+			return NewRedirectIPv6AddressSpecificExtended(ipv6, localAdmin)
 		}
 	}
 	return &UnknownExtended{
@@ -13572,9 +13743,9 @@ func ParseExtended(data []byte) (ExtendedCommunityInterface, error) {
 		transitive = true
 		fallthrough
 	case EC_TYPE_NON_TRANSITIVE_IP4_SPECIFIC:
-		ipv4 := net.IP(data[2:6]).String()
+		ipv4, _ := netip.AddrFromSlice(data[2:6])
 		localAdmin := binary.BigEndian.Uint16(data[6:8])
-		return NewIPv4AddressSpecificExtended(subtype, ipv4, localAdmin, transitive), nil
+		return NewIPv4AddressSpecificExtended(subtype, ipv4, localAdmin, transitive)
 	case EC_TYPE_TRANSITIVE_FOUR_OCTET_AS_SPECIFIC:
 		transitive = true
 		fallthrough
@@ -13771,14 +13942,15 @@ func (p *PathAttributeAs4Aggregator) DecodeFromBytes(data []byte, options ...*Ma
 		return NewMessageError(eCode, eSubCode, nil, "AS4 Aggregator length is incorrect")
 	}
 	p.Value.AS = binary.BigEndian.Uint32(value[:4])
-	p.Value.Address = value[4:]
+	// The length was validated above.
+	p.Value.Address, _ = netip.AddrFromSlice(value[4:])
 	return nil
 }
 
 func (p *PathAttributeAs4Aggregator) Serialize(options ...*MarshallingOption) ([]byte, error) {
 	buf := make([]byte, 8)
 	binary.BigEndian.PutUint32(buf[0:], p.Value.AS)
-	copy(buf[4:], p.Value.Address.To4())
+	copy(buf[4:], p.Value.Address.AsSlice())
 	return p.PathAttribute.Serialize(buf, options...)
 }
 
@@ -13799,7 +13971,10 @@ func (p *PathAttributeAs4Aggregator) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func NewPathAttributeAs4Aggregator(as uint32, address string) *PathAttributeAs4Aggregator {
+func NewPathAttributeAs4Aggregator(as uint32, address netip.Addr) (*PathAttributeAs4Aggregator, error) {
+	if !address.Is4() {
+		return nil, fmt.Errorf("invalid address: %v", address)
+	}
 	t := BGP_ATTR_TYPE_AS4_AGGREGATOR
 	return &PathAttributeAs4Aggregator{
 		PathAttribute: PathAttribute{
@@ -13809,9 +13984,9 @@ func NewPathAttributeAs4Aggregator(as uint32, address string) *PathAttributeAs4A
 		},
 		Value: PathAttributeAggregatorParam{
 			AS:      as,
-			Address: net.ParseIP(address).To4(),
+			Address: address,
 		},
-	}
+	}, nil
 }
 
 type TunnelEncapSubTLVInterface interface {
@@ -14060,7 +14235,7 @@ func NewTunnelEncapSubTLVColor(color uint32) *TunnelEncapSubTLVColor {
 
 type TunnelEncapSubTLVEgressEndpoint struct {
 	TunnelEncapSubTLV
-	Address net.IP
+	Address netip.Addr
 }
 
 // Tunnel Egress Endpoint Sub-TLV subfield positions
@@ -14094,9 +14269,9 @@ func (t *TunnelEncapSubTLVEgressEndpoint) DecodeFromBytes(data []byte) error {
 	if t.Length != EGRESS_ENDPOINT_ADDRESS_POS+addressLen {
 		return NewMessageError(BGP_ERROR_UPDATE_MESSAGE_ERROR, BGP_ERROR_SUB_MALFORMED_ATTRIBUTE_LIST, nil, "Not all TunnelEncapSubTLVEgressEndpoint address bytes available")
 	}
-	t.Address = nil
 	if addressFamily != 0 {
-		t.Address = net.IP(value[EGRESS_ENDPOINT_ADDRESS_POS : EGRESS_ENDPOINT_ADDRESS_POS+addressLen])
+		// the length was validated above.
+		t.Address, _ = netip.AddrFromSlice(value[EGRESS_ENDPOINT_ADDRESS_POS : EGRESS_ENDPOINT_ADDRESS_POS+addressLen])
 	}
 
 	return nil
@@ -14106,16 +14281,16 @@ func (t *TunnelEncapSubTLVEgressEndpoint) Serialize() ([]byte, error) {
 	var length uint32 = EGRESS_ENDPOINT_ADDRESS_POS
 	var family uint16
 	var ip net.IP
-	if t.Address == nil {
+	if !t.Address.IsValid() {
 		family = 0
-	} else if t.Address.To4() != nil {
+	} else if t.Address.Is4() {
 		length += net.IPv4len
 		family = AFI_IP
-		ip = t.Address.To4()
+		ip = t.Address.AsSlice()
 	} else {
 		length += net.IPv6len
 		family = AFI_IP6
-		ip = t.Address.To16()
+		ip = t.Address.AsSlice()
 	}
 	buf := make([]byte, length)
 	binary.BigEndian.PutUint32(buf, 0)
@@ -14128,7 +14303,7 @@ func (t *TunnelEncapSubTLVEgressEndpoint) Serialize() ([]byte, error) {
 
 func (t *TunnelEncapSubTLVEgressEndpoint) String() string {
 	address := ""
-	if t.Address != nil {
+	if t.Address.IsValid() {
 		address = t.Address.String()
 	}
 	return fmt.Sprintf("{EgressEndpoint: %s}", address)
@@ -14136,7 +14311,7 @@ func (t *TunnelEncapSubTLVEgressEndpoint) String() string {
 
 func (t *TunnelEncapSubTLVEgressEndpoint) MarshalJSON() ([]byte, error) {
 	address := ""
-	if t.Address != nil {
+	if t.Address.IsValid() {
 		address = t.Address.String()
 	}
 
@@ -14149,17 +14324,16 @@ func (t *TunnelEncapSubTLVEgressEndpoint) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func NewTunnelEncapSubTLVEgressEndpoint(address string) *TunnelEncapSubTLVEgressEndpoint {
-	var ip net.IP = nil
-	if address != "" {
-		ip = net.ParseIP(address)
+func NewTunnelEncapSubTLVEgressEndpoint(address netip.Addr) (*TunnelEncapSubTLVEgressEndpoint, error) {
+	if !address.IsValid() {
+		return nil, fmt.Errorf("invalid address: %v", address)
 	}
 	return &TunnelEncapSubTLVEgressEndpoint{
 		TunnelEncapSubTLV: TunnelEncapSubTLV{
 			Type: ENCAP_SUBTLV_TYPE_EGRESS_ENDPOINT,
 		},
-		Address: ip,
-	}
+		Address: address,
+	}, nil
 }
 
 type TunnelEncapSubTLVUDPDestPort struct {
@@ -14412,32 +14586,29 @@ func NewDefaultPmsiTunnelID(value []byte) *DefaultPmsiTunnelID {
 }
 
 type IngressReplTunnelID struct {
-	Value net.IP
+	Value netip.Addr
 }
 
 func (i *IngressReplTunnelID) Len() int {
-	return len(i.Value)
+	return i.Value.BitLen() / 8
 }
 
 func (i *IngressReplTunnelID) Serialize() ([]byte, error) {
-	if i.Value.To4() != nil {
-		return []byte(i.Value.To4()), nil
-	}
-	return []byte(i.Value), nil
+	return i.Value.AsSlice(), nil
 }
 
 func (i *IngressReplTunnelID) String() string {
 	return i.Value.String()
 }
 
-func NewIngressReplTunnelID(value string) *IngressReplTunnelID {
-	ip := net.ParseIP(value)
-	if ip == nil {
-		return nil
+func NewIngressReplTunnelID(value netip.Addr) (*IngressReplTunnelID, error) {
+	if !value.IsValid() {
+		return nil, fmt.Errorf("invalid address: %v", value)
 	}
+
 	return &IngressReplTunnelID{
-		Value: ip,
-	}
+		Value: value,
+	}, nil
 }
 
 type PathAttributePmsiTunnel struct {
@@ -14469,7 +14640,8 @@ func (p *PathAttributePmsiTunnel) DecodeFromBytes(data []byte, options ...*Marsh
 
 	switch p.TunnelType {
 	case PMSI_TUNNEL_TYPE_INGRESS_REPL:
-		p.TunnelID = &IngressReplTunnelID{net.IP(value[5:])}
+		id, _ := netip.AddrFromSlice(value[5:])
+		p.TunnelID = &IngressReplTunnelID{id}
 	default:
 		p.TunnelID = &DefaultPmsiTunnelID{value[5:]}
 	}
@@ -14576,8 +14748,8 @@ func ParsePmsiTunnel(args []string) (*PathAttributePmsiTunnel, error) {
 	var id PmsiTunnelIDInterface
 	switch tunnelType {
 	case PMSI_TUNNEL_TYPE_INGRESS_REPL:
-		ip := net.ParseIP(args[indx])
-		if ip == nil {
+		ip, ok := netip.ParseAddr(args[indx])
+		if ok != nil {
 			return nil, fmt.Errorf("invalid pmsi tunnel identifier: %s", args[indx])
 		}
 		id = &IngressReplTunnelID{Value: ip}
@@ -14605,9 +14777,9 @@ func ParseIP6Extended(data []byte) (ExtendedCommunityInterface, error) {
 		transitive = true
 		fallthrough
 	case EC_TYPE_NON_TRANSITIVE_IP6_SPECIFIC:
-		ipv6 := net.IP(data[2:18]).String()
+		ipv6, _ := netip.AddrFromSlice(data[2:18])
 		localAdmin := binary.BigEndian.Uint16(data[18:20])
-		return NewIPv6AddressSpecificExtended(subtype, ipv6, localAdmin, transitive), nil
+		return NewIPv6AddressSpecificExtended(subtype, ipv6, localAdmin, transitive)
 	case EC_TYPE_GENERIC_TRANSITIVE_EXPERIMENTAL:
 		return parseIP6FlowSpecExtended(data)
 	default:
@@ -15042,7 +15214,7 @@ type BGPUpdateAttributes struct {
 	Attribute map[BGPAttrType]bool
 }
 
-func GetBGPUpdateAttributes(data []byte) map[BGPAttrType]bool {
+func getBGPUpdateAttributes(data []byte) map[BGPAttrType]bool {
 	m := make(map[BGPAttrType]bool)
 	for p := 0; p < len(data); {
 		flag := data[p]
@@ -15076,7 +15248,7 @@ func GetBGPUpdateAttributes(data []byte) map[BGPAttrType]bool {
 	return m
 }
 
-func GetBGPUpdateAttributesFromMsg(msg *BGPUpdate) map[BGPAttrType]bool {
+func getBGPUpdateAttributesFromMsg(msg *BGPUpdate) map[BGPAttrType]bool {
 	m := make(map[BGPAttrType]bool)
 	for _, p := range msg.PathAttributes {
 		m[p.GetType()] = true
@@ -15140,12 +15312,37 @@ func GetPathAttribute(data []byte) (PathAttributeInterface, error) {
 	return &PathAttributeUnknown{}, nil
 }
 
+type PathNLRI struct {
+	NLRI NLRI
+	ID   uint32
+}
+
+func (p *PathNLRI) toSlice(isAddPath bool) ([]byte, error) {
+	var buf []byte
+	if isAddPath {
+		var tmp [4]byte
+		binary.BigEndian.PutUint32(tmp[:], p.ID)
+		buf = append(buf, tmp[:]...)
+	}
+	nbuf, err := p.NLRI.Serialize()
+	if err != nil {
+		return nil, err
+	}
+	buf = append(buf, nbuf...)
+
+	return buf, nil
+}
+
+func (p PathNLRI) String() string {
+	return p.NLRI.String() + ":" + strconv.FormatUint(uint64(p.ID), 10)
+}
+
 type BGPUpdate struct {
 	WithdrawnRoutesLen    uint16
-	WithdrawnRoutes       []*IPAddrPrefix
+	WithdrawnRoutes       []PathNLRI
 	TotalPathAttributeLen uint16
 	PathAttributes        []PathAttributeInterface
-	NLRI                  []*IPAddrPrefix
+	NLRI                  []PathNLRI
 }
 
 func (msg *BGPUpdate) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
@@ -15173,19 +15370,27 @@ func (msg *BGPUpdate) DecodeFromBytes(data []byte, options ...*MarshallingOption
 		addpathLen = 4
 	}
 
-	msg.WithdrawnRoutes = make([]*IPAddrPrefix, 0, msg.WithdrawnRoutesLen)
+	msg.WithdrawnRoutes = make([]PathNLRI, 0, msg.WithdrawnRoutesLen)
 	for routelen := msg.WithdrawnRoutesLen; routelen > 0; {
+		id := uint32(0)
+		if addpathLen != 0 {
+			if len(data) < 4 {
+				return NewMessageError(eCode, eSubCode, nil, "withdrawn route length is short")
+			}
+			id = binary.BigEndian.Uint32(data[:4])
+			data = data[4:]
+		}
 		w := &IPAddrPrefix{}
-		err := w.DecodeFromBytes(data, options...)
+		err := w.decodeFromBytes(data, net.IPv4len, options...)
 		if err != nil {
 			return err
 		}
 		routelen -= uint16(w.Len(options...) + addpathLen)
-		if len(data) < w.Len(options...)+addpathLen {
+		if len(data) < w.Len(options...) {
 			return NewMessageError(eCode, eSubCode, nil, "Withdrawn route length is short")
 		}
-		data = data[w.Len(options...)+addpathLen:]
-		msg.WithdrawnRoutes = append(msg.WithdrawnRoutes, w)
+		data = data[w.Len(options...):]
+		msg.WithdrawnRoutes = append(msg.WithdrawnRoutes, PathNLRI{NLRI: w, ID: id})
 	}
 
 	// check path total attribute length
@@ -15200,9 +15405,9 @@ func (msg *BGPUpdate) DecodeFromBytes(data []byte, options ...*MarshallingOption
 	if len(data) < int(msg.TotalPathAttributeLen) {
 		return NewMessageError(eCode, eSubCode, nil, "path total attribute length exceeds message length")
 	}
-	attributes := GetBGPUpdateAttributes(data)
+	attributes := getBGPUpdateAttributes(data)
 	o := MarshallingOption{
-		Attributes: attributes,
+		attributes: attributes,
 	}
 	options = append(options, &o)
 
@@ -15250,22 +15455,30 @@ func (msg *BGPUpdate) DecodeFromBytes(data []byte, options ...*MarshallingOption
 		}
 	}
 
-	msg.NLRI = make([]*IPAddrPrefix, 0)
+	msg.NLRI = make([]PathNLRI, 0)
 	for restlen := len(data); restlen > 0; {
+		id := uint32(0)
+		if addpathLen != 0 {
+			if len(data) < 4 {
+				return NewMessageError(eCode, eSubCode, nil, "NLRI length is short")
+			}
+			id = binary.BigEndian.Uint32(data[:4])
+			data = data[4:]
+		}
 		n := &IPAddrPrefix{}
-		err := n.DecodeFromBytes(data, options...)
+		err := n.decodeFromBytes(data, net.IPv4len, options...)
 		if err != nil {
 			return err
 		}
 		restlen -= n.Len(options...) + addpathLen
-		if len(data) < n.Len(options...)+addpathLen {
+		if len(data) < n.Len(options...) {
 			return NewMessageError(eCode, BGP_ERROR_SUB_INVALID_NETWORK_FIELD, nil, "NLRI length is short")
 		}
 		if n.Len(options...) > 32 {
 			return NewMessageError(eCode, BGP_ERROR_SUB_INVALID_NETWORK_FIELD, nil, "NLRI length is too long")
 		}
-		data = data[n.Len(options...)+addpathLen:]
-		msg.NLRI = append(msg.NLRI, n)
+		data = data[n.Len(options...):]
+		msg.NLRI = append(msg.NLRI, PathNLRI{NLRI: n, ID: id})
 	}
 
 	return strongestError
@@ -15273,8 +15486,9 @@ func (msg *BGPUpdate) DecodeFromBytes(data []byte, options ...*MarshallingOption
 
 func (msg *BGPUpdate) Serialize(options ...*MarshallingOption) ([]byte, error) {
 	wbuf := make([]byte, 2)
+	v4AddPath := IsAddPathEnabled(false, RF_IPv4_UC, options)
 	for _, w := range msg.WithdrawnRoutes {
-		onewbuf, err := w.Serialize(options...)
+		onewbuf, err := w.toSlice(v4AddPath)
 		if err != nil {
 			return nil, err
 		}
@@ -15283,9 +15497,9 @@ func (msg *BGPUpdate) Serialize(options ...*MarshallingOption) ([]byte, error) {
 	msg.WithdrawnRoutesLen = uint16(len(wbuf) - 2)
 	binary.BigEndian.PutUint16(wbuf, msg.WithdrawnRoutesLen)
 
-	attributes := GetBGPUpdateAttributesFromMsg(msg)
+	attributes := getBGPUpdateAttributesFromMsg(msg)
 	o := MarshallingOption{
-		Attributes: attributes,
+		attributes: attributes,
 	}
 	options = append(options, &o)
 	pbuf := make([]byte, 2)
@@ -15301,7 +15515,7 @@ func (msg *BGPUpdate) Serialize(options ...*MarshallingOption) ([]byte, error) {
 
 	buf := append(wbuf, pbuf...)
 	for _, n := range msg.NLRI {
-		nbuf, err := n.Serialize(options...)
+		nbuf, err := n.toSlice(v4AddPath)
 		if err != nil {
 			return nil, err
 		}
@@ -15325,32 +15539,7 @@ func (msg *BGPUpdate) IsEndOfRib() (bool, Family) {
 	return false, Family(0)
 }
 
-func TreatAsWithdraw(msg *BGPUpdate) *BGPUpdate {
-	withdraw := &BGPUpdate{
-		WithdrawnRoutesLen:    0,
-		WithdrawnRoutes:       []*IPAddrPrefix{},
-		TotalPathAttributeLen: 0,
-		PathAttributes:        make([]PathAttributeInterface, 0, len(msg.PathAttributes)),
-		NLRI:                  []*IPAddrPrefix{},
-	}
-	withdraw.WithdrawnRoutes = append(msg.WithdrawnRoutes, msg.NLRI...)
-	var unreach []AddrPrefixInterface
-
-	for _, p := range msg.PathAttributes {
-		switch nlri := p.(type) {
-		case *PathAttributeMpReachNLRI:
-			unreach = append(unreach, nlri.Value...)
-		case *PathAttributeMpUnreachNLRI:
-			unreach = append(unreach, nlri.Value...)
-		}
-	}
-	if len(unreach) != 0 {
-		withdraw.PathAttributes = append(withdraw.PathAttributes, NewPathAttributeMpUnreachNLRI(unreach...))
-	}
-	return withdraw
-}
-
-func NewBGPUpdateMessage(withdrawnRoutes []*IPAddrPrefix, pathattrs []PathAttributeInterface, nlri []*IPAddrPrefix) *BGPMessage {
+func NewBGPUpdateMessage(withdrawnRoutes []PathNLRI, pathattrs []PathAttributeInterface, nlri []PathNLRI) *BGPMessage {
 	return &BGPMessage{
 		Header: BGPHeader{Type: BGP_MSG_UPDATE},
 		Body:   &BGPUpdate{0, withdrawnRoutes, 0, pathattrs, nlri},
@@ -15361,15 +15550,7 @@ func NewEndOfRib(family Family) *BGPMessage {
 	if family == RF_IPv4_UC {
 		return NewBGPUpdateMessage(nil, nil, nil)
 	} else {
-		t := BGP_ATTR_TYPE_MP_UNREACH_NLRI
-		unreach := &PathAttributeMpUnreachNLRI{
-			PathAttribute: PathAttribute{
-				Flags: PathAttrFlags[t],
-				Type:  t,
-			},
-			AFI:  family.Afi(),
-			SAFI: family.Safi(),
-		}
+		unreach, _ := NewPathAttributeMpUnreachNLRI(family, []PathNLRI{})
 		return NewBGPUpdateMessage(nil, []PathAttributeInterface{unreach}, nil)
 	}
 }
@@ -15803,24 +15984,12 @@ func (p *PathAttribute) Flat() map[string]string {
 }
 
 func (l *LabeledVPNIPAddrPrefix) Flat() map[string]string {
-	prefixLen := l.Length - uint8(8*(l.Labels.Len()+l.RD.Len()))
 	return map[string]string{
-		"Prefix":    l.Prefix.String(),
-		"PrefixLen": fmt.Sprintf("%d", prefixLen),
+		"Prefix":    l.Prefix.Addr().String(),
+		"PrefixLen": fmt.Sprintf("%d", l.Prefix.Bits()),
 		"NLRI":      l.String(),
 		"Label":     l.Labels.String(),
 	}
-}
-
-func (p *IPAddrPrefixDefault) Flat() map[string]string {
-	l := strings.Split(p.String(), "/")
-	if len(l) == 2 {
-		return map[string]string{
-			"Prefix":    l[0],
-			"PrefixLen": l[1],
-		}
-	}
-	return map[string]string{}
 }
 
 func (l *EVPNNLRI) Flat() map[string]string {
@@ -15828,26 +15997,6 @@ func (l *EVPNNLRI) Flat() map[string]string {
 }
 
 func (l *RouteTargetMembershipNLRI) Flat() map[string]string {
-	return map[string]string{}
-}
-
-func (l *FlowSpecIPv4Unicast) Flat() map[string]string {
-	return map[string]string{}
-}
-
-func (l *FlowSpecIPv4VPN) Flat() map[string]string {
-	return map[string]string{}
-}
-
-func (l *FlowSpecIPv6Unicast) Flat() map[string]string {
-	return map[string]string{}
-}
-
-func (l *FlowSpecIPv6VPN) Flat() map[string]string {
-	return map[string]string{}
-}
-
-func (l *FlowSpecL2VPN) Flat() map[string]string {
 	return map[string]string{}
 }
 

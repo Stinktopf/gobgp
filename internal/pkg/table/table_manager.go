@@ -18,11 +18,12 @@ package table
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"net"
+	"net/netip"
 	"time"
 
 	"github.com/dgryski/go-farm"
-	"github.com/osrg/gobgp/v4/pkg/log"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
 
@@ -30,7 +31,7 @@ const (
 	GLOBAL_RIB_NAME = "global"
 )
 
-func ProcessMessage(m *bgp.BGPMessage, peerInfo *PeerInfo, timestamp time.Time) []*Path {
+func ProcessMessage(m *bgp.BGPMessage, peerInfo *PeerInfo, timestamp time.Time, treatAsWithdraw bool) []*Path {
 	update := m.Body.(*bgp.BGPUpdate)
 
 	if y, f := update.IsEndOfRib(); y {
@@ -38,26 +39,15 @@ func ProcessMessage(m *bgp.BGPMessage, peerInfo *PeerInfo, timestamp time.Time) 
 		return []*Path{NewEOR(f)}
 	}
 
-	adds := make([]bgp.AddrPrefixInterface, 0, len(update.NLRI))
-	for _, nlri := range update.NLRI {
-		adds = append(adds, nlri)
-	}
-
-	dels := make([]bgp.AddrPrefixInterface, 0, len(update.WithdrawnRoutes))
-	for _, nlri := range update.WithdrawnRoutes {
-		dels = append(dels, nlri)
-	}
-
 	attrs := make([]bgp.PathAttributeInterface, 0, len(update.PathAttributes))
 	var reach *bgp.PathAttributeMpReachNLRI
+	var unreach *bgp.PathAttributeMpUnreachNLRI
 	for _, attr := range update.PathAttributes {
 		switch a := attr.(type) {
 		case *bgp.PathAttributeMpReachNLRI:
 			reach = a
 		case *bgp.PathAttributeMpUnreachNLRI:
-			l := make([]bgp.AddrPrefixInterface, 0, len(a.Value))
-			l = append(l, a.Value...)
-			dels = append(dels, l...)
+			unreach = a
 		default:
 			// update msg may not contain next_hop (type:3) in attr
 			// due to it uses MpReachNLRI and it also has empty update.NLRI
@@ -65,13 +55,12 @@ func ProcessMessage(m *bgp.BGPMessage, peerInfo *PeerInfo, timestamp time.Time) 
 		}
 	}
 
-	listLen := len(adds) + len(dels)
-	if reach != nil {
-		listLen += len(reach.Value)
+	if treatAsWithdraw {
+		attrs = []bgp.PathAttributeInterface{}
 	}
 
 	var hash uint64
-	if len(adds) > 0 || reach != nil {
+	if len(attrs) != 0 {
 		total := bytes.NewBuffer(make([]byte, 0))
 		for _, a := range attrs {
 			b, _ := a.Serialize()
@@ -80,14 +69,26 @@ func ProcessMessage(m *bgp.BGPMessage, peerInfo *PeerInfo, timestamp time.Time) 
 		hash = farm.Hash64(total.Bytes())
 	}
 
+	listLen := len(update.NLRI) + len(update.WithdrawnRoutes)
+	if reach != nil {
+		listLen += len(reach.Value)
+	}
+	if unreach != nil {
+		listLen += len(unreach.Value)
+	}
+
 	pathList := make([]*Path, 0, listLen)
-	for _, nlri := range adds {
-		p := NewPath(peerInfo, nlri, false, attrs, timestamp, false)
+
+	for _, nlri := range update.NLRI {
+		p := NewPath(bgp.RF_IPv4_UC, peerInfo, bgp.PathNLRI{NLRI: nlri.NLRI}, treatAsWithdraw, attrs, timestamp, false)
+		p.remoteID = nlri.ID
 		p.SetHash(hash)
 		pathList = append(pathList, p)
 	}
+
 	if reach != nil {
-		nexthop := reach.Nexthop.String()
+		nexthop := reach.Nexthop
+		family := bgp.NewFamily(reach.AFI, reach.SAFI)
 
 		for _, nlri := range reach.Value {
 			// when build path from reach
@@ -97,18 +98,35 @@ func ProcessMessage(m *bgp.BGPMessage, peerInfo *PeerInfo, timestamp time.Time) 
 			// path.info{nlri: nlri}
 			// Compute a new attribute array for each path with one NLRI to make serialization
 			// of path attrs faster
-			nlriAttr := bgp.NewPathAttributeMpReachNLRI(nexthop, nlri)
-			reachAttrs := makeAttributeList(attrs, nlriAttr)
+			reachAttrs := []bgp.PathAttributeInterface{}
+			if !treatAsWithdraw {
+				nlriAttr, _ := bgp.NewPathAttributeMpReachNLRI(family, []bgp.PathNLRI{nlri}, nexthop)
+				reachAttrs = makeAttributeList(attrs, nlriAttr)
+			}
 
-			p := NewPath(peerInfo, nlri, false, reachAttrs, timestamp, false)
+			p := NewPath(family, peerInfo, bgp.PathNLRI{NLRI: nlri.NLRI}, treatAsWithdraw, reachAttrs, timestamp, false)
+			p.remoteID = nlri.ID
 			p.SetHash(hash)
 			pathList = append(pathList, p)
 		}
 	}
-	for _, nlri := range dels {
-		p := NewPath(peerInfo, nlri, true, []bgp.PathAttributeInterface{}, timestamp, false)
+
+	for _, nlri := range update.WithdrawnRoutes {
+		p := NewPath(bgp.RF_IPv4_UC, peerInfo, bgp.PathNLRI{NLRI: nlri.NLRI}, true, []bgp.PathAttributeInterface{}, timestamp, false)
+		p.remoteID = nlri.ID
 		pathList = append(pathList, p)
 	}
+
+	if unreach != nil {
+		family := bgp.NewFamily(unreach.AFI, unreach.SAFI)
+
+		for _, nlri := range unreach.Value {
+			p := NewPath(family, peerInfo, bgp.PathNLRI{NLRI: nlri.NLRI}, true, []bgp.PathAttributeInterface{}, timestamp, false)
+			p.remoteID = nlri.ID
+			pathList = append(pathList, p)
+		}
+	}
+
 	return pathList
 }
 
@@ -126,10 +144,10 @@ type TableManager struct {
 	Tables map[bgp.Family]*Table
 	Vrfs   map[string]*Vrf
 	rfList []bgp.Family
-	logger log.Logger
+	logger *slog.Logger
 }
 
-func NewTableManager(logger log.Logger, rfList []bgp.Family) *TableManager {
+func NewTableManager(logger *slog.Logger, rfList []bgp.Family) *TableManager {
 	t := &TableManager{
 		Tables: make(map[bgp.Family]*Table),
 		Vrfs:   make(map[string]*Vrf),
@@ -155,13 +173,12 @@ func (manager *TableManager) AddVrf(name string, id uint32, rd bgp.RouteDistingu
 		return nil, err
 	}
 	manager.logger.Debug("add vrf",
-		log.Fields{
-			"Topic":    "Vrf",
-			"Key":      name,
-			"Rd":       rd,
-			"ImportRt": rtMap.ToSlice(),
-			"ExportRt": exportRt,
-		})
+		slog.String("Topic", "Vrf"),
+		slog.String("Key", name),
+		slog.String("Rd", rd.String()),
+		slog.Any("ImportRt", rtMap.ToSlice()),
+		slog.Any("ExportRt", exportRt),
+	)
 	manager.Vrfs[name] = &Vrf{
 		Name:     name,
 		Id:       id,
@@ -170,13 +187,14 @@ func (manager *TableManager) AddVrf(name string, id uint32, rd bgp.RouteDistingu
 		ExportRt: exportRt,
 	}
 	msgs := make([]*Path, 0, len(importRt))
-	nexthop := "0.0.0.0"
+	nexthop := netip.IPv4Unspecified()
 	for _, target := range importRt {
 		nlri := bgp.NewRouteTargetMembershipNLRI(info.AS, target)
 		pattr := make([]bgp.PathAttributeInterface, 0, 2)
 		pattr = append(pattr, bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP))
-		pattr = append(pattr, bgp.NewPathAttributeMpReachNLRI(nexthop, nlri))
-		msgs = append(msgs, NewPath(info, nlri, false, pattr, time.Now(), false))
+		attr, _ := bgp.NewPathAttributeMpReachNLRI(bgp.RF_RTC_UC, []bgp.PathNLRI{{NLRI: nlri}}, nexthop)
+		pattr = append(pattr, attr)
+		msgs = append(msgs, NewPath(bgp.RF_RTC_UC, info, bgp.PathNLRI{NLRI: nlri}, false, pattr, time.Now(), false))
 	}
 	return msgs, nil
 }
@@ -191,14 +209,13 @@ func (manager *TableManager) DeleteVrf(name string) ([]*Path, error) {
 		msgs = append(msgs, t.deletePathsByVrf(vrf)...)
 	}
 	manager.logger.Debug("delete vrf",
-		log.Fields{
-			"Topic":     "Vrf",
-			"Key":       vrf.Name,
-			"Rd":        vrf.Rd,
-			"ImportRt":  vrf.ImportRt.ToSlice(),
-			"ExportRt":  vrf.ExportRt,
-			"MplsLabel": vrf.MplsLabel,
-		})
+		slog.String("Topic", "Vrf"),
+		slog.String("Key", vrf.Name),
+		slog.String("Rd", vrf.Rd.String()),
+		slog.Any("ImportRt", vrf.ImportRt.ToSlice()),
+		slog.Any("ExportRt", vrf.ExportRt),
+		slog.Any("MplsLabel", vrf.MplsLabel),
+	)
 	delete(manager.Vrfs, name)
 	rtcTable := manager.Tables[bgp.RF_RTC_UC]
 	msgs = append(msgs, rtcTable.deleteRTCPathsByVrf(vrf, manager.Vrfs)...)
@@ -246,7 +263,7 @@ func (manager *TableManager) handleMacMobility(path *Path) []*Path {
 		return nil
 	}
 
-	f := func(p *Path) (bgp.EthernetSegmentIdentifier, uint32, net.HardwareAddr, int, net.IP) {
+	f := func(p *Path) (bgp.EthernetSegmentIdentifier, uint32, net.HardwareAddr, int, netip.Addr) {
 		nlri := p.GetNlri().(*bgp.EVPNNLRI)
 		d := nlri.RouteTypeData.(*bgp.EVPNMacIPAdvertisementRoute)
 		ecs := p.GetExtCommunities()
@@ -277,7 +294,7 @@ func (manager *TableManager) handleMacMobility(path *Path) []*Path {
 		}
 		e2, et2, m2, s2, i2 := f(path2)
 		if et1 == et2 && bytes.Equal(m1, m2) && !bytes.Equal(e1.Value, e2.Value) {
-			if s1 > s2 || s1 == s2 && bytes.Compare(i1, i2) < 0 {
+			if s1 > s2 || s1 == s2 && i1.Compare(i2) < 0 {
 				pathList = append(pathList, path2.Clone(true))
 			}
 		}
@@ -350,12 +367,12 @@ func (manager *TableManager) GetPathListWithMac(id string, as uint32, rfList []b
 	return paths
 }
 
-func (manager *TableManager) GetPathListWithNexthop(id string, rfList []bgp.Family, nexthop net.IP) []*Path {
+func (manager *TableManager) GetPathListWithNexthop(id string, rfList []bgp.Family, nexthop netip.Addr) []*Path {
 	paths := make([]*Path, 0, manager.getDestinationCount(rfList))
 	for _, rf := range rfList {
 		if t, ok := manager.Tables[rf]; ok {
 			for _, path := range t.GetKnownPathList(id, 0) {
-				if path.GetNexthop().Equal(nexthop) {
+				if path.GetNexthop() == nexthop {
 					paths = append(paths, path)
 				}
 			}

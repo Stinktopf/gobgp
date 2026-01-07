@@ -20,14 +20,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
 
-	"github.com/osrg/gobgp/v4/pkg/log"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
 
@@ -979,14 +980,16 @@ func addressByteLength(family uint8) (int, error) {
 	return 0, fmt.Errorf("unknown address family: %d", family)
 }
 
-func ipFromFamily(family uint8, buf []byte) net.IP {
+func ipFromFamily(family uint8, buf []byte) netip.Addr {
 	switch family {
 	case syscall.AF_INET:
-		return net.IP(buf).To4()
+		b, _ := netip.AddrFromSlice(buf)
+		return b
 	case syscall.AF_INET6:
-		return net.IP(buf).To16()
+		b, _ := netip.AddrFromSlice(buf)
+		return b
 	}
-	return nil
+	return netip.Addr{}
 }
 
 // MESSAGE_FLAG is 32bit in frr7.5 and after frr7.5, 8bit in frr 7.4 and before frr7.4
@@ -1366,17 +1369,16 @@ type Client struct {
 	conn          net.Conn
 	Version       uint8
 	Software      Software
-	logger        log.Logger
+	logger        *slog.Logger
 }
 
-func ReceiveSingleMsg(logger log.Logger, conn net.Conn, version uint8, software Software, topic string) (*Message, error) {
+func ReceiveSingleMsg(logger *slog.Logger, conn net.Conn, version uint8, software Software, topic string) (*Message, error) {
 	headerBuf, err := readAll(conn, int(HeaderSize(version)))
 	if err != nil {
 		logger.Error("failed to read header",
-			log.Fields{
-				"Topic": topic,
-				"Error": err,
-			})
+			slog.String("Topic", topic),
+			slog.String("Error", err.Error()),
+		)
 		return nil, err
 	}
 
@@ -1384,29 +1386,24 @@ func ReceiveSingleMsg(logger log.Logger, conn net.Conn, version uint8, software 
 	err = hd.decodeFromBytes(headerBuf)
 	if version != hd.Version {
 		logger.Warn(fmt.Sprintf("ZAPI version mismatch. configured version: %d, version of received message:%d", version, hd.Version),
-			log.Fields{
-				"Topic": topic,
-			})
+			slog.String("Topic", topic))
 		return nil, errors.New("ZAPI version mismatch")
 	}
 	if err != nil {
 		logger.Error("failed to decode header",
-			log.Fields{
-				"Topic": topic,
-				"Data":  headerBuf,
-				"Error": err,
-			})
+			slog.String("Topic", topic),
+			slog.String("Error", err.Error()),
+		)
 		return nil, err
 	}
 
 	bodyBuf, err := readAll(conn, int(hd.Len-HeaderSize(version)))
 	if err != nil {
 		logger.Error("failed to read body",
-			log.Fields{
-				"Topic":  topic,
-				"Header": hd,
-				"Error":  err,
-			})
+			slog.String("Topic", topic),
+			slog.Any("Header", hd),
+			slog.String("Error", err.Error()),
+		)
 		return nil, err
 	}
 
@@ -1415,25 +1412,23 @@ func ReceiveSingleMsg(logger log.Logger, conn net.Conn, version uint8, software 
 		// Just outputting warnings (not error message) and ignore this
 		// error considering the case that body parser is not implemented yet.
 		logger.Warn("failed to decode body",
-			log.Fields{
-				"Topic":  topic,
-				"Header": hd,
-				"Data":   bodyBuf,
-				"Error":  err,
-			})
+			slog.String("Topic", topic),
+			slog.Any("Header", hd),
+			slog.Any("Data", bodyBuf),
+			slog.String("Error", err.Error()),
+		)
 		return nil, nil
 	}
 	logger.Debug("read message from zebra",
-		log.Fields{
-			"Topic":   topic,
-			"Message": m,
-		})
+		slog.String("Topic", topic),
+		slog.Any("Header", m.Header),
+		slog.Any("Body", m.Body))
 
 	return m, nil
 }
 
 // NewClient returns a Client instance (Client constructor)
-func NewClient(logger log.Logger, network, address string, typ RouteType, version uint8, software Software, mplsLabelRangeSize uint32) (*Client, error) {
+func NewClient(logger *slog.Logger, network, address string, typ RouteType, version uint8, software Software, mplsLabelRangeSize uint32) (*Client, error) {
 	conn, err := net.Dial(network, address)
 	if err != nil {
 		return nil, err
@@ -1461,26 +1456,23 @@ func NewClient(logger log.Logger, network, address string, typ RouteType, versio
 			if more {
 				b, err := m.Serialize(software)
 				if err != nil {
-					logger.Warn(fmt.Sprintf("failed to serialize: %v", m),
-						log.Fields{
-							"Topic": "Zebra",
-						})
+					logger.Warn(fmt.Sprintf("failed to serialize: %v", m), slog.String("Topic", "Zebra"))
+
 					continue
 				}
 
 				_, err = conn.Write(b)
 				if err != nil {
 					logger.Error("failed to write",
-						log.Fields{
-							"Topic": "Zebra",
-							"Error": err,
-						})
+						slog.String("Topic", "Zebra"),
+						slog.String("Error", err.Error()),
+					)
 					closeChannel(outgoing)
 					return
 				}
 			} else {
 				logger.Debug("finish outgoing loop",
-					log.Fields{"Topic": "Zebra"})
+					slog.String("Topic", "Zebra"))
 				return
 			}
 		}
@@ -1493,10 +1485,9 @@ func NewClient(logger log.Logger, network, address string, typ RouteType, versio
 	if mplsLabelRangeSize > 0 && c.SupportMpls() {
 		if err := c.sendLabelManagerConnect(true); err != nil {
 			logger.Warn("failed to send label manager connect",
-				log.Fields{
-					"Topic": "Zebra",
-					"Error": err,
-				})
+				slog.String("Topic", "Zebra"),
+				slog.String("Error", err.Error()),
+			)
 		}
 	}
 
@@ -1539,18 +1530,15 @@ func (c *Client) send(m *Message) {
 	defer func() {
 		if err := recover(); err != nil {
 			c.logger.Debug("recovered",
-				log.Fields{
-					"Topic": "Zebra",
-					"Error": err,
-				})
+				slog.String("Topic", "Zebra"),
+				slog.Any("Error", err),
+			)
 		}
 	}()
 	c.logger.Debug("send command to zebra",
-		log.Fields{
-			"Topic":  "Zebra",
-			"Header": m.Header,
-			"Body":   m.Body,
-		})
+		slog.String("Topic", "Zebra"),
+		slog.Any("Header", m.Header),
+		slog.Any("Body", m.Body))
 	c.outgoing <- m
 }
 
@@ -2226,7 +2214,7 @@ type Nexthop struct {
 	VrfID           uint32           // FRR5, FRR6, FRR7.x, FRR8, FRR8.1
 	Ifindex         uint32           // Ifindex is referred in zclient_test
 	flags           uint8            // FRR7.1, FRR7.2 FRR7.3, FRR7.4, FRR7.5, FRR8, FRR8.1
-	Gate            net.IP           // union { union g_addr gate;
+	Gate            netip.Addr       // union { union g_addr gate;
 	blackholeType   uint8            //        enum blackhole_type bh_type;}
 	LabelNum        uint8            // FRR5, FRR6, FRR7.x, FRR8, FRR8.1
 	MplsLabels      []uint32         // FRR5, FRR6, FRR7.x, FRR8, FRR8.1
@@ -2256,12 +2244,12 @@ func (n Nexthop) string() string {
 }
 
 func (n Nexthop) gateToType(version uint8) nexthopType {
-	if n.Gate.To4() != nil {
+	if n.Gate.Is4() {
 		if version > 4 && n.Ifindex > 0 {
 			return nexthopTypeIPv4IFIndex
 		}
 		return nexthopTypeIPv4.toEach(version)
-	} else if n.Gate.To16() != nil {
+	} else if n.Gate.Is6() {
 		if version > 4 && n.Ifindex > 0 {
 			return nexthopTypeIPv6IFIndex
 		}
@@ -2314,11 +2302,11 @@ func (n Nexthop) encode(version uint8, software Software, processFlag nexthopPro
 	if nhType == nexthopTypeIPv4.toEach(version) ||
 		nhType == nexthopTypeIPv4IFIndex.toEach(version) {
 		// frr: stream_put_in_addr(s, &api_nh->gate.ipv4);
-		buf = append(buf, n.Gate.To4()...)
+		buf = append(buf, n.Gate.AsSlice()...)
 	} else if nhType == nexthopTypeIPv6.toEach(version) ||
 		nhType == nexthopTypeIPv6IFIndex.toEach(version) {
 		// frr: stream_write(s, (uint8_t *)&api_nh->gate.ipv6, 16);
-		buf = append(buf, n.Gate.To16()...)
+		buf = append(buf, n.Gate.AsSlice()...)
 	}
 	if nhType == nexthopTypeIFIndex ||
 		nhType == nexthopTypeIPv4IFIndex.toEach(version) ||
@@ -2425,9 +2413,9 @@ func (n *Nexthop) decode(data []byte, version uint8, software Software, family u
 	}
 	switch family {
 	case syscall.AF_INET:
-		n.Gate = net.ParseIP("0.0.0.0")
+		n.Gate = netip.IPv4Unspecified()
 	case syscall.AF_INET6:
-		n.Gate = net.ParseIP("::")
+		n.Gate = netip.IPv6Unspecified()
 	}
 	if nhType == nexthopTypeIPv4.toEach(version) ||
 		nhType == nexthopTypeIPv4IFIndex.toEach(version) {
@@ -2435,7 +2423,7 @@ func (n *Nexthop) decode(data []byte, version uint8, software Software, family u
 			return 0, fmt.Errorf("lack of bytes for IPv4 gate. need 4 but %d", len(data)-offset)
 		}
 		// frr: STREAM_GET(&api_nh->gate.ipv4.s_addr, s, IPV4_MAX_BYTELEN);
-		n.Gate = net.IP(data[offset : offset+4]).To4()
+		n.Gate, _ = netip.AddrFromSlice(data[offset : offset+4])
 		offset += 4
 	} else if nhType == nexthopTypeIPv6.toEach(version) ||
 		nhType == nexthopTypeIPv6IFIndex.toEach(version) {
@@ -2443,7 +2431,7 @@ func (n *Nexthop) decode(data []byte, version uint8, software Software, family u
 			return 0, fmt.Errorf("lack of bytes for IPv6 gate. need 16 but %d", len(data)-offset)
 		}
 		// frr: STREAM_GET(&api_nh->gate.ipv6, s, 16);
-		n.Gate = net.IP(data[offset : offset+16]).To16()
+		n.Gate, _ = netip.AddrFromSlice(data[offset : offset+16])
 		offset += 16
 	}
 	if nhType == nexthopTypeIFIndex ||
@@ -2574,13 +2562,13 @@ func decodeNexthops(nexthops *[]Nexthop, data []byte, version uint8, software So
 type Prefix struct {
 	Family    uint8
 	PrefixLen uint8
-	Prefix    net.IP
+	Prefix    netip.Addr
 }
 
-func familyFromPrefix(prefix net.IP) uint8 {
-	if prefix.To4() != nil {
+func familyFromPrefix(prefix netip.Addr) uint8 {
+	if prefix.Is4() {
 		return syscall.AF_INET
-	} else if prefix.To16() != nil {
+	} else if prefix.Is6() {
 		return syscall.AF_INET6
 	}
 	return syscall.AF_UNSPEC
@@ -2617,7 +2605,7 @@ type IPRouteBody struct {
 	// vrfID        uint32    // lib/zebra.h:typedef uint32_t vrf_id_t;
 }
 
-func (b *IPRouteBody) safi(logger log.Logger, version uint8, software Software) Safi {
+func (b *IPRouteBody) safi(logger *slog.Logger, version uint8, software Software) Safi {
 	// frr 7.2 and later versions have safiUnspec, older versions don't have safiUnspec
 	if b.Safi == safiUnspec && (version < 6 ||
 		version == 6 && software.name == "frr" && software.version < 7.2) {
@@ -2635,17 +2623,16 @@ func (b *IPRouteBody) safi(logger log.Logger, version uint8, software Software) 
 		safi = safiUnspec // failed to convert
 	}
 	logger.Debug("zebra converts safi",
-		log.Fields{
-			"Topic": "Zebra",
-			"Body":  b,
-			"Old":   b.Safi.String(),
-			"New":   safi.String(),
-		})
+		slog.String("Topic", "Zebra"),
+		slog.Any("Body", b),
+		slog.String("Old", b.Safi.String()),
+		slog.String("New", safi.String()),
+	)
 	return safi // success to convert
 }
 
 // Family is referred in zclient
-func (b *IPRouteBody) Family(logger log.Logger, version uint8, software Software) bgp.Family {
+func (b *IPRouteBody) Family(logger *slog.Logger, version uint8, software Software) bgp.Family {
 	if b == nil {
 		return bgp.RF_OPAQUE // fail
 	}
@@ -2669,12 +2656,10 @@ func (b *IPRouteBody) Family(logger log.Logger, version uint8, software Software
 		return bgp.RF_OPAQUE // fail
 	}
 	logger.Debug("zebra converts safi",
-		log.Fields{
-			"Topic": "Zebra",
-			"Body":  b,
-			"Safi":  safi.String(),
-			"Rf":    rf.String(),
-		})
+		slog.String("Topic", "Zebra"),
+		slog.Any("Body", b),
+		slog.String("Safi", safi.String()),
+		slog.String("Rf", rf.String()))
 
 	return rf // success
 }
@@ -2752,14 +2737,14 @@ func (b *IPRouteBody) serialize(version uint8, software Software) ([]byte, error
 	byteLen := (int(b.Prefix.PrefixLen) + 7) / 8
 	buf = append(buf, b.Prefix.PrefixLen) // frr: stream_putc(s, api->prefix.prefixlen);
 	// frr: stream_write(s, (uint8_t *)&api->prefix.u.prefix, psize);
-	buf = append(buf, b.Prefix.Prefix[:byteLen]...)
+	buf = append(buf, b.Prefix.Prefix.AsSlice()[:byteLen]...)
 
 	if version > 3 && b.Message&messageSRCPFX.ToEach(version, software) > 0 {
 		byteLen = (int(b.srcPrefix.PrefixLen) + 7) / 8
 		// frr: stream_putc(s, api->src_prefix.prefixlen);
 		buf = append(buf, b.srcPrefix.PrefixLen)
 		// frr: stream_write(s, (uint8_t *)&api->prefix.u.prefix, psize);
-		buf = append(buf, b.srcPrefix.Prefix[:byteLen]...)
+		buf = append(buf, b.srcPrefix.Prefix.AsSlice()[:byteLen]...)
 	}
 
 	// NHG(Nexthop Group) is added in frr8
@@ -3138,9 +3123,9 @@ func (b *IPRouteBody) string(version uint8, software Software) string {
 // lookupBody is combination of nexthopLookupBody and imporetLookupBody
 type lookupBody struct {
 	api          APIType
-	prefixLength uint8  // importLookup serialize only
-	addr         net.IP // it is same as prefix (it is deleted from importLookup)
-	distance     uint8  // nexthopIPv4LookupMRIB only
+	prefixLength uint8      // importLookup serialize only
+	addr         netip.Addr // it is same as prefix (it is deleted from importLookup)
+	distance     uint8      // nexthopIPv4LookupMRIB only
 	metric       uint32
 	nexthops     []Nexthop
 }
@@ -3153,9 +3138,9 @@ func (b *lookupBody) serialize(version uint8, software Software) ([]byte, error)
 	}
 	switch b.api {
 	case ipv4NexthopLookupMRIB, zapi3IPv4NexthopLookup, zapi3IPv4ImportLookup:
-		buf = append(buf, b.addr.To4()...)
+		buf = append(buf, b.addr.AsSlice()...)
 	case zapi3IPv6NexthopLookup:
-		buf = append(buf, b.addr.To16()...)
+		buf = append(buf, b.addr.AsSlice()...)
 	}
 	return buf, nil
 }
@@ -3220,7 +3205,7 @@ type RegisteredNexthop struct {
 	// Note: Ignores PrefixLength (uint8), because this field should be always:
 	// - 32 if Address Family is AF_INET
 	// - 128 if Address Family is AF_INET6
-	Prefix net.IP
+	Prefix netip.Addr
 }
 
 func (n *RegisteredNexthop) len() int {
@@ -3262,9 +3247,9 @@ func (n *RegisteredNexthop) serialize(version uint8, software Software) ([]byte,
 	// Prefix (variable)
 	switch n.Family {
 	case uint16(syscall.AF_INET):
-		buf = append(buf, n.Prefix.To4()...) // stream_put_in_addr(s, &p->u.prefix4);
+		buf = append(buf, n.Prefix.AsSlice()...) // stream_put_in_addr(s, &p->u.prefix4);
 	case uint16(syscall.AF_INET6):
-		buf = append(buf, n.Prefix.To16()...) // stream_put(s, &(p->u.prefix6), 16);
+		buf = append(buf, n.Prefix.AsSlice()...) // stream_put(s, &(p->u.prefix6), 16);
 	default:
 		return nil, fmt.Errorf("invalid address family: %d", n.Family)
 	}
@@ -3396,9 +3381,9 @@ func (b *NexthopUpdateBody) serialize(version uint8, software Software) ([]byte,
 	// Prefix Length (1 byte) + Prefix (variable)
 	switch b.Prefix.Family {
 	case syscall.AF_INET:
-		buf = append(buf, b.Prefix.Prefix.To4()...)
+		buf = append(buf, b.Prefix.Prefix.AsSlice()...)
 	case syscall.AF_INET6:
-		buf = append(buf, b.Prefix.Prefix.To16()...)
+		buf = append(buf, b.Prefix.Prefix.AsSlice()...)
 	default:
 		return nil, fmt.Errorf("invalid address family: %d", b.Prefix.Family)
 	}

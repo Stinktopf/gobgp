@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"math"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -72,72 +73,54 @@ func Test_Message(t *testing.T) {
 }
 
 func Test_IPAddrPrefixString(t *testing.T) {
-	ipv4 := NewIPAddrPrefix(24, "129.6.10.0")
+	ipv4, _ := NewIPAddrPrefix(netip.MustParsePrefix("129.6.10.0/24"))
 	assert.Equal(t, "129.6.10.0/24", ipv4.String())
-	ipv4 = NewIPAddrPrefix(24, "129.6.10.1")
+	ipv4, _ = NewIPAddrPrefix(netip.MustParsePrefix("129.6.10.1/24"))
 	assert.Equal(t, "129.6.10.0/24", ipv4.String())
-	ipv4 = NewIPAddrPrefix(22, "129.6.129.0")
+	ipv4, _ = NewIPAddrPrefix(netip.MustParsePrefix("129.6.129.0/22"))
 	assert.Equal(t, "129.6.128.0/22", ipv4.String())
 
-	ipv6 := NewIPv6AddrPrefix(64, "3343:faba:3903::0")
+	ipv6, _ := NewIPAddrPrefix(netip.MustParsePrefix("3343:faba:3903::0/64"))
 	assert.Equal(t, "3343:faba:3903::/64", ipv6.String())
-	ipv6 = NewIPv6AddrPrefix(64, "3343:faba:3903::1")
+	ipv6, _ = NewIPAddrPrefix(netip.MustParsePrefix("3343:faba:3903::1/64"))
 	assert.Equal(t, "3343:faba:3903::/64", ipv6.String())
-	ipv6 = NewIPv6AddrPrefix(63, "3343:faba:3903:129::0")
+	ipv6, _ = NewIPAddrPrefix(netip.MustParsePrefix("3343:faba:3903:129::0/63"))
 	assert.Equal(t, "3343:faba:3903:128::/63", ipv6.String())
-	mapped_ipv6 := NewIPv6AddrPrefix(128, "::ffff:192.0.2.128")
+	mapped_ipv6, _ := NewIPAddrPrefix(netip.MustParsePrefix("::ffff:192.0.2.128/128"))
 	assert.Equal(t, "::ffff:192.0.2.128/128", mapped_ipv6.String())
 }
 
-func Test_MalformedPrefixLookup(t *testing.T) {
-	assert := assert.New(t)
+func Test_ZeroIPv4Prefix(t *testing.T) {
+	buf := []byte{0}
+	nlri, err := NLRIFromSlice(RF_IPv4_UC, buf)
+	assert.NoError(t, err)
+	assert.Equal(t, "0.0.0.0/0", nlri.String())
+	ipv4 := nlri.(*IPAddrPrefix)
+	assert.Equal(t, ipv4.Prefix.Bits(), 0)
+	assert.Equal(t, ipv4.Prefix.Addr(), netip.IPv4Unspecified())
 
-	tests := []struct {
-		inPrefix string
-		Family   Family
-		want     AddrPrefixInterface
-		err      bool
-	}{
-		{"129.6.128/22", RF_IPv4_UC, nil, true},
-		{"foo", RF_IPv4_UC, nil, true},
-		{"3343:faba:3903:128::::/63", RF_IPv6_UC, nil, true},
-		{"foo", RF_IPv6_UC, nil, true},
-	}
-
-	for _, test := range tests {
-		p, err := NewPrefixFromFamily(RF_IPv4_UC, test.inPrefix)
-		if test.err {
-			assert.Error(err)
-		} else {
-			assert.Equal(test.want, p)
-		}
-	}
-}
-
-func Test_IPAddrDecode(t *testing.T) {
-	r := IPAddrPrefixDefault{}
-	b := make([]byte, 16)
-	err := r.decodePrefix(b, 33, 4)
-	assert.Error(t, err, "should return an error for invalid prefix length")
+	buf, err = nlri.Serialize()
+	assert.NoError(t, err)
+	assert.Equal(t, []byte{0}, buf)
 }
 
 func TestStringLabelAddrPrefix(t *testing.T) {
 	assert := assert.New(t)
 
 	labels := NewMPLSLabelStack(100, 200)
-	v4 := NewLabeledIPAddrPrefix(24, "10.10.10.0", *labels)
+	v4, _ := NewLabeledIPAddrPrefix(netip.MustParsePrefix("10.10.10.0/24"), *labels)
 	assert.Equal("10.10.10.0/24", v4.String())
-	v6 := NewLabeledIPv6AddrPrefix(64, "3343:faba:3903::", *labels)
+	v6, _ := NewLabeledIPAddrPrefix(netip.MustParsePrefix("3343:faba:3903::/64"), *labels)
 	assert.Equal("3343:faba:3903::/64", v6.String())
-	mapped_ipv6 := NewLabeledIPv6AddrPrefix(120, "::ffff:192.0.2.0", *labels)
+	mapped_ipv6, _ := NewLabeledIPAddrPrefix(netip.MustParsePrefix("::ffff:192.0.2.0/120"), *labels)
 	assert.Equal("::ffff:192.0.2.0/120", mapped_ipv6.String())
 
 	rd, _ := ParseRouteDistinguisher("300:100")
-	vpnv4 := NewLabeledVPNIPAddrPrefix(24, "10.10.10.0", *labels, rd)
+	vpnv4, _ := NewLabeledVPNIPAddrPrefix(netip.MustParsePrefix("10.10.10.0/24"), *labels, rd)
 	assert.Equal("300:100:10.10.10.0/24", vpnv4.String())
-	vpnv6 := NewLabeledVPNIPv6AddrPrefix(64, "3343:faba:3903::", *labels, rd)
+	vpnv6, _ := NewLabeledVPNIPAddrPrefix(netip.MustParsePrefix("3343:faba:3903::/64"), *labels, rd)
 	assert.Equal("300:100:3343:faba:3903::/64", vpnv6.String())
-	vpnMappedIPv6 := NewLabeledVPNIPv6AddrPrefix(120, "::ffff:192.0.2.0", *labels, rd)
+	vpnMappedIPv6, _ := NewLabeledVPNIPAddrPrefix(netip.MustParsePrefix("::ffff:192.0.2.0/120"), *labels, rd)
 	assert.Equal("300:100:::ffff:192.0.2.0/120", vpnMappedIPv6.String())
 }
 
@@ -152,12 +135,12 @@ func Test_RouteTargetMembershipNLRIString(t *testing.T) {
 	binary.BigEndian.PutUint16(buf[7:9], 65000)
 	binary.BigEndian.PutUint32(buf[9:], 65546)
 	r := &RouteTargetMembershipNLRI{}
-	err := r.DecodeFromBytes(buf)
+	err := r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("65546:65000:65546", r.String())
 	buf, err = r.Serialize()
 	assert.NoError(err)
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("65546:65000:65546", r.String())
 
@@ -170,12 +153,12 @@ func Test_RouteTargetMembershipNLRIString(t *testing.T) {
 	copy(buf[7:11], []byte(ip))
 	binary.BigEndian.PutUint16(buf[11:], 65000)
 	r = &RouteTargetMembershipNLRI{}
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("65546:10.0.0.1:65000", r.String())
 	buf, err = r.Serialize()
 	assert.NoError(err)
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("65546:10.0.0.1:65000", r.String())
 
@@ -188,12 +171,12 @@ func Test_RouteTargetMembershipNLRIString(t *testing.T) {
 	binary.BigEndian.PutUint32(buf[7:], 65546)
 	binary.BigEndian.PutUint16(buf[11:], 65000)
 	r = &RouteTargetMembershipNLRI{}
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("65546:1.10:65000", r.String())
 	buf, err = r.Serialize()
 	assert.NoError(err)
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("65546:1.10:65000", r.String())
 
@@ -204,12 +187,12 @@ func Test_RouteTargetMembershipNLRIString(t *testing.T) {
 	buf[5] = byte(EC_TYPE_TRANSITIVE_OPAQUE) // typehigh
 	binary.BigEndian.PutUint32(buf[9:], 1000000)
 	r = &RouteTargetMembershipNLRI{}
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("65546:1000000", r.String())
 	buf, err = r.Serialize()
 	assert.NoError(err)
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("65546:1000000", r.String())
 
@@ -220,12 +203,12 @@ func Test_RouteTargetMembershipNLRIString(t *testing.T) {
 	buf[5] = 0x04 // typehigh
 	binary.BigEndian.PutUint32(buf[9:], 1000000)
 	r = &RouteTargetMembershipNLRI{}
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("65546:1000000", r.String())
 	buf, err = r.Serialize()
 	assert.NoError(err)
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("65546:1000000", r.String())
 
@@ -233,18 +216,18 @@ func Test_RouteTargetMembershipNLRIString(t *testing.T) {
 	buf = make([]byte, 1)
 	buf[0] = 0 // in bit length
 	r = &RouteTargetMembershipNLRI{}
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("default", r.String())
 	buf, err = r.Serialize()
 	assert.NoError(err)
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("default", r.String())
 	r = NewRouteTargetMembershipNLRI(0, nil)
 	buf, err = r.Serialize()
 	assert.NoError(err)
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("default", r.String())
 
@@ -253,13 +236,13 @@ func Test_RouteTargetMembershipNLRIString(t *testing.T) {
 	buf[0] = 32 // in bit length
 	binary.BigEndian.PutUint32(buf[1:5], 65546)
 	r = &RouteTargetMembershipNLRI{}
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("65546:0:0", r.String())
 	r = NewRouteTargetMembershipNLRI(65546, nil)
 	buf, err = r.Serialize()
 	assert.NoError(err)
-	err = r.DecodeFromBytes(buf)
+	err = r.decodeFromBytes(buf)
 	assert.NoError(err)
 	assert.Equal("65546:0:0", r.String())
 }
@@ -404,21 +387,19 @@ func Test_RFC5512(t *testing.T) {
 	assert.NoError(err)
 	assert.Equal(buf1, buf2)
 
-	n1 := NewEncapNLRI("10.0.0.1")
+	n1, _ := NewEncapNLRI(netip.MustParseAddr("10.0.0.1"))
 	buf1, err = n1.Serialize()
 	assert.NoError(err)
 
-	n2 := NewEncapNLRI("")
-	err = n2.DecodeFromBytes(buf1)
+	n2, err := NLRIFromSlice(RF_IPv4_ENCAP, buf1)
 	assert.NoError(err)
 	assert.Equal("10.0.0.1", n2.String())
 
-	n3 := NewEncapv6NLRI("2001::1")
+	n3, _ := NewEncapNLRI(netip.MustParseAddr("2001::1"))
 	buf1, err = n3.Serialize()
 	assert.NoError(err)
 
-	n4 := NewEncapv6NLRI("")
-	err = n4.DecodeFromBytes(buf1)
+	n4, err := NLRIFromSlice(RF_IPv6_ENCAP, buf1)
 	assert.NoError(err)
 	assert.Equal("2001::1", n4.String())
 }
@@ -485,8 +466,10 @@ func Test_MPLSLabelStack(t *testing.T) {
 func Test_FlowSpecNlri(t *testing.T) {
 	assert := assert.New(t)
 	cmp := make([]FlowSpecComponentInterface, 0)
-	cmp = append(cmp, NewFlowSpecDestinationPrefix(NewIPAddrPrefix(24, "10.0.0.0")))
-	cmp = append(cmp, NewFlowSpecSourcePrefix(NewIPAddrPrefix(24, "10.0.0.0")))
+	destPrefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	cmp = append(cmp, NewFlowSpecDestinationPrefix(destPrefix))
+	srcPrefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	cmp = append(cmp, NewFlowSpecSourcePrefix(srcPrefix))
 	item1 := NewFlowSpecComponentItem(DEC_NUM_OP_EQ, TCP)
 	cmp = append(cmp, NewFlowSpecComponent(FLOW_SPEC_TYPE_IP_PROTO, []*FlowSpecComponentItem{item1}))
 	item2 := NewFlowSpecComponentItem(DEC_NUM_OP_GT_EQ, 20)
@@ -509,15 +492,12 @@ func Test_FlowSpecNlri(t *testing.T) {
 	item8 := NewFlowSpecComponentItem(BITMASK_FLAG_OP_AND|BITMASK_FLAG_OP_NOT, TCP_FLAG_URGENT)
 
 	cmp = append(cmp, NewFlowSpecComponent(FLOW_SPEC_TYPE_TCP_FLAG, []*FlowSpecComponentItem{item7, item8}))
-	n1 := NewFlowSpecIPv4Unicast(cmp)
+	n1, _ := NewFlowSpecUnicast(RF_FS_IPv4_UC, cmp)
 
 	buf1, err := n1.Serialize()
 	assert.NoError(err)
 
-	n2, err := NewPrefixFromFamily(RF_FS_IPv4_UC)
-	assert.NoError(err)
-
-	err = n2.DecodeFromBytes(buf1)
+	n2, err := NLRIFromSlice(RF_FS_IPv4_UC, buf1)
 	assert.NoError(err)
 	// should be equal
 	assert.Equal(n1, n2)
@@ -569,7 +549,8 @@ func Test_FlowSpecExtended(t *testing.T) {
 	exts = append(exts, NewTrafficRateExtended(100, 9600.0))
 	exts = append(exts, NewTrafficActionExtended(true, false))
 	exts = append(exts, NewRedirectTwoOctetAsSpecificExtended(1000, 1000))
-	exts = append(exts, NewRedirectIPv4AddressSpecificExtended("10.0.0.1", 1000))
+	ex, _ := NewRedirectIPv4AddressSpecificExtended(netip.MustParseAddr("10.0.0.1"), 1000)
+	exts = append(exts, ex)
 	exts = append(exts, NewRedirectFourOctetAsSpecificExtended(10000000, 1000))
 	exts = append(exts, NewTrafficRemarkExtended(10))
 	m1 := NewPathAttributeExtendedCommunities(exts)
@@ -588,7 +569,8 @@ func Test_FlowSpecExtended(t *testing.T) {
 
 func Test_IP6FlowSpecExtended(t *testing.T) {
 	exts := make([]ExtendedCommunityInterface, 0)
-	exts = append(exts, NewRedirectIPv6AddressSpecificExtended("2001:db8::68", 1000))
+	ex, _ := NewRedirectIPv6AddressSpecificExtended(netip.MustParseAddr("2001:db8::68"), 1000)
+	exts = append(exts, ex)
 	m1 := NewPathAttributeIP6ExtendedCommunities(exts)
 	buf1, err := m1.Serialize()
 	require.NoError(t, err)
@@ -605,8 +587,9 @@ func Test_IP6FlowSpecExtended(t *testing.T) {
 
 func Test_FlowSpecNlriv6(t *testing.T) {
 	cmp := make([]FlowSpecComponentInterface, 0)
-	cmp = append(cmp, NewFlowSpecDestinationPrefix6(NewIPv6AddrPrefix(64, "2001::"), 12))
-	cmp = append(cmp, NewFlowSpecSourcePrefix6(NewIPv6AddrPrefix(64, "2001::"), 12))
+	nlri, _ := NewIPAddrPrefix(netip.MustParsePrefix("2001::/64"))
+	cmp = append(cmp, NewFlowSpecDestinationPrefix6(nlri, 12))
+	cmp = append(cmp, NewFlowSpecSourcePrefix6(nlri, 12))
 	item1 := NewFlowSpecComponentItem(DEC_NUM_OP_EQ, TCP)
 	cmp = append(cmp, NewFlowSpecComponent(FLOW_SPEC_TYPE_IP_PROTO, []*FlowSpecComponentItem{item1}))
 	item2 := NewFlowSpecComponentItem(DEC_NUM_OP_GT_EQ, 20)
@@ -626,14 +609,11 @@ func Test_FlowSpecNlriv6(t *testing.T) {
 	item6 := NewFlowSpecComponentItem(0, TCP_FLAG_ACK)
 	item7 := NewFlowSpecComponentItem(BITMASK_FLAG_OP_AND|BITMASK_FLAG_OP_NOT, TCP_FLAG_URGENT)
 	cmp = append(cmp, NewFlowSpecComponent(FLOW_SPEC_TYPE_TCP_FLAG, []*FlowSpecComponentItem{item6, item7}))
-	n1 := NewFlowSpecIPv6Unicast(cmp)
+	n1, _ := NewFlowSpecUnicast(RF_FS_IPv6_UC, cmp)
 	buf1, err := n1.Serialize()
 	require.NoError(t, err)
 
-	n2, err := NewPrefixFromFamily(RF_FS_IPv6_UC)
-	require.NoError(t, err)
-
-	err = n2.DecodeFromBytes(buf1)
+	n2, err := NLRIFromSlice(RF_FS_IPv6_UC, buf1)
 	require.NoError(t, err)
 
 	_, err = n2.Serialize()
@@ -665,12 +645,10 @@ func Test_FlowSpecNlriL2(t *testing.T) {
 	item1 := NewFlowSpecComponentItem(DEC_NUM_OP_EQ, uint64(IPv4))
 	cmp = append(cmp, NewFlowSpecComponent(FLOW_SPEC_TYPE_ETHERNET_TYPE, []*FlowSpecComponentItem{item1}))
 	rd, _ := ParseRouteDistinguisher("100:100")
-	n1 := NewFlowSpecL2VPN(rd, cmp)
+	n1, _ := NewFlowSpecVPN(RF_FS_L2_VPN, rd, cmp)
 	buf1, err := n1.Serialize()
 	assert.NoError(err)
-	n2, err := NewPrefixFromFamily(RF_FS_L2_VPN)
-	assert.NoError(err)
-	err = n2.DecodeFromBytes(buf1)
+	n2, err := NLRIFromSlice(RF_FS_L2_VPN, buf1)
 	assert.NoError(err)
 
 	assert.Equal(n1, n2)
@@ -688,15 +666,15 @@ func Test_NotificationErrorCode(t *testing.T) {
 func Test_FlowSpecNlriVPN(t *testing.T) {
 	assert := assert.New(t)
 	cmp := make([]FlowSpecComponentInterface, 0)
-	cmp = append(cmp, NewFlowSpecDestinationPrefix(NewIPAddrPrefix(24, "10.0.0.0")))
-	cmp = append(cmp, NewFlowSpecSourcePrefix(NewIPAddrPrefix(24, "10.0.0.0")))
+	destPrefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	cmp = append(cmp, NewFlowSpecDestinationPrefix(destPrefix))
+	srcPrefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	cmp = append(cmp, NewFlowSpecSourcePrefix(srcPrefix))
 	rd, _ := ParseRouteDistinguisher("100:100")
-	n1 := NewFlowSpecIPv4VPN(rd, cmp)
+	n1, _ := NewFlowSpecVPN(RF_FS_IPv4_VPN, rd, cmp)
 	buf1, err := n1.Serialize()
 	assert.NoError(err)
-	n2, err := NewPrefixFromFamily(RF_FS_IPv4_VPN)
-	assert.NoError(err)
-	err = n2.DecodeFromBytes(buf1)
+	n2, err := NLRIFromSlice(RF_FS_IPv4_VPN, buf1)
 	require.NoError(t, err)
 
 	assert.Equal(n1, n2)
@@ -713,16 +691,14 @@ func Test_EVPNIPPrefixRoute(t *testing.T) {
 		},
 		ETag:           10,
 		IPPrefixLength: 24,
-		IPPrefix:       net.IP{10, 10, 10, 0},
-		GWIPAddress:    net.IP{10, 10, 10, 10},
+		IPPrefix:       netip.AddrFrom4([4]byte{10, 10, 10, 0}),
+		GWIPAddress:    netip.AddrFrom4([4]byte{10, 10, 10, 10}),
 		Label:          1000,
 	}
 	n1 := NewEVPNNLRI(EVPN_IP_PREFIX, r)
 	buf1, err := n1.Serialize()
 	assert.NoError(err)
-	n2, err := NewPrefixFromFamily(RF_EVPN)
-	assert.NoError(err)
-	err = n2.DecodeFromBytes(buf1)
+	n2, err := NLRIFromSlice(RF_EVPN, buf1)
 	assert.NoError(err)
 
 	assert.Equal(n1, n2)
@@ -744,98 +720,115 @@ func Test_AddPath(t *testing.T) {
 	assert := assert.New(t)
 	opt := &MarshallingOption{AddPath: map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}}
 	{
-		n1 := NewIPAddrPrefix(24, "10.10.10.0")
-		assert.Equal(n1.PathIdentifier(), uint32(0))
-		n1.SetPathLocalIdentifier(10)
-		assert.Equal(n1.PathLocalIdentifier(), uint32(10))
-		bits, err := n1.Serialize(opt)
+		n1, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.10.10.0/24"))
+		m1 := NewBGPUpdateMessage([]PathNLRI{{NLRI: n1, ID: 10}}, []PathAttributeInterface{}, []PathNLRI{})
+		bits, err := m1.Body.Serialize(opt)
 		assert.NoError(err)
-		n2 := &IPAddrPrefix{}
-		err = n2.DecodeFromBytes(bits, opt)
+		m2 := BGPUpdate{}
+		err = m2.DecodeFromBytes(bits, opt)
 		assert.NoError(err)
-		assert.Equal(n2.PathIdentifier(), uint32(10))
+		assert.Equal(m2.WithdrawnRoutes[0].ID, uint32(10))
+
+		m1 = NewBGPUpdateMessage([]PathNLRI{}, []PathAttributeInterface{}, []PathNLRI{{NLRI: n1, ID: 20}})
+		bits, err = m1.Body.Serialize(opt)
+		assert.NoError(err)
+		err = m2.DecodeFromBytes(bits, opt)
+		assert.NoError(err)
+		assert.Equal(m2.NLRI[0].ID, uint32(20))
 	}
+
 	{
-		n1 := NewIPv6AddrPrefix(64, "2001::")
-		n1.SetPathIdentifier(10)
-		bits, err := n1.Serialize(opt)
+		n1, _ := NewIPAddrPrefix(netip.MustParsePrefix("2001::/64"))
+		mp, _ := NewPathAttributeMpReachNLRI(RF_IPv6_UC, []PathNLRI{{NLRI: n1, ID: 10}}, netip.MustParseAddr("::1"))
+		m1 := NewBGPUpdateMessage([]PathNLRI{}, []PathAttributeInterface{mp}, []PathNLRI{})
+		bits, err := m1.Body.Serialize(opt)
 		assert.NoError(err)
-		n2 := NewIPv6AddrPrefix(0, "")
-		err = n2.DecodeFromBytes(bits, opt)
+		m2 := BGPUpdate{}
+		err = m2.DecodeFromBytes(bits, opt)
 		assert.NoError(err)
-		assert.Equal(n2.PathIdentifier(), uint32(0))
+		assert.Equal(m2.PathAttributes[0].(*PathAttributeMpReachNLRI).Value[0].ID, uint32(0))
 	}
+
 	opt = &MarshallingOption{AddPath: map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH, RF_IPv6_UC: BGP_ADD_PATH_BOTH}}
 	{
-		n1 := NewIPv6AddrPrefix(64, "2001::")
-		n1.SetPathLocalIdentifier(10)
-		bits, err := n1.Serialize(opt)
+		n1, _ := NewIPAddrPrefix(netip.MustParsePrefix("2001::/64"))
+		mp, _ := NewPathAttributeMpReachNLRI(RF_IPv6_UC, []PathNLRI{{NLRI: n1, ID: 10}}, netip.MustParseAddr("::1"))
+		m1 := NewBGPUpdateMessage([]PathNLRI{}, []PathAttributeInterface{mp}, []PathNLRI{})
+		bits, err := m1.Body.Serialize(opt)
 		assert.NoError(err)
-		n2 := NewIPv6AddrPrefix(0, "")
-		err = n2.DecodeFromBytes(bits, opt)
+		m2 := BGPUpdate{}
+		err = m2.DecodeFromBytes(bits, opt)
 		assert.NoError(err)
-		assert.Equal(n2.PathIdentifier(), uint32(10))
+		assert.Equal(m2.PathAttributes[0].(*PathAttributeMpReachNLRI).Value[0].ID, uint32(10))
 	}
+
 	opt = &MarshallingOption{AddPath: map[Family]BGPAddPathMode{RF_IPv4_VPN: BGP_ADD_PATH_BOTH, RF_IPv6_VPN: BGP_ADD_PATH_BOTH}}
 	{
 		rd, _ := ParseRouteDistinguisher("100:100")
 		labels := NewMPLSLabelStack(100, 200)
-		n1 := NewLabeledVPNIPAddrPrefix(24, "10.10.10.0", *labels, rd)
-		n1.SetPathLocalIdentifier(20)
-		bits, err := n1.Serialize(opt)
+		n1, _ := NewLabeledVPNIPAddrPrefix(netip.MustParsePrefix("10.10.10.0/24"), *labels, rd)
+		mp, _ := NewPathAttributeMpReachNLRI(RF_IPv4_VPN, []PathNLRI{{NLRI: n1, ID: 10}}, netip.MustParseAddr("::1"))
+		m1 := NewBGPUpdateMessage([]PathNLRI{}, []PathAttributeInterface{mp}, []PathNLRI{})
+		bits, err := m1.Body.Serialize(opt)
 		assert.NoError(err)
-		n2 := NewLabeledVPNIPAddrPrefix(0, "", MPLSLabelStack{}, nil)
-		err = n2.DecodeFromBytes(bits, opt)
+		m2 := BGPUpdate{}
+		err = m2.DecodeFromBytes(bits, opt)
 		assert.NoError(err)
-		assert.Equal(n2.PathIdentifier(), uint32(20))
+		assert.Equal(m2.PathAttributes[0].(*PathAttributeMpReachNLRI).Value[0].ID, uint32(10))
 	}
 	{
 		rd, _ := ParseRouteDistinguisher("100:100")
 		labels := NewMPLSLabelStack(100, 200)
-		n1 := NewLabeledVPNIPv6AddrPrefix(64, "2001::", *labels, rd)
-		n1.SetPathLocalIdentifier(20)
-		bits, err := n1.Serialize(opt)
+		n1, _ := NewLabeledVPNIPAddrPrefix(netip.MustParsePrefix("2001::/64"), *labels, rd)
+		mp, _ := NewPathAttributeMpReachNLRI(RF_IPv6_VPN, []PathNLRI{{NLRI: n1, ID: 20}}, netip.MustParseAddr("::1"))
+		m1 := NewBGPUpdateMessage([]PathNLRI{}, []PathAttributeInterface{mp}, []PathNLRI{})
+		bits, err := m1.Body.Serialize(opt)
 		assert.NoError(err)
-		n2 := NewLabeledVPNIPv6AddrPrefix(0, "", MPLSLabelStack{}, nil)
-		err = n2.DecodeFromBytes(bits, opt)
+		m2 := BGPUpdate{}
+		err = m2.DecodeFromBytes(bits, opt)
 		assert.NoError(err)
-		assert.Equal(n2.PathIdentifier(), uint32(20))
+		assert.Equal(m2.PathAttributes[0].(*PathAttributeMpReachNLRI).Value[0].ID, uint32(20))
 	}
 	opt = &MarshallingOption{AddPath: map[Family]BGPAddPathMode{RF_IPv4_MPLS: BGP_ADD_PATH_BOTH, RF_IPv6_MPLS: BGP_ADD_PATH_BOTH}}
 	{
 		labels := NewMPLSLabelStack(100, 200)
-		n1 := NewLabeledIPAddrPrefix(24, "10.10.10.0", *labels)
-		n1.SetPathLocalIdentifier(20)
-		bits, err := n1.Serialize(opt)
+		n1, _ := NewLabeledIPAddrPrefix(netip.MustParsePrefix("10.10.10.0/24"), *labels)
+		mp, _ := NewPathAttributeMpReachNLRI(RF_IPv4_MPLS, []PathNLRI{{NLRI: n1, ID: 20}}, netip.MustParseAddr("::1"))
+		m1 := NewBGPUpdateMessage([]PathNLRI{}, []PathAttributeInterface{mp}, []PathNLRI{})
+		bits, err := m1.Body.Serialize(opt)
 		assert.NoError(err)
-		n2 := NewLabeledIPAddrPrefix(0, "", MPLSLabelStack{})
-		err = n2.DecodeFromBytes(bits, opt)
+		m2 := BGPUpdate{}
+		err = m2.DecodeFromBytes(bits, opt)
 		assert.NoError(err)
-		assert.Equal(n2.PathIdentifier(), uint32(20))
+		assert.Equal(m2.PathAttributes[0].(*PathAttributeMpReachNLRI).Value[0].ID, uint32(20))
 	}
 	{
 		labels := NewMPLSLabelStack(100, 200)
-		n1 := NewLabeledIPv6AddrPrefix(64, "2001::", *labels)
-		n1.SetPathLocalIdentifier(20)
-		bits, err := n1.Serialize(opt)
+		n1, _ := NewLabeledIPAddrPrefix(netip.MustParsePrefix("2001::/64"), *labels)
+		mp, _ := NewPathAttributeMpReachNLRI(RF_IPv6_MPLS, []PathNLRI{{NLRI: n1, ID: 20}}, netip.MustParseAddr("::1"))
+		m1 := NewBGPUpdateMessage([]PathNLRI{}, []PathAttributeInterface{mp}, []PathNLRI{})
+		bits, err := m1.Body.Serialize(opt)
 		assert.NoError(err)
-		n2 := NewLabeledIPv6AddrPrefix(0, "", MPLSLabelStack{})
-		err = n2.DecodeFromBytes(bits, opt)
+		m2 := BGPUpdate{}
+		err = m2.DecodeFromBytes(bits, opt)
 		assert.NoError(err)
-		assert.Equal(n2.PathIdentifier(), uint32(20))
+		assert.Equal(m2.PathAttributes[0].(*PathAttributeMpReachNLRI).Value[0].ID, uint32(20))
 	}
+
 	opt = &MarshallingOption{AddPath: map[Family]BGPAddPathMode{RF_RTC_UC: BGP_ADD_PATH_BOTH}}
 	{
 		rt, _ := ParseRouteTarget("100:100")
 		n1 := NewRouteTargetMembershipNLRI(65000, rt)
-		n1.SetPathLocalIdentifier(30)
-		bits, err := n1.Serialize(opt)
+		mp, _ := NewPathAttributeMpReachNLRI(RF_RTC_UC, []PathNLRI{{NLRI: n1, ID: 30}}, netip.MustParseAddr("::1"))
+		m1 := NewBGPUpdateMessage([]PathNLRI{}, []PathAttributeInterface{mp}, []PathNLRI{})
+		bits, err := m1.Body.Serialize(opt)
 		assert.NoError(err)
-		n2 := NewRouteTargetMembershipNLRI(0, nil)
-		err = n2.DecodeFromBytes(bits, opt)
+		m2 := BGPUpdate{}
+		err = m2.DecodeFromBytes(bits, opt)
 		assert.NoError(err)
-		assert.Equal(n2.PathIdentifier(), uint32(30))
+		assert.Equal(m2.PathAttributes[0].(*PathAttributeMpReachNLRI).Value[0].ID, uint32(30))
 	}
+
 	opt = &MarshallingOption{AddPath: map[Family]BGPAddPathMode{RF_EVPN: BGP_ADD_PATH_BOTH}}
 	{
 		n1 := NewEVPNNLRI(EVPN_ROUTE_TYPE_ETHERNET_AUTO_DISCOVERY,
@@ -844,46 +837,54 @@ func Test_AddPath(t *testing.T) {
 				EthernetSegmentIdentifier{ESI_ARBITRARY, make([]byte, 9)},
 				2, 2,
 			})
-		n1.SetPathLocalIdentifier(40)
-		bits, err := n1.Serialize(opt)
+		mp, _ := NewPathAttributeMpReachNLRI(RF_EVPN, []PathNLRI{{NLRI: n1, ID: 40}}, netip.MustParseAddr("::1"))
+		m1 := NewBGPUpdateMessage([]PathNLRI{}, []PathAttributeInterface{mp}, []PathNLRI{})
+		bits, err := m1.Body.Serialize(opt)
 		assert.NoError(err)
-		n2 := NewEVPNNLRI(0, nil)
-		err = n2.DecodeFromBytes(bits, opt)
+		m2 := BGPUpdate{}
+		err = m2.DecodeFromBytes(bits, opt)
 		assert.NoError(err)
-		assert.Equal(n2.PathIdentifier(), uint32(40))
+		assert.Equal(m2.PathAttributes[0].(*PathAttributeMpReachNLRI).Value[0].ID, uint32(40))
 	}
+
 	opt = &MarshallingOption{AddPath: map[Family]BGPAddPathMode{RF_IPv4_ENCAP: BGP_ADD_PATH_BOTH}}
 	{
-		n1 := NewEncapNLRI("10.10.10.0")
-		n1.SetPathLocalIdentifier(50)
-		bits, err := n1.Serialize(opt)
+		n1, _ := NewEncapNLRI(netip.MustParseAddr("10.10.10.0"))
+		mp, _ := NewPathAttributeMpReachNLRI(RF_IPv4_ENCAP, []PathNLRI{{NLRI: n1, ID: 50}}, netip.MustParseAddr("::1"))
+		m1 := NewBGPUpdateMessage([]PathNLRI{}, []PathAttributeInterface{mp}, []PathNLRI{})
+		bits, err := m1.Body.Serialize(opt)
 		assert.NoError(err)
-		n2 := NewEncapNLRI("")
-		err = n2.DecodeFromBytes(bits, opt)
+		m2 := BGPUpdate{}
+		err = m2.DecodeFromBytes(bits, opt)
 		assert.NoError(err)
-		assert.Equal(n2.PathIdentifier(), uint32(50))
+		assert.Equal(m2.PathAttributes[0].(*PathAttributeMpReachNLRI).Value[0].ID, uint32(50))
 	}
+
 	opt = &MarshallingOption{AddPath: map[Family]BGPAddPathMode{RF_FS_IPv4_UC: BGP_ADD_PATH_BOTH}}
 	{
-		n1 := NewFlowSpecIPv4Unicast([]FlowSpecComponentInterface{NewFlowSpecDestinationPrefix(NewIPAddrPrefix(24, "10.0.0.0"))})
-		n1.SetPathLocalIdentifier(60)
-		bits, err := n1.Serialize(opt)
+		prefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+		n1, _ := NewFlowSpecUnicast(RF_FS_IPv4_UC, []FlowSpecComponentInterface{NewFlowSpecDestinationPrefix(prefix)})
+		mp, _ := NewPathAttributeMpReachNLRI(RF_FS_IPv4_UC, []PathNLRI{{NLRI: n1, ID: 60}})
+		m1 := NewBGPUpdateMessage([]PathNLRI{}, []PathAttributeInterface{mp}, []PathNLRI{})
+		bits, err := m1.Body.Serialize(opt)
 		assert.NoError(err)
-		n2 := NewFlowSpecIPv4Unicast(nil)
-		err = n2.DecodeFromBytes(bits, opt)
+		m2 := BGPUpdate{}
+		err = m2.DecodeFromBytes(bits, opt)
 		assert.NoError(err)
-		assert.Equal(n2.PathIdentifier(), uint32(60))
+		assert.Equal(m2.PathAttributes[0].(*PathAttributeMpReachNLRI).Value[0].ID, uint32(60))
 	}
+
 	opt = &MarshallingOption{AddPath: map[Family]BGPAddPathMode{RF_OPAQUE: BGP_ADD_PATH_BOTH}}
 	{
 		n1 := NewOpaqueNLRI([]byte("key"), []byte("value"))
-		n1.SetPathLocalIdentifier(70)
-		bits, err := n1.Serialize(opt)
+		mp, _ := NewPathAttributeMpReachNLRI(RF_OPAQUE, []PathNLRI{{NLRI: n1, ID: 70}})
+		m1 := NewBGPUpdateMessage([]PathNLRI{}, []PathAttributeInterface{mp}, []PathNLRI{})
+		bits, err := m1.Body.Serialize(opt)
 		assert.NoError(err)
-		n2 := &OpaqueNLRI{}
-		err = n2.DecodeFromBytes(bits, opt)
+		m2 := BGPUpdate{}
+		err = m2.DecodeFromBytes(bits, opt)
 		assert.NoError(err)
-		assert.Equal(n2.PathIdentifier(), uint32(70))
+		assert.Equal(m2.PathAttributes[0].(*PathAttributeMpReachNLRI).Value[0].ID, uint32(70))
 	}
 }
 
@@ -892,44 +893,96 @@ func Test_CompareFlowSpecNLRI(t *testing.T) {
 	cmp, err := ParseFlowSpecComponents(RF_FS_IPv4_UC, "destination 10.0.0.2/32 source 10.0.0.1/32 destination-port ==3128 protocol tcp")
 	assert.NoError(err)
 	// Note: Use NewFlowSpecIPv4Unicast() for the consistent ordered rules.
-	n1 := &NewFlowSpecIPv4Unicast(cmp).FlowSpecNLRI
+	n1, _ := NewFlowSpecUnicast(RF_FS_IPv4_UC, cmp)
 	cmp, err = ParseFlowSpecComponents(RF_FS_IPv4_UC, "source 10.0.0.0/24 destination-port ==3128 protocol tcp")
 	assert.NoError(err)
-	n2 := &NewFlowSpecIPv4Unicast(cmp).FlowSpecNLRI
+	n2, _ := NewFlowSpecUnicast(RF_FS_IPv4_UC, cmp)
 	r, err := CompareFlowSpecNLRI(n1, n2)
 	assert.NoError(err)
 	assert.True(r > 0)
 	cmp, err = ParseFlowSpecComponents(RF_FS_IPv4_UC, "source 10.0.0.9/32 port ==80 ==8080 destination-port >8080&<8080 ==3128 source-port >1024 protocol ==udp ==tcp")
-	n3 := &NewFlowSpecIPv4Unicast(cmp).FlowSpecNLRI
+	n3, _ := NewFlowSpecUnicast(RF_FS_IPv4_UC, cmp)
 	assert.NoError(err)
 	cmp, err = ParseFlowSpecComponents(RF_FS_IPv4_UC, "destination 192.168.0.2/32")
-	n4 := &NewFlowSpecIPv4Unicast(cmp).FlowSpecNLRI
+	n4, _ := NewFlowSpecUnicast(RF_FS_IPv4_UC, cmp)
 	assert.NoError(err)
 	r, err = CompareFlowSpecNLRI(n3, n4)
 	assert.NoError(err)
 	assert.True(r < 0)
 }
 
+func Test_ParseFlowSpecComponents_DoesNotPanicOnInvalidInput(t *testing.T) {
+	// Regression: some inputs pass ParseFlowSpecComponents()'s len(args)>0 check
+	// but are discarded by normalizeFlowSpecOpValues(), leading to argsLen==0 and
+	// a panic when marking the end-of-list bit.
+	cases := []string{
+		"dscp foo",
+		"tcp-flags foo",
+		"fragment foo",
+	}
+
+	for _, c := range cases {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("ParseFlowSpecComponents must not panic for %q: %v", c, r)
+				}
+			}()
+			_, err := ParseFlowSpecComponents(RF_FS_IPv4_UC, c)
+			if err == nil {
+				t.Fatalf("expected error for %q", c)
+			}
+		}()
+	}
+}
+
+func TestMpReachDecodeDoesNotMutateInputWhenDeletingSecondRD(t *testing.T) {
+	// Triggers nexthoplen == 2*RD + (IPv6 global + link-local)
+	// and ensures DecodeFromBytes does not modify the input buffer.
+	flags := uint8(0x80) // optional
+	typ := uint8(BGP_ATTR_TYPE_MP_REACH_NLRI)
+
+	// Value layout:
+	// AFI(2) + SAFI(1) + NHLen(1) + NH(48) + SNPA len/reserved(1) + NLRI(0)
+	value := make([]byte, 0, 2+1+1+48+1)
+	value = append(value, 0x00, 0x02)                        // AFI_IP6
+	value = append(value, 0x80)                              // SAFI_MPLS_VPN
+	value = append(value, 48)                                // NHLen
+	value = append(value, bytes.Repeat([]byte{0x11}, 8)...)  // RD1
+	value = append(value, bytes.Repeat([]byte{0x22}, 16)...) // IPv6 global
+	value = append(value, bytes.Repeat([]byte{0x33}, 8)...)  // RD2 (to be removed)
+	value = append(value, bytes.Repeat([]byte{0x44}, 16)...) // IPv6 link-local
+	value = append(value, 0x00)                              // SNPA len (skipped)
+
+	attr := make([]byte, 0, 3+len(value))
+	attr = append(attr, flags, typ, uint8(len(value)))
+	attr = append(attr, value...)
+
+	data := bytes.Clone(attr)
+	before := bytes.Clone(data)
+
+	p := &PathAttributeMpReachNLRI{}
+	err := p.DecodeFromBytes(data)
+	require.NoError(t, err)
+	require.Equal(t, before, data, "DecodeFromBytes must not mutate the input buffer")
+}
+
 func Test_MpReachNLRIWithIPv4MappedIPv6Prefix(t *testing.T) {
 	assert := assert.New(t)
-	n1 := NewIPv6AddrPrefix(120, "::ffff:10.0.0.0")
+	n1, _ := NewIPAddrPrefix(netip.MustParsePrefix("::ffff:10.0.0.0/120"))
 	buf1, err := n1.Serialize()
 	assert.NoError(err)
-	n2, err := NewPrefixFromFamily(RF_IPv6_UC)
-	assert.NoError(err)
-	err = n2.DecodeFromBytes(buf1)
+	n2, err := NLRIFromSlice(RF_IPv6_UC, buf1)
 	assert.NoError(err)
 
 	assert.Equal(n1, n2)
 
 	label := NewMPLSLabelStack(2)
 
-	n3 := NewLabeledIPv6AddrPrefix(120, "::ffff:10.0.0.0", *label)
+	n3, _ := NewLabeledIPAddrPrefix(netip.MustParsePrefix("::ffff:10.0.0.0/120"), *label)
 	buf1, err = n3.Serialize()
 	assert.NoError(err)
-	n4, err := NewPrefixFromFamily(RF_IPv6_MPLS)
-	assert.NoError(err)
-	err = n4.DecodeFromBytes(buf1)
+	n4, err := NLRIFromSlice(RF_IPv6_MPLS, buf1)
 	assert.NoError(err)
 
 	assert.Equal(n3, n4)
@@ -959,14 +1012,13 @@ func Test_MpReachNLRIWithIPv6PrefixWithIPv4Peering(t *testing.T) {
 	assert.Equal(uint16(0x1e), p.Length)
 	assert.Equal(uint16(AFI_IP6), p.AFI)
 	assert.Equal(uint8(SAFI_UNICAST), p.SAFI)
-	assert.Equal(net.ParseIP("::ffff:172.20.0.1"), p.Nexthop)
-	assert.Equal(net.ParseIP(""), p.LinkLocalNexthop)
-	value := []AddrPrefixInterface{
-		NewIPv6AddrPrefix(64, "2001:db8:1:1::"),
-	}
+	assert.Equal(netip.MustParseAddr("::ffff:172.20.0.1"), p.Nexthop)
+	assert.False(p.LinkLocalNexthop.IsValid())
+	nlri, _ := NewIPAddrPrefix(netip.MustParsePrefix("2001:db8:1:1::/64"))
+	value := []PathNLRI{{NLRI: nlri}}
 	assert.Equal(value, p.Value)
 	// Set NextHop as IPv4 address (because IPv4 peering)
-	p.Nexthop = net.ParseIP("172.20.0.1")
+	p.Nexthop = netip.MustParseAddr("172.20.0.1")
 	// Test Serialize()
 	bufout, err := p.Serialize()
 	assert.NoError(err)
@@ -998,10 +1050,9 @@ func Test_MpReachNLRIWithIPv6(t *testing.T) {
 	assert.Equal(uint16(0x1e), p.Length)
 	assert.Equal(uint16(AFI_IP6), p.AFI)
 	assert.Equal(uint8(SAFI_UNICAST), p.SAFI)
-	assert.Equal(net.ParseIP("2001:db8:1::1"), p.Nexthop)
-	value := []AddrPrefixInterface{
-		NewIPv6AddrPrefix(64, "2001:db8:53::"),
-	}
+	assert.Equal(netip.MustParseAddr("2001:db8:1::1"), p.Nexthop)
+	nlri, _ := NewIPAddrPrefix(netip.MustParsePrefix("2001:db8:53::/64"))
+	value := []PathNLRI{{NLRI: nlri}}
 	assert.Equal(value, p.Value)
 }
 
@@ -1024,9 +1075,8 @@ func Test_MpUnreachNLRIWithIPv6(t *testing.T) {
 	assert.Equal(uint16(0x0c), p.Length)
 	assert.Equal(uint16(AFI_IP6), p.AFI)
 	assert.Equal(uint8(SAFI_UNICAST), p.SAFI)
-	value := []AddrPrefixInterface{
-		NewIPv6AddrPrefix(64, "2001:db8:53::"),
-	}
+	nlri, _ := NewIPAddrPrefix(netip.MustParsePrefix("2001:db8:53::/64"))
+	value := []PathNLRI{{NLRI: nlri}}
 	assert.Equal(value, p.Value)
 }
 
@@ -1057,11 +1107,10 @@ func Test_MpReachNLRIWithIPv6PrefixWithLinkLocalNexthop(t *testing.T) {
 	assert.Equal(uint16(0x2c), p.Length)
 	assert.Equal(uint16(AFI_IP6), p.AFI)
 	assert.Equal(uint8(SAFI_UNICAST), p.SAFI)
-	assert.Equal(net.ParseIP("2001:db8:1::1"), p.Nexthop)
-	assert.Equal(net.ParseIP("fe80::1"), p.LinkLocalNexthop)
-	value := []AddrPrefixInterface{
-		NewIPv6AddrPrefix(48, "2010:ab8:1::"),
-	}
+	assert.Equal(netip.MustParseAddr("2001:db8:1::1"), p.Nexthop)
+	assert.Equal(netip.MustParseAddr("fe80::1"), p.LinkLocalNexthop)
+	nlri, _ := NewIPAddrPrefix(netip.MustParsePrefix("2010:ab8:1::/48"))
+	value := []PathNLRI{{NLRI: nlri}}
 	assert.Equal(value, p.Value)
 	// Test Serialize()
 	bufout, err := p.Serialize()
@@ -1094,12 +1143,11 @@ func Test_MpReachNLRIWithVPNv4Prefix(t *testing.T) {
 	assert.Equal(uint16(0x20), p.Length)
 	assert.Equal(uint16(AFI_IP), p.AFI)
 	assert.Equal(uint8(SAFI_MPLS_VPN), p.SAFI)
-	assert.Equal(net.ParseIP("172.20.0.1").To4(), p.Nexthop)
-	assert.Equal(net.ParseIP(""), p.LinkLocalNexthop)
-	value := []AddrPrefixInterface{
-		NewLabeledVPNIPAddrPrefix(24, "10.1.1.0", *NewMPLSLabelStack(16),
-			NewRouteDistinguisherTwoOctetAS(65000, 100)),
-	}
+	assert.Equal(netip.MustParseAddr("172.20.0.1"), p.Nexthop)
+	assert.False(p.LinkLocalNexthop.IsValid())
+	n, _ := NewLabeledVPNIPAddrPrefix(netip.MustParsePrefix("10.1.1.0/24"), *NewMPLSLabelStack(16),
+		NewRouteDistinguisherTwoOctetAS(65000, 100))
+	value := []PathNLRI{{NLRI: n}}
 	assert.Equal(value, p.Value)
 	// Test Serialize()
 	bufout, err := p.Serialize()
@@ -1138,12 +1186,10 @@ func Test_MpReachNLRIWithVPNv6Prefix(t *testing.T) {
 	assert.Equal(uint16(0x39), p.Length)
 	assert.Equal(uint16(AFI_IP6), p.AFI)
 	assert.Equal(uint8(SAFI_MPLS_VPN), p.SAFI)
-	assert.Equal(net.ParseIP("2001:db8:1::1"), p.Nexthop)
-	assert.Equal(net.ParseIP(""), p.LinkLocalNexthop)
-	value := []AddrPrefixInterface{
-		NewLabeledVPNIPv6AddrPrefix(124, "2001:1::", *NewMPLSLabelStack(16),
-			NewRouteDistinguisherTwoOctetAS(65000, 100)),
-	}
+	assert.Equal(netip.MustParseAddr("2001:db8:1::1"), p.Nexthop)
+	assert.False(p.LinkLocalNexthop.IsValid())
+	nlri, _ := NewLabeledVPNIPAddrPrefix(netip.MustParsePrefix("2001:1::/124"), *NewMPLSLabelStack(16), NewRouteDistinguisherTwoOctetAS(65000, 100))
+	value := []PathNLRI{{NLRI: nlri}}
 	assert.Equal(value, p.Value)
 	// Test Serialize()
 	bufout, err := p.Serialize()
@@ -1172,12 +1218,11 @@ func Test_MpReachNLRIWithIPv4PrefixWithIPv6Nexthop(t *testing.T) {
 	assert.Equal(BGPAttrFlag(0x80), p.Flags)
 	assert.Equal(BGPAttrType(0xe), p.Type)
 	assert.Equal(uint16(0x19), p.Length)
-	assert.Equal(uint16(AFI_IP), p.AFI)
+	assert.Equal(uint8(AFI_IP), p.SAFI)
 	assert.Equal(uint8(SAFI_UNICAST), p.SAFI)
-	assert.Equal(net.ParseIP("2001:db8:1::1"), p.Nexthop)
-	value := []AddrPrefixInterface{
-		NewIPAddrPrefix(24, "192.168.10.0"),
-	}
+	assert.Equal(netip.MustParseAddr("2001:db8:1::1"), p.Nexthop)
+	prefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("192.168.10.0/24"))
+	value := []PathNLRI{{NLRI: prefix}}
 	assert.Equal(value, p.Value)
 	// Test Serialize()
 	bufout, err := p.Serialize()
@@ -1205,13 +1250,13 @@ func Test_MpReachNLRIWithImplicitPrefix(t *testing.T) {
 	assert.Equal(BGPAttrFlag(0x80), p.Flags)
 	assert.Equal(BGPAttrType(0xe), p.Type)
 	assert.Equal(uint16(0x11), p.Length)
-	assert.Equal(net.ParseIP("2001:db8:1::1"), p.Nexthop)
+	assert.Equal(netip.MustParseAddr("2001:db8:1::1"), p.Nexthop)
 	// AFI/SAFI/NLRI are derived from the Rib header
 	// which we don't have here.
 	// assert.Equal(prefix.AFI(), p.AFI)
 	// assert.Equal(prefix.SAFI(), p.SAFI)
-	// prefix := NewIPAddrPrefix(24, "192.168.10.0")
-	// value := []AddrPrefixInterface{prefix}
+	// prefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("192.168.10.0/24"))
+	// value := []NLRI{prefix}
 	// assert.Equal(value, p.Value)
 	// Test Serialize()
 	bufout, err := p.Serialize(options)
@@ -1252,6 +1297,7 @@ func Test_ParseRouteDistinguisher(t *testing.T) {
 }
 
 func TestParseVPNPrefix(t *testing.T) {
+	rdip, _ := NewRouteDistinguisherIPAddressAS(netip.MustParseAddr("1.1.1.1"), uint16(100))
 	tests := []struct {
 		name     string
 		prefix   string
@@ -1270,7 +1316,7 @@ func TestParseVPNPrefix(t *testing.T) {
 			name:     "test valid RD type 1 VPNv4 prefix",
 			prefix:   "1.1.1.1:100:10.0.0.1/32",
 			valid:    true,
-			rd:       NewRouteDistinguisherIPAddressAS("1.1.1.1", uint16(100)),
+			rd:       rdip,
 			ipPrefix: "10.0.0.1/32",
 		},
 		{
@@ -1298,7 +1344,7 @@ func TestParseVPNPrefix(t *testing.T) {
 			name:     "test valid RD type 1 VPNv6 prefix",
 			prefix:   "1.1.1.1:100:100:1::/64",
 			valid:    true,
-			rd:       NewRouteDistinguisherIPAddressAS("1.1.1.1", uint16(100)),
+			rd:       rdip,
 			ipPrefix: "100:1::/64",
 		},
 		{
@@ -1319,7 +1365,7 @@ func TestParseVPNPrefix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rd, _, network, err := ParseVPNPrefix(tt.prefix)
+			rd, prefix, err := ParseVPNPrefix(tt.prefix)
 			if !tt.valid {
 				assert.NotNil(t, err)
 				return
@@ -1327,75 +1373,7 @@ func TestParseVPNPrefix(t *testing.T) {
 
 			assert.NoError(t, err)
 			assert.Equal(t, tt.rd, rd)
-			assert.Equal(t, tt.ipPrefix, network.String())
-		})
-	}
-}
-
-func TestContainsCIDR(t *testing.T) {
-	tests := []struct {
-		name    string
-		prefix1 string
-		prefix2 string
-		result  bool
-	}{
-		{
-			name:    "v4 prefix2 is a subnet of prefix1",
-			prefix1: "172.17.0.0/16",
-			prefix2: "172.17.192.0/18",
-			result:  true,
-		},
-		{
-			name:    "v4 prefix2 is a supernet of prefix1",
-			prefix1: "172.17.191.0/18",
-			prefix2: "172.17.0.0/16",
-			result:  false,
-		},
-		{
-			name:    "v4 prefix2 is not a subnet of prefix1",
-			prefix1: "10.10.20.0/30",
-			prefix2: "10.10.30.3/32",
-			result:  false,
-		},
-		{
-			name:    "v4 prefix2 is equal to prefix1",
-			prefix1: "10.10.20.0/30",
-			prefix2: "10.10.20.0/30",
-			result:  true,
-		},
-		{
-			name:    "v6 prefix2 is not a subnet of prefix1",
-			prefix1: "1::/64",
-			prefix2: "2::/72",
-			result:  false,
-		},
-		{
-			name:    "v6 prefix2 is a supernet of prefix1",
-			prefix1: "1::/64",
-			prefix2: "1::/32",
-			result:  false,
-		},
-		{
-			name:    "v6 prefix2 is a subnet of prefix1",
-			prefix1: "1::/64",
-			prefix2: "1::/112",
-			result:  true,
-		},
-		{
-			name:    "v6 prefix2 is equal to prefix1",
-			prefix1: "100:100::/64",
-			prefix2: "100:100::/64",
-			result:  true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, prefixNet1, _ := net.ParseCIDR(tt.prefix1)
-			_, prefixNet2, _ := net.ParseCIDR(tt.prefix2)
-
-			result := ContainsCIDR(prefixNet1, prefixNet2)
-			assert.Equal(t, tt.result, result)
+			assert.Equal(t, tt.ipPrefix, prefix.String())
 		})
 	}
 }
@@ -1593,7 +1571,8 @@ func TestNormalizeFlowSpecOpValues(t *testing.T) {
 
 func Test_PathAttributeNextHop(t *testing.T) {
 	f := func(addr string) {
-		b, _ := NewPathAttributeNextHop(addr).Serialize()
+		attr, _ := NewPathAttributeNextHop(netip.MustParseAddr(addr))
+		b, _ := attr.Serialize()
 		p := PathAttributeNextHop{}
 		err := p.DecodeFromBytes(b)
 		assert.NoError(t, err)
@@ -2376,9 +2355,9 @@ func Test_LsTLVIPReachabilityToIPNet(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		got := test.tlv.ToIPNet(test.ipv6)
-		assert.Equal(test.want.IP.String(), got.IP.String())
-		assert.Equal(test.want.Mask.String(), got.Mask.String())
+		got := test.tlv.toPrefix(test.ipv6)
+		assert.Equal(test.want.IP.String(), got.Addr().String())
+		assert.Equal(test.want.Mask.String(), net.CIDRMask(got.Bits(), got.Addr().BitLen()).String())
 	}
 }
 
@@ -3635,9 +3614,9 @@ func Test_LsAddrPrefix(t *testing.T) {
 	for _, test := range tests {
 		nlri := LsAddrPrefix{}
 		if test.err {
-			assert.Error(nlri.DecodeFromBytes(test.in))
+			assert.Error(nlri.decodeFromBytes(test.in))
 		} else {
-			assert.NoError(nlri.DecodeFromBytes(test.in))
+			assert.NoError(nlri.decodeFromBytes(test.in))
 			assert.Equal(test.str, nlri.String())
 			if test.serialize {
 				got, err := nlri.Serialize()
@@ -3734,7 +3713,7 @@ func Test_PathAttributeLs(t *testing.T) {
 				0xde, 0xad, 0x00, 0x01, 0xFF, // Unknown TLV
 			},
 			"{LsAttributes: {Node Flags: XXVRBETO} {Opaque attribute: [1 2 3]} {Node Name: rtr} {ISIS Area ID: [114 116 114]} {Local RouterID IPv4: 1.1.1.1} {Local RouterID IPv6: 2001:db8::beef} {SR Capabilities: Flags:0 SRGB Ranges: 100500:135500 } {SR Algorithms: [1 2 3]} {SR LocalBlock: Flags:0 SRGB Ranges: 100500:135500 } }",
-			`{"type":41,"flags":128,"node":{"flags":{"overload":true,"attached":true,"external":true,"abr":true,"router":true,"v6":true},"opaque":"AQID","name":"rtr","isis_area":"cnRy","local_router_id_ipv4":"1.1.1.1","local_router_id_ipv6":"2001:db8::beef","sr_capabilities":{"ipv4_supported":false,"ipv6_supported":false,"ranges":[{"begin":100500,"end":135500}]},"sr_algorithms":"AQID","sr_local_block":{"ranges":[{"begin":100500,"end":135500}]}},"link":{"local_router_id_ipv4":"1.1.1.1","local_router_id_ipv6":"2001:db8::beef"},"prefix":{},"bgp_peer_segment":{}}`,
+			`{"type":41,"flags":128,"node":{"flags":{"overload":true,"attached":true,"external":true,"abr":true,"router":true,"v6":true},"opaque":"AQID","name":"rtr","isis_area":"cnRy","local_router_id_ipv4":"1.1.1.1","local_router_id_ipv6":"2001:db8::beef","sr_capabilities":{"ipv4_supported":false,"ipv6_supported":false,"ranges":[{"begin":100500,"end":135500}]},"sr_algorithms":"AQID","sr_local_block":{"ranges":[{"begin":100500,"end":135500}]}},"link":{"local_router_id_ipv4":"1.1.1.1","local_router_id_ipv6":"2001:db8::beef"},"prefix":{},"bgp_peer_segment":{},"srv6_sid":{}}`,
 			false, false,
 		},
 		{
@@ -3752,7 +3731,7 @@ func Test_PathAttributeLs(t *testing.T) {
 				0x04, 0x0c, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x88, 0xb8, 0x04, 0x89, 0x00, 0x03, 0x01, 0x88, 0x94, // Local block: Range 35000, first label: 100500
 			},
 			"{LsAttributes: {Node Flags: XXVRBETO} {Opaque attribute: [1 2 3]} {Node Name: rtr} {ISIS Area ID: [114 116 114]} {Local RouterID IPv4: 1.1.1.1} {Local RouterID IPv6: 2001:db8::beef} {SR Capabilities: Flags:0 SRGB Ranges: 100500:135500 } {SR Algorithms: [1 2 3]} {SR LocalBlock: Flags:0 SRGB Ranges: 100500:135500 } }",
-			`{"type":41,"flags":128,"node":{"flags":{"overload":true,"attached":true,"external":true,"abr":true,"router":true,"v6":true},"opaque":"AQID","name":"rtr","isis_area":"cnRy","local_router_id_ipv4":"1.1.1.1","local_router_id_ipv6":"2001:db8::beef","sr_capabilities":{"ipv4_supported":false,"ipv6_supported":false,"ranges":[{"begin":100500,"end":135500}]},"sr_algorithms":"AQID","sr_local_block":{"ranges":[{"begin":100500,"end":135500}]}},"link":{"local_router_id_ipv4":"1.1.1.1","local_router_id_ipv6":"2001:db8::beef"},"prefix":{},"bgp_peer_segment":{}}`,
+			`{"type":41,"flags":128,"node":{"flags":{"overload":true,"attached":true,"external":true,"abr":true,"router":true,"v6":true},"opaque":"AQID","name":"rtr","isis_area":"cnRy","local_router_id_ipv4":"1.1.1.1","local_router_id_ipv6":"2001:db8::beef","sr_capabilities":{"ipv4_supported":false,"ipv6_supported":false,"ranges":[{"begin":100500,"end":135500}]},"sr_algorithms":"AQID","sr_local_block":{"ranges":[{"begin":100500,"end":135500}]}},"link":{"local_router_id_ipv4":"1.1.1.1","local_router_id_ipv6":"2001:db8::beef"},"prefix":{},"bgp_peer_segment":{},"srv6_sid":{}}`,
 			true, false,
 		},
 		{[]byte{
@@ -3779,7 +3758,7 @@ func Test_PathAttributeLs(t *testing.T) {
 				0x04, 0x4b, 0x00, 0x07, 0x01, 0x01, 0x00, 0x00, 0x01, 0x88, 0x94, // Adjacency SID: 100500
 			},
 			"{LsAttributes: {Local RouterID IPv4: 1.1.1.1} {Local RouterID IPv6: 2001:db8::beef} {Remote RouterID IPv4: 2.2.2.2} {Remote RouterID IPv6: 2001:db8::dead} {Admin Group: 07070707} {Max Link BW: 329.39062} {Max Reservable Link BW: 329.39062} {Unreserved BW: [329.39062 329.39062 329.39062 329.39062 329.39062 329.39062 329.39062 329.39062]} {TE Default metric: 117901063} {IGP metric: 1} {Opaque link attribute: [1 2 3]} {Link Name: rtr} {Adjacency SID: 100500} }",
-			`{"type":41,"flags":128,"node":{"local_router_id_ipv4":"1.1.1.1","local_router_id_ipv6":"2001:db8::beef"},"link":{"name":"rtr","local_router_id_ipv4":"1.1.1.1","local_router_id_ipv6":"2001:db8::beef","remote_router_id_ipv4":"2.2.2.2","remote_router_id_ipv6":"2001:db8::dead","admin_group":117901063,"default_te_metric":117901063,"igp_metric":1,"opaque":"AQID","bandwidth":329.39062,"reservable_bandwidth":329.39062,"unreserved_bandwidth":[329.39062,329.39062,329.39062,329.39062,329.39062,329.39062,329.39062,329.39062],"adjacency_sid":100500},"prefix":{},"bgp_peer_segment":{}}`,
+			`{"type":41,"flags":128,"node":{"local_router_id_ipv4":"1.1.1.1","local_router_id_ipv6":"2001:db8::beef"},"link":{"name":"rtr","local_router_id_ipv4":"1.1.1.1","local_router_id_ipv6":"2001:db8::beef","remote_router_id_ipv4":"2.2.2.2","remote_router_id_ipv6":"2001:db8::dead","admin_group":117901063,"default_te_metric":117901063,"igp_metric":1,"opaque":"AQID","bandwidth":329.39062,"reservable_bandwidth":329.39062,"unreserved_bandwidth":[329.39062,329.39062,329.39062,329.39062,329.39062,329.39062,329.39062,329.39062],"adjacency_sid":100500},"prefix":{},"bgp_peer_segment":{},"srv6_sid":{}}`,
 			true, false,
 		},
 		{
@@ -3791,7 +3770,7 @@ func Test_PathAttributeLs(t *testing.T) {
 				0x04, 0x86, 0x00, 0x07, 0x01, 0x01, 0x00, 0x00, 0x01, 0x88, 0x94, // Prefix SID: 100500
 			},
 			"{LsAttributes: {IGP Flags: XXXXPLND} {Prefix opaque attribute: [1 2 3]} {Prefix SID: 100500} }",
-			`{"type":41,"flags":128,"node":{},"link":{},"prefix":{"igp_flags":{"down":true,"no_unicast":true,"local_address":true,"propagate_nssa":true},"opaque":"AQID","sr_prefix_sid":100500},"bgp_peer_segment":{}}`,
+			`{"type":41,"flags":128,"node":{},"link":{},"prefix":{"igp_flags":{"down":true,"no_unicast":true,"local_address":true,"propagate_nssa":true},"opaque":"AQID","sr_prefix_sid":100500},"bgp_peer_segment":{},"srv6_sid":{}}`,
 			true, false,
 		},
 	}
@@ -3896,7 +3875,7 @@ func FuzzParseFlowSpecComponents(f *testing.F) {
 //nolint:errcheck
 func FuzzDecodeFromBytes(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
-		(&MUPNLRI{}).DecodeFromBytes(data)
+		(&MUPNLRI{}).decodeFromBytes(data)
 		if len(data) >= 2 {
 			l := len(data)
 			afi := binary.BigEndian.Uint16(data[l-2 : l])
@@ -3916,15 +3895,18 @@ func FuzzDecodeFromBytes(f *testing.F) {
 		(&CapSoftwareVersion{}).DecodeFromBytes(data)
 		(&OptionParameterCapability{}).DecodeFromBytes(data)
 		(&BGPOpen{}).DecodeFromBytes(data)
-		(&IPAddrPrefix{}).DecodeFromBytes(data)
+		(&IPAddrPrefix{}).decodeFromBytes(data, net.IPv4len)
+		(&IPAddrPrefix{}).decodeFromBytes(data, net.IPv6len)
 		(&RouteDistinguisherTwoOctetAS{}).DecodeFromBytes(data)
 		(&RouteDistinguisherIPAddressAS{}).DecodeFromBytes(data)
 		(&RouteDistinguisherFourOctetAS{}).DecodeFromBytes(data)
 		(&RouteDistinguisherUnknown{}).DecodeFromBytes(data)
 		(&MPLSLabelStack{}).DecodeFromBytes(data)
-		(&LabeledVPNIPAddrPrefix{}).DecodeFromBytes(data)
-		(&LabeledIPAddrPrefix{}).DecodeFromBytes(data)
-		(&RouteTargetMembershipNLRI{}).DecodeFromBytes(data)
+		(&LabeledVPNIPAddrPrefix{}).decodeFromBytes(data, net.IPv4len)
+		(&LabeledVPNIPAddrPrefix{}).decodeFromBytes(data, net.IPv6len)
+		(&LabeledIPAddrPrefix{}).decodeFromBytes(data, net.IPv4len)
+		(&LabeledIPAddrPrefix{}).decodeFromBytes(data, net.IPv6len)
+		(&RouteTargetMembershipNLRI{}).decodeFromBytes(data)
 		(&EthernetSegmentIdentifier{}).DecodeFromBytes(data)
 		(&EVPNEthernetAutoDiscoveryRoute{}).DecodeFromBytes(data)
 		(&EVPNMacIPAdvertisementRoute{}).DecodeFromBytes(data)
@@ -3932,19 +3914,19 @@ func FuzzDecodeFromBytes(f *testing.F) {
 		(&EVPNEthernetSegmentRoute{}).DecodeFromBytes(data)
 		(&EVPNIPPrefixRoute{}).DecodeFromBytes(data)
 		(&EVPNIPMSIRoute{}).DecodeFromBytes(data)
-		(&EVPNNLRI{}).DecodeFromBytes(data)
-		(&EncapNLRI{}).DecodeFromBytes(data)
+		(&EVPNNLRI{}).decodeFromBytes(data)
+		(&EncapNLRI{}).decodeFromBytes(data)
 		(&flowSpecPrefix{}).DecodeFromBytes(data)
 		(&flowSpecPrefix6{}).DecodeFromBytes(data)
 		(&flowSpecMac{}).DecodeFromBytes(data)
 		(&FlowSpecComponent{}).DecodeFromBytes(data)
 		(&FlowSpecUnknown{}).DecodeFromBytes(data)
-		(&FlowSpecIPv4Unicast{}).DecodeFromBytes(data)
-		(&FlowSpecIPv4VPN{}).DecodeFromBytes(data)
-		(&FlowSpecIPv6Unicast{}).DecodeFromBytes(data)
-		(&FlowSpecIPv6VPN{}).DecodeFromBytes(data)
-		(&FlowSpecL2VPN{}).DecodeFromBytes(data)
-		(&OpaqueNLRI{}).DecodeFromBytes(data)
+		(&FlowSpecNLRI{rf: RF_FS_IPv4_UC}).decodeFromBytes(data)
+		(&FlowSpecNLRI{rf: RF_FS_IPv6_UC}).decodeFromBytes(data)
+		(&FlowSpecNLRI{rf: RF_FS_IPv4_VPN}).decodeFromBytes(data)
+		(&FlowSpecNLRI{rf: RF_FS_IPv6_VPN}).decodeFromBytes(data)
+		(&FlowSpecNLRI{rf: RF_FS_L2_VPN}).decodeFromBytes(data)
+		(&OpaqueNLRI{}).decodeFromBytes(data)
 		(&LsNLRI{}).DecodeFromBytes(data)
 		(&LsNodeNLRI{}).DecodeFromBytes(data)
 		(&LsLinkNLRI{}).DecodeFromBytes(data)
@@ -3997,7 +3979,7 @@ func FuzzDecodeFromBytes(f *testing.F) {
 		(&LsTLVIGPFlags{}).DecodeFromBytes(data)
 		(&LsTLVOpaquePrefixAttr{}).DecodeFromBytes(data)
 		(&LsTLVNodeDescriptor{}).DecodeFromBytes(data)
-		(&LsAddrPrefix{}).DecodeFromBytes(data)
+		(&LsAddrPrefix{}).decodeFromBytes(data)
 		(&PathAttributeLs{}).DecodeFromBytes(data)
 		(&PathAttribute{}).DecodeFromBytes(data)
 		(&PathAttributeOrigin{}).DecodeFromBytes(data)
@@ -4036,8 +4018,8 @@ func FuzzDecodeFromBytes(f *testing.F) {
 		(&BGPKeepAlive{}).DecodeFromBytes(data)
 		(&BGPRouteRefresh{}).DecodeFromBytes(data)
 		(&BGPHeader{}).DecodeFromBytes(data)
-		(&SRPolicyIPv4{}).DecodeFromBytes(data)
-		(&SRPolicyIPv6{}).DecodeFromBytes(data)
+		(&SRPolicyNLRI{rf: RF_SR_POLICY_IPv4}).decodeFromBytes(data)
+		(&SRPolicyNLRI{rf: RF_SR_POLICY_IPv6}).decodeFromBytes(data)
 		(&TunnelEncapSubTLVSRPreference{}).DecodeFromBytes(data)
 		(&TunnelEncapSubTLVSRPriority{}).DecodeFromBytes(data)
 		(&TunnelEncapSubTLVSRCandidatePathName{}).DecodeFromBytes(data)
@@ -4049,7 +4031,7 @@ func FuzzDecodeFromBytes(f *testing.F) {
 		(&SRv6EndpointBehaviorStructure{}).DecodeFromBytes(data)
 		(&SegmentTypeB{}).DecodeFromBytes(data)
 		(&TunnelEncapSubTLVSRSegmentList{}).DecodeFromBytes(data)
-		(&VPLSNLRI{}).DecodeFromBytes(data)
+		(&VPLSNLRI{}).decodeFromBytes(data)
 		(&TLV{}).DecodeFromBytes(data)
 		(&PathAttributePrefixSID{}).DecodeFromBytes(data)
 		(&SRv6L3ServiceAttribute{}).DecodeFromBytes(data)
@@ -4059,4 +4041,169 @@ func FuzzDecodeFromBytes(f *testing.F) {
 		(&SRv6SIDStructureSubSubTLV{}).DecodeFromBytes(data)
 		(&SRv6ServiceTLV{}).DecodeFromBytes(data)
 	})
+}
+
+func Test_LsTLVSrv6EndXSID(t *testing.T) {
+	assert := assert.New(t)
+
+	tests := []struct {
+		in        []byte
+		str       string
+		err       bool
+		serialize bool
+	}{
+		{[]byte{
+			0x04, 0x52, 0x00, 0x16, // TLV SRv6 End.X SID, length = 22 (6 + 16, no sub-TLV)
+			0x00, 0x39, // Endpoint Behavior = 57 (End.X)
+			0x00, // Flags = 0
+			0x00, // Algorithm = 0 (SPF)
+			0x64, // Weight = 100
+			0x00, // Reserved = 0
+			// SID (16 bytes)
+			0xfd, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+		}, "{SRv6 End.X SID: EndpointBehavior:57 SIDs: fd00::1  LocalBlock:0 LocalNode:0 LocalFunc:0 LocalArg:0}", false, true},
+		{[]byte{
+			0x04, 0x52, 0x00, 0x15, // Incorrect length (should be at least 22)
+		}, "", true, false},
+	}
+
+	for _, test := range tests {
+		srv6 := LsTLVSrv6EndXSID{}
+		if test.err {
+			assert.Error(srv6.DecodeFromBytes(test.in))
+		} else {
+			assert.NoError(srv6.DecodeFromBytes(test.in))
+			assert.Equal(test.str, srv6.String())
+			if test.serialize {
+				got, err := srv6.Serialize()
+				assert.NoError(err)
+				assert.Equal(test.in, got)
+			}
+		}
+	}
+}
+
+func Test_LsTLVSrv6SIDStructure(t *testing.T) {
+	assert := assert.New(t)
+
+	tests := []struct {
+		in        []byte
+		str       string
+		err       bool
+		serialize bool
+	}{
+		{[]byte{
+			0x04, 0xe4, 0x00, 0x04, // TLV SRv6 SID Structure, length = 4
+			0x28, // LocalBlock = 40
+			0x28, // LocalNode = 40
+			0x10, // LocalFunc = 16
+			0x00, // LocalArg = 0
+		}, "{SRv6 SID Structure: LocalBlock:40 LocalNode:40 LocalFunc:16 LocalArg:0}", false, true},
+		{[]byte{
+			0x04, 0xe4, 0x00, 0x03, // Incorrect length (should be 4)
+			0x28, 0x28, 0x10,
+		}, "", true, false},
+	}
+
+	for _, test := range tests {
+		srv6 := LsTLVSrv6SIDStructure{}
+		if test.err {
+			assert.Error(srv6.DecodeFromBytes(test.in))
+		} else {
+			assert.NoError(srv6.DecodeFromBytes(test.in))
+			assert.Equal(test.str, srv6.String())
+			if test.serialize {
+				got, err := srv6.Serialize()
+				assert.NoError(err)
+				assert.Equal(test.in, got)
+			}
+		}
+	}
+}
+
+func Test_LsTLVSrv6BgpPeerNodeSID(t *testing.T) {
+	assert := assert.New(t)
+
+	tests := []struct {
+		in        []byte
+		str       string
+		err       bool
+		serialize bool
+	}{
+		{[]byte{
+			0x04, 0xe3, 0x00, 0x0c, // TLV SRv6 BGP PeerNode SID, length = 12
+			0x01,       // Flags = 1
+			0x64,       // Weight = 100
+			0x00, 0x00, // Reserved = 0
+			0x00, 0x00, 0xfd, 0xe8, // Peer AS Number = 65000
+			0x01, 0x01, 0x01, 0x01, // Peer BGP ID = 1.1.1.1
+		}, "{SRv6 BGP PeerNode SID: Flags:1 Weight:100 PeerAS:65000 PeerBgpID:1.1.1.1}", false, true},
+		{[]byte{
+			0x04, 0xe3, 0x00, 0x0b, // Incorrect length (should be 12)
+			0x01, 0x64, 0x00, 0x00, 0x00, 0x00, 0xfd, 0xe8, 0x01, 0x01, 0x01,
+		}, "", true, false},
+	}
+
+	for _, test := range tests {
+		srv6 := LsTLVSrv6BgpPeerNodeSID{}
+		if test.err {
+			assert.Error(srv6.DecodeFromBytes(test.in))
+		} else {
+			assert.NoError(srv6.DecodeFromBytes(test.in))
+			assert.Equal(test.str, srv6.String())
+			if test.serialize {
+				got, err := srv6.Serialize()
+				assert.NoError(err)
+				assert.Equal(test.in, got)
+			}
+		}
+	}
+}
+
+func Test_LsTLVSrv6EndpointBehavior(t *testing.T) {
+	assert := assert.New(t)
+
+	tests := []struct {
+		in        []byte
+		str       string
+		err       bool
+		serialize bool
+	}{
+		{[]byte{
+			0x04, 0xe2, 0x00, 0x04, // TLV SRv6 Endpoint Behavior, length = 4
+			0x00, 0x30, // Endpoint Behavior = 48 (End)
+			0x01, // Flags = 1
+			0x00, // Algorithm = 0 (SPF)
+		}, "{SRv6 Endpoint Behavior: EndpointBehavior:48 Flags:1 Algorithm:0}", false, true},
+		{[]byte{
+			0x04, 0xe2, 0x00, 0x03, // Incorrect length (should be 4)
+			0x00, 0x01, 0x01,
+		}, "", true, false},
+	}
+
+	for _, test := range tests {
+		srv6 := LsTLVSrv6EndpointBehavior{}
+		if test.err {
+			assert.Error(srv6.DecodeFromBytes(test.in))
+		} else {
+			assert.NoError(srv6.DecodeFromBytes(test.in))
+			assert.Equal(test.str, srv6.String())
+			if test.serialize {
+				got, err := srv6.Serialize()
+				assert.NoError(err)
+				assert.Equal(test.in, got)
+			}
+		}
+	}
+}
+
+func TestParseSubTLVsOverflow(t *testing.T) {
+	l := &LsTLVSrv6EndXSID{}
+
+	// tlvLen = 65532 (0xFFFC) makes (uint16(4) + tlvLen) wrap to 0 in the buggy code.
+	data := []byte{0x00, 0x00, 0xFF, 0xFC}
+	if err := l.parseSubTLVs(data); err == nil {
+		t.Fatal("expected error for truncated Sub-TLV")
+	}
 }

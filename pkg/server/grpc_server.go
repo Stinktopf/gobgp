@@ -20,8 +20,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net"
+	"net/netip"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -40,7 +42,6 @@ import (
 	"github.com/osrg/gobgp/v4/internal/pkg/table"
 	"github.com/osrg/gobgp/v4/pkg/apiutil"
 	"github.com/osrg/gobgp/v4/pkg/config/oc"
-	"github.com/osrg/gobgp/v4/pkg/log"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
 
@@ -77,11 +78,10 @@ func (s *server) serve() error {
 		lis, err = net.Listen(network, address)
 		if err != nil {
 			s.bgpServer.logger.Warn("listen failed",
-				log.Fields{
-					"Topic": "grpc",
-					"Key":   host,
-					"Error": err,
-				})
+				slog.String("Topic", "grpc"),
+				slog.String("Key", host),
+				slog.String("Error", err.Error()),
+			)
 			break
 		}
 		l = append(l, lis)
@@ -99,11 +99,10 @@ func (s *server) serve() error {
 		err := s.grpcServer.Serve(lis)
 		if err != nil {
 			s.bgpServer.logger.Warn("accept failed",
-				log.Fields{
-					"Topic": "grpc",
-					"Key":   lis.Addr().String(),
-					"Error": err,
-				})
+				slog.String("Topic", "grpc"),
+				slog.String("Key", lis.Addr().String()),
+				slog.String("Error", err.Error()),
+			)
 		}
 	}
 
@@ -115,27 +114,37 @@ func (s *server) serve() error {
 }
 
 func (s *server) ListDynamicNeighbor(r *api.ListDynamicNeighborRequest, stream api.GoBgpService_ListDynamicNeighborServer) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
+	var sendErr error
 	fn := func(dn *api.DynamicNeighbor) {
-		if err := stream.Send(&api.ListDynamicNeighborResponse{DynamicNeighbor: dn}); err != nil {
+		if sendErr = stream.Send(&api.ListDynamicNeighborResponse{DynamicNeighbor: dn}); sendErr != nil {
 			cancel()
 			return
 		}
 	}
-	return s.bgpServer.ListDynamicNeighbor(ctx, r, fn)
+	err := s.bgpServer.ListDynamicNeighbor(ctx, r, fn)
+	if sendErr != nil {
+		return sendErr
+	}
+	return err
 }
 
 func (s *server) ListPeerGroup(r *api.ListPeerGroupRequest, stream api.GoBgpService_ListPeerGroupServer) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
+	var sendErr error
 	fn := func(pg *api.PeerGroup) {
-		if err := stream.Send(&api.ListPeerGroupResponse{PeerGroup: pg}); err != nil {
+		if sendErr = stream.Send(&api.ListPeerGroupResponse{PeerGroup: pg}); sendErr != nil {
 			cancel()
 			return
 		}
 	}
-	return s.bgpServer.ListPeerGroup(ctx, r, fn)
+	err := s.bgpServer.ListPeerGroup(ctx, r, fn)
+	if sendErr != nil {
+		return sendErr
+	}
+	return err
 }
 
 func parseHost(host string) (string, string) {
@@ -147,15 +156,20 @@ func parseHost(host string) (string, string) {
 }
 
 func (s *server) ListPeer(r *api.ListPeerRequest, stream api.GoBgpService_ListPeerServer) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
+	var sendErr error
 	fn := func(p *api.Peer) {
-		if err := stream.Send(&api.ListPeerResponse{Peer: p}); err != nil {
+		if sendErr = stream.Send(&api.ListPeerResponse{Peer: p}); sendErr != nil {
 			cancel()
 			return
 		}
 	}
-	return s.bgpServer.ListPeer(ctx, r, fn)
+	err := s.bgpServer.ListPeer(ctx, r, fn)
+	if sendErr != nil {
+		return sendErr
+	}
+	return err
 }
 
 func toApiState(s oc.RpkiValidationResultType) api.ValidationState {
@@ -200,28 +214,31 @@ func newValidationFromTableStruct(v *table.Validation) *api.Validation {
 }
 
 func toPathAPI(binNlri []byte, binPattrs [][]byte, anyNlri *api.NLRI, anyPattrs []*api.Attribute, path *apiutil.Path) *api.Path {
-	nlri := path.Nlri
 	p := &api.Path{
 		Nlri:               anyNlri,
 		Pattrs:             anyPattrs,
 		Age:                tspb.New(time.Unix(path.Age, 0)),
 		IsWithdraw:         path.Withdrawal,
-		Family:             &api.Family{Afi: api.Family_Afi(nlri.AFI()), Safi: api.Family_Safi(nlri.SAFI())},
+		Family:             &api.Family{Afi: api.Family_Afi(path.Family.Afi()), Safi: api.Family_Safi(path.Family.Safi())},
 		Stale:              path.Stale,
 		IsFromExternal:     path.IsFromExternal,
 		NoImplicitWithdraw: path.NoImplicitWithdraw,
 		IsNexthopInvalid:   path.IsNexthopInvalid,
-		Identifier:         nlri.PathIdentifier(),
-		LocalIdentifier:    nlri.PathLocalIdentifier(),
+		Identifier:         path.RemoteID,
+		LocalIdentifier:    path.LocalID,
 		NlriBinary:         binNlri,
 		PattrsBinary:       binPattrs,
 		SourceAsn:          path.PeerASN,
-		SourceId:           path.PeerID.String(),
-		NeighborIp:         path.PeerAddress.String(),
 		// ListPath API fields only
 		SendMaxFiltered: path.SendMaxFiltered,
 		Filtered:        path.Filtered,
 		Validation:      path.Validation,
+	}
+	if path.PeerID.IsValid() {
+		p.SourceId = path.PeerID.String()
+	}
+	if path.PeerAddress.IsValid() {
+		p.NeighborIp = path.PeerAddress.String()
 	}
 	return p
 }
@@ -233,11 +250,13 @@ func toPathApi(path *apiutil.Path, onlyBinary, nlriBinary, attributeBinary bool)
 	)
 	nlri := path.Nlri
 	if !onlyBinary {
-		anyNlri, _ = apiutil.MarshalNLRI(nlri)
+		if nlri != nil {
+			anyNlri, _ = apiutil.MarshalNLRI(nlri)
+		}
 		anyPattrs, _ = apiutil.MarshalPathAttributes(path.Attrs)
 	}
 	var binNlri []byte
-	if onlyBinary || nlriBinary {
+	if nlri != nil && (onlyBinary || nlriBinary) {
 		binNlri, _ = nlri.Serialize()
 	}
 	var binPattrs [][]byte
@@ -263,10 +282,6 @@ func getValidation(v map[*table.Path]*table.Validation, p *table.Path) *table.Va
 }
 
 func (s *server) listPath(ctx context.Context, r *api.ListPathRequest, fn func(*api.Destination)) error {
-	if r == nil {
-		return fmt.Errorf("nil request")
-	}
-
 	family := bgp.Family(0)
 	if r.Family != nil {
 		family = bgp.NewFamily(uint16(r.Family.Afi), uint8(r.Family.Safi))
@@ -288,27 +303,27 @@ func (s *server) listPath(ctx context.Context, r *api.ListPathRequest, fn func(*
 		}
 	}
 
-	err := s.bgpServer.ListPath(req, func(prefix bgp.AddrPrefixInterface, paths []*apiutil.Path) {
-		select {
-		case <-ctx.Done():
+	err := s.bgpServer.ListPath(req, func(prefix bgp.NLRI, paths []*apiutil.Path) {
+		if ctx.Err() != nil {
 			return
-		default:
-			d := api.Destination{
-				Prefix: prefix.String(),
-				Paths:  make([]*api.Path, len(paths)),
-			}
-			for i, path := range paths {
-				d.Paths[i] = toPathApi(path, r.EnableOnlyBinary, r.EnableNlriBinary, r.EnableAttributeBinary)
-			}
-			fn(&d)
 		}
+		d := api.Destination{
+			Prefix: prefix.String(),
+			Paths:  make([]*api.Path, len(paths)),
+		}
+		for i, path := range paths {
+			d.Paths[i] = toPathApi(path, r.EnableOnlyBinary, r.EnableNlriBinary, r.EnableAttributeBinary)
+		}
+		fn(&d)
 	})
-
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	return err
 }
 
 func (s *server) ListPath(r *api.ListPathRequest, stream api.GoBgpService_ListPathServer) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 	batchSize := r.BatchSize
 	if batchSize == 0 {
@@ -345,10 +360,6 @@ func (s *server) ListPath(r *api.ListPathRequest, stream api.GoBgpService_ListPa
 }
 
 func (s *server) watchEvent(ctx context.Context, r *api.WatchEventRequest, fn func(*api.WatchEventResponse, time.Time)) error {
-	if r == nil {
-		return status.Errorf(codes.InvalidArgument, "nil request")
-	}
-
 	opts := make([]WatchOption, 0)
 	if r.GetPeer() != nil {
 		opts = append(opts, WatchPeer())
@@ -503,13 +514,13 @@ func newRoutingPolicyFromApiStruct(arg *api.SetPoliciesRequest) (*oc.RoutingPoli
 
 func api2Path(resource api.TableType, path *api.Path, isWithdraw bool) (*table.Path, error) {
 	var pi *table.PeerInfo
-	var nlri bgp.AddrPrefixInterface
-	var nexthop string
+	var nlri bgp.NLRI
+	var nexthop netip.Addr
 
 	if path.SourceAsn != 0 {
 		pi = &table.PeerInfo{
 			AS: path.SourceAsn,
-			ID: net.ParseIP(path.SourceId),
+			ID: netip.MustParseAddr(path.SourceId),
 		}
 	}
 
@@ -517,7 +528,6 @@ func api2Path(resource api.TableType, path *api.Path, isWithdraw bool) (*table.P
 	if err != nil {
 		return nil, err
 	}
-	nlri.SetPathIdentifier(path.Identifier)
 
 	attrList, err := apiutil.GetNativePathAttributes(path)
 	if err != nil {
@@ -541,29 +551,31 @@ func api2Path(resource api.TableType, path *api.Path, isWithdraw bool) (*table.P
 
 		switch a := attr.(type) {
 		case *bgp.PathAttributeNextHop:
-			nexthop = a.Value.String()
+			nexthop = a.Value
 		case *bgp.PathAttributeMpReachNLRI:
 			if len(a.Value) == 0 {
 				return nil, fmt.Errorf("invalid mp reach attribute")
 			}
-			nexthop = a.Nexthop.String()
+			nexthop = a.Nexthop
 		default:
 			pattrs = append(pattrs, attr)
 		}
 	}
 
-	if !path.IsWithdraw && nexthop == "" {
+	if !path.IsWithdraw && !nexthop.IsValid() {
 		return nil, fmt.Errorf("nexthop not found")
 	}
 	rf := bgp.NewFamily(uint16(path.Family.Afi), uint8(path.Family.Safi))
-	if resource != api.TableType_TABLE_TYPE_VRF && rf == bgp.RF_IPv4_UC && net.ParseIP(nexthop).To4() != nil {
-		pattrs = append(pattrs, bgp.NewPathAttributeNextHop(nexthop))
+	if resource != api.TableType_TABLE_TYPE_VRF && rf == bgp.RF_IPv4_UC && nexthop.Is4() {
+		pa, _ := bgp.NewPathAttributeNextHop(nexthop)
+		pattrs = append(pattrs, pa)
 	} else {
-		pattrs = append(pattrs, bgp.NewPathAttributeMpReachNLRI(nexthop, nlri))
+		attr, _ := bgp.NewPathAttributeMpReachNLRI(rf, []bgp.PathNLRI{{NLRI: nlri}}, nexthop)
+		pattrs = append(pattrs, attr)
 	}
 
 	doWithdraw := isWithdraw || path.IsWithdraw
-	newPath := table.NewPath(pi, nlri, doWithdraw, pattrs, time.Now(), path.NoImplicitWithdraw)
+	newPath := table.NewPath(rf, pi, bgp.PathNLRI{NLRI: nlri, ID: path.Identifier}, doWithdraw, pattrs, time.Now(), path.NoImplicitWithdraw)
 	if !doWithdraw {
 		total := bytes.NewBuffer(make([]byte, 0))
 		for _, a := range newPath.GetPathAttrs() {
@@ -588,7 +600,11 @@ func api2apiutilPath(path *api.Path) (*apiutil.Path, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid path attributes: %w", err)
 	}
+	// source is optional
+	src, _ := netip.ParseAddr(path.SourceId)
+	neighbor, _ := netip.ParseAddr(path.NeighborIp)
 	p := &apiutil.Path{
+		Family:             bgp.NewFamily(uint16(path.Family.Afi), uint8(path.Family.Safi)),
 		Nlri:               nlri,
 		Attrs:              attrs,
 		Age:                path.Age.GetSeconds(),
@@ -596,21 +612,22 @@ func api2apiutilPath(path *api.Path) (*apiutil.Path, error) {
 		Stale:              path.Stale,
 		Withdrawal:         path.IsWithdraw,
 		PeerASN:            path.SourceAsn,
-		PeerID:             net.ParseIP(path.SourceId),
-		PeerAddress:        net.ParseIP(path.NeighborIp),
+		PeerID:             src,
+		PeerAddress:        neighbor,
 		IsFromExternal:     path.IsFromExternal,
 		NoImplicitWithdraw: path.NoImplicitWithdraw,
+		LocalID:            path.LocalIdentifier,
+		RemoteID:           path.Identifier,
 	}
-	if p.PeerASN != 0 && p.PeerID == nil {
+	if p.PeerASN != 0 && !p.PeerID.IsValid() {
 		return nil, fmt.Errorf("source ID must be set correctly %v", p.PeerID)
 	}
-	p.Nlri.SetPathIdentifier(path.Identifier)
 	return p, nil
 }
 
 func (s *server) AddPath(ctx context.Context, r *api.AddPathRequest) (*api.AddPathResponse, error) {
-	if r == nil || r.Path == nil {
-		return nil, fmt.Errorf("nil request")
+	if r.Path == nil {
+		return nil, status.Error(codes.InvalidArgument, "path is required")
 	}
 	var err error
 	var uuidBytes []byte
@@ -633,9 +650,6 @@ func (s *server) AddPath(ctx context.Context, r *api.AddPathRequest) (*api.AddPa
 }
 
 func (s *server) DeletePath(ctx context.Context, r *api.DeletePathRequest) (*api.DeletePathResponse, error) {
-	if r == nil {
-		return &api.DeletePathResponse{}, fmt.Errorf("nil request")
-	}
 	deletePath := func(ctx context.Context, r *api.DeletePathRequest) error {
 		var pathList []*apiutil.Path
 		if len(r.Uuid) == 0 {
@@ -717,14 +731,20 @@ func (s *server) DeleteBmp(ctx context.Context, r *api.DeleteBmpRequest) (*api.D
 }
 
 func (s *server) ListBmp(r *api.ListBmpRequest, stream api.GoBgpService_ListBmpServer) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
+	var sendErr error
 	fn := func(rsp *api.ListBmpResponse_BmpStation) {
-		if err := stream.Send(&api.ListBmpResponse{Station: rsp}); err != nil {
+		if sendErr = stream.Send(&api.ListBmpResponse{Station: rsp}); sendErr != nil {
 			cancel()
+			return
 		}
 	}
-	return s.bgpServer.ListBmp(ctx, r, fn)
+	err := s.bgpServer.ListBmp(ctx, r, fn)
+	if sendErr != nil {
+		return sendErr
+	}
+	return err
 }
 
 func (s *server) AddRpki(ctx context.Context, r *api.AddRpkiRequest) (*api.AddRpkiResponse, error) {
@@ -748,25 +768,37 @@ func (s *server) ResetRpki(ctx context.Context, r *api.ResetRpkiRequest) (*api.R
 }
 
 func (s *server) ListRpki(r *api.ListRpkiRequest, stream api.GoBgpService_ListRpkiServer) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
+	var sendErr error
 	fn := func(r *api.Rpki) {
-		if err := stream.Send(&api.ListRpkiResponse{Server: r}); err != nil {
+		if sendErr = stream.Send(&api.ListRpkiResponse{Server: r}); sendErr != nil {
 			cancel()
+			return
 		}
 	}
-	return s.bgpServer.ListRpki(ctx, r, fn)
+	err := s.bgpServer.ListRpki(ctx, r, fn)
+	if sendErr != nil {
+		return sendErr
+	}
+	return err
 }
 
 func (s *server) ListRpkiTable(r *api.ListRpkiTableRequest, stream api.GoBgpService_ListRpkiTableServer) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
+	var sendErr error
 	fn := func(r *api.Roa) {
-		if err := stream.Send(&api.ListRpkiTableResponse{Roa: r}); err != nil {
+		if sendErr = stream.Send(&api.ListRpkiTableResponse{Roa: r}); sendErr != nil {
 			cancel()
+			return
 		}
 	}
-	return s.bgpServer.ListRpkiTable(ctx, r, fn)
+	err := s.bgpServer.ListRpkiTable(ctx, r, fn)
+	if sendErr != nil {
+		return sendErr
+	}
+	return err
 }
 
 func (s *server) EnableZebra(ctx context.Context, r *api.EnableZebraRequest) (*api.EnableZebraResponse, error) {
@@ -774,14 +806,20 @@ func (s *server) EnableZebra(ctx context.Context, r *api.EnableZebraRequest) (*a
 }
 
 func (s *server) ListVrf(r *api.ListVrfRequest, stream api.GoBgpService_ListVrfServer) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
+	var sendErr error
 	fn := func(v *api.Vrf) {
-		if err := stream.Send(&api.ListVrfResponse{Vrf: v}); err != nil {
+		if sendErr = stream.Send(&api.ListVrfResponse{Vrf: v}); sendErr != nil {
 			cancel()
+			return
 		}
 	}
-	return s.bgpServer.ListVrf(ctx, r, fn)
+	err := s.bgpServer.ListVrf(ctx, r, fn)
+	if sendErr != nil {
+		return sendErr
+	}
+	return err
 }
 
 func (s *server) AddVrf(ctx context.Context, r *api.AddVrfRequest) (*api.AddVrfResponse, error) {
@@ -850,12 +888,6 @@ func readApplyPolicyFromAPIStruct(c *oc.ApplyPolicy, a *api.ApplyPolicy) {
 		c.Config.DefaultExportPolicy = f(a.ExportPolicy.DefaultAction)
 		for _, p := range a.ExportPolicy.Policies {
 			c.Config.ExportPolicyList = append(c.Config.ExportPolicyList, p.Name)
-		}
-	}
-	if a.InPolicy != nil {
-		c.Config.DefaultInPolicy = f(a.InPolicy.DefaultAction)
-		for _, p := range a.InPolicy.Policies {
-			c.Config.InPolicyList = append(c.Config.InPolicyList, p.Name)
 		}
 	}
 }
@@ -952,7 +984,9 @@ func newNeighborFromAPIStruct(a *api.Peer) (*oc.Neighbor, error) {
 		if err != nil {
 			return nil, err
 		}
-		pconf.Config.NeighborAddress = a.Conf.NeighborAddress
+		if addr, err := netip.ParseAddr(a.Conf.NeighborAddress); err == nil {
+			pconf.Config.NeighborAddress = addr
+		}
 		pconf.Config.AdminDown = a.Conf.AdminDown
 		pconf.Config.NeighborInterface = a.Conf.NeighborInterface
 		pconf.Config.Vrf = a.Conf.Vrf
@@ -980,7 +1014,9 @@ func newNeighborFromAPIStruct(a *api.Peer) (*oc.Neighbor, error) {
 			pconf.State.LocalCapabilityList = localCaps
 			pconf.State.RemoteCapabilityList = remoteCaps
 
-			pconf.State.RemoteRouterId = a.State.RouterId
+			if addr, err := netip.ParseAddr(a.State.RouterId); err == nil {
+				pconf.State.RemoteRouterId = addr
+			}
 		}
 
 		for _, af := range a.AfiSafis {
@@ -1013,7 +1049,9 @@ func newNeighborFromAPIStruct(a *api.Peer) (*oc.Neighbor, error) {
 		}
 	}
 	if a.RouteReflector != nil {
-		pconf.RouteReflector.Config.RouteReflectorClusterId = oc.RrClusterIdType(a.RouteReflector.RouteReflectorClusterId)
+		if id, err := netip.ParseAddr(a.RouteReflector.RouteReflectorClusterId); err == nil {
+			pconf.RouteReflector.Config.RouteReflectorClusterId = id
+		}
 		pconf.RouteReflector.Config.RouteReflectorClient = a.RouteReflector.RouteReflectorClient
 	}
 	if a.RouteServer != nil {
@@ -1031,7 +1069,11 @@ func newNeighborFromAPIStruct(a *api.Peer) (*oc.Neighbor, error) {
 	}
 	readApplyPolicyFromAPIStruct(&pconf.ApplyPolicy, a.ApplyPolicy)
 	if a.Transport != nil {
-		pconf.Transport.Config.LocalAddress = a.Transport.LocalAddress
+		if a.Transport.LocalAddress != "" {
+			if addr, err := netip.ParseAddr(a.Transport.LocalAddress); err == nil {
+				pconf.Transport.Config.LocalAddress = addr
+			}
+		}
 		pconf.Transport.Config.PassiveMode = a.Transport.PassiveMode
 		pconf.Transport.Config.RemotePort = uint16(a.Transport.RemotePort)
 		pconf.Transport.Config.LocalPort = uint16(a.Transport.LocalPort)
@@ -1075,8 +1117,9 @@ func newNeighborFromAPIStruct(a *api.Peer) (*oc.Neighbor, error) {
 		if err != nil {
 			return nil, err
 		}
-		pconf.State.NeighborAddress = a.State.NeighborAddress
-
+		if addr, err := netip.ParseAddr(a.State.NeighborAddress); err == nil {
+			pconf.State.NeighborAddress = addr
+		}
 		if a.State.Messages != nil {
 			if a.State.Messages.Sent != nil {
 				pconf.State.Messages.Sent.Update = a.State.Messages.Sent.Update
@@ -1148,7 +1191,9 @@ func newPeerGroupFromAPIStruct(a *api.PeerGroup) (*oc.PeerGroup, error) {
 		}
 	}
 	if a.RouteReflector != nil {
-		pconf.RouteReflector.Config.RouteReflectorClusterId = oc.RrClusterIdType(a.RouteReflector.RouteReflectorClusterId)
+		if id, err := netip.ParseAddr(a.RouteReflector.RouteReflectorClusterId); err == nil {
+			pconf.RouteReflector.Config.RouteReflectorClusterId = id
+		}
 		pconf.RouteReflector.Config.RouteReflectorClient = a.RouteReflector.RouteReflectorClient
 	}
 	if a.RouteServer != nil {
@@ -1166,7 +1211,11 @@ func newPeerGroupFromAPIStruct(a *api.PeerGroup) (*oc.PeerGroup, error) {
 	}
 	readApplyPolicyFromAPIStruct(&pconf.ApplyPolicy, a.ApplyPolicy)
 	if a.Transport != nil {
-		pconf.Transport.Config.LocalAddress = a.Transport.LocalAddress
+		if a.Transport.LocalAddress != "" {
+			if addr, err := netip.ParseAddr(a.Transport.LocalAddress); err == nil {
+				pconf.Transport.Config.LocalAddress = addr
+			}
+		}
 		pconf.Transport.Config.PassiveMode = a.Transport.PassiveMode
 		pconf.Transport.Config.RemotePort = uint16(a.Transport.RemotePort)
 		pconf.Transport.Config.TcpMss = uint16(a.Transport.TcpMss)
@@ -1247,7 +1296,7 @@ func newConfigPrefixFromAPIStruct(a *api.Prefix) (*oc.Prefix, error) {
 		return nil, err
 	}
 	return &oc.Prefix{
-		IpPrefix:        prefix.String(),
+		IpPrefix:        netip.MustParsePrefix(prefix.String()),
 		MasklengthRange: fmt.Sprintf("%d..%d", a.MaskLengthMin, a.MaskLengthMax),
 	}, nil
 }
@@ -1373,14 +1422,20 @@ func newDefinedSetFromApiStruct(a *api.DefinedSet) (table.DefinedSet, error) {
 var _regexpPrefixMaskLengthRange = regexp.MustCompile(`(\d+)\.\.(\d+)`)
 
 func (s *server) ListDefinedSet(r *api.ListDefinedSetRequest, stream api.GoBgpService_ListDefinedSetServer) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
+	var sendErr error
 	fn := func(d *api.DefinedSet) {
-		if err := stream.Send(&api.ListDefinedSetResponse{DefinedSet: d}); err != nil {
+		if sendErr = stream.Send(&api.ListDefinedSetResponse{DefinedSet: d}); sendErr != nil {
 			cancel()
+			return
 		}
 	}
-	return s.bgpServer.ListDefinedSet(ctx, r, fn)
+	err := s.bgpServer.ListDefinedSet(ctx, r, fn)
+	if sendErr != nil {
+		return sendErr
+	}
+	return err
 }
 
 func (s *server) AddDefinedSet(ctx context.Context, r *api.AddDefinedSetRequest) (*api.AddDefinedSetResponse, error) {
@@ -1392,6 +1447,19 @@ func (s *server) DeleteDefinedSet(ctx context.Context, r *api.DeleteDefinedSetRe
 }
 
 var _regexpMedActionType = regexp.MustCompile(`([+-]?)(\d+)`)
+
+func toOcAttributeComparison(a api.Comparison) oc.AttributeComparison {
+	switch a {
+	case api.Comparison_COMPARISON_EQ:
+		return oc.ATTRIBUTE_COMPARISON_EQ
+	case api.Comparison_COMPARISON_GE:
+		return oc.ATTRIBUTE_COMPARISON_GE
+	case api.Comparison_COMPARISON_LE:
+		return oc.ATTRIBUTE_COMPARISON_LE
+	default:
+		return oc.ATTRIBUTE_COMPARISON_EQ
+	}
+}
 
 func matchSetOptionsRestrictedTypeToAPI(t oc.MatchSetOptionsRestrictedType) api.MatchSet_Type {
 	t = t.DefaultAsNeeded()
@@ -1468,7 +1536,11 @@ func toStatementApi(s *oc.Statement) *api.Statement {
 		cs.RouteType = api.Conditions_RouteType(s.Conditions.BgpConditions.RouteType.ToInt())
 	}
 	if len(s.Conditions.BgpConditions.NextHopInList) > 0 {
-		cs.NextHopInList = s.Conditions.BgpConditions.NextHopInList
+		l := make([]string, 0, len(s.Conditions.BgpConditions.NextHopInList))
+		for _, nh := range s.Conditions.BgpConditions.NextHopInList {
+			l = append(l, nh.String())
+		}
+		cs.NextHopInList = l
 	}
 	if s.Conditions.BgpConditions.AfiSafiInList != nil {
 		afiSafiIn := make([]*api.Family, 0)
@@ -1695,7 +1767,7 @@ func newCommunityCountConditionFromApiStruct(a *api.CommunityCount) (*table.Comm
 		return nil, nil
 	}
 	return table.NewCommunityCountCondition(oc.CommunityCount{
-		Operator: oc.IntToAttributeComparisonMap[int(a.Type)],
+		Operator: toOcAttributeComparison(a.Type),
 		Value:    a.Count,
 	})
 }
@@ -1705,7 +1777,7 @@ func newAsPathLengthConditionFromApiStruct(a *api.AsPathLength) (*table.AsPathLe
 		return nil, nil
 	}
 	return table.NewAsPathLengthCondition(oc.AsPathLength{
-		Operator: oc.IntToAttributeComparisonMap[int(a.Type)],
+		Operator: toOcAttributeComparison(a.Type),
 		Value:    a.Length,
 	})
 }
@@ -2115,14 +2187,20 @@ func newStatementFromApiStruct(a *api.Statement) (*table.Statement, error) {
 }
 
 func (s *server) ListStatement(r *api.ListStatementRequest, stream api.GoBgpService_ListStatementServer) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
+	var sendErr error
 	fn := func(s *api.Statement) {
-		if err := stream.Send(&api.ListStatementResponse{Statement: s}); err != nil {
+		if sendErr = stream.Send(&api.ListStatementResponse{Statement: s}); sendErr != nil {
 			cancel()
+			return
 		}
 	}
-	return s.bgpServer.ListStatement(ctx, r, fn)
+	err := s.bgpServer.ListStatement(ctx, r, fn)
+	if sendErr != nil {
+		return sendErr
+	}
+	return err
 }
 
 func (s *server) AddStatement(ctx context.Context, r *api.AddStatementRequest) (*api.AddStatementResponse, error) {
@@ -2197,14 +2275,20 @@ func newRoaListFromTableStructList(origin []*table.ROA) []*api.Roa {
 }
 
 func (s *server) ListPolicy(r *api.ListPolicyRequest, stream api.GoBgpService_ListPolicyServer) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
+	var sendErr error
 	fn := func(p *api.Policy) {
-		if err := stream.Send(&api.ListPolicyResponse{Policy: p}); err != nil {
+		if sendErr = stream.Send(&api.ListPolicyResponse{Policy: p}); sendErr != nil {
 			cancel()
+			return
 		}
 	}
-	return s.bgpServer.ListPolicy(ctx, r, fn)
+	err := s.bgpServer.ListPolicy(ctx, r, fn)
+	if sendErr != nil {
+		return sendErr
+	}
+	return err
 }
 
 func (s *server) AddPolicy(ctx context.Context, r *api.AddPolicyRequest) (*api.AddPolicyResponse, error) {
@@ -2216,14 +2300,20 @@ func (s *server) DeletePolicy(ctx context.Context, r *api.DeletePolicyRequest) (
 }
 
 func (s *server) ListPolicyAssignment(r *api.ListPolicyAssignmentRequest, stream api.GoBgpService_ListPolicyAssignmentServer) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
+	var sendErr error
 	fn := func(a *api.PolicyAssignment) {
-		if err := stream.Send(&api.ListPolicyAssignmentResponse{Assignment: a}); err != nil {
+		if sendErr = stream.Send(&api.ListPolicyAssignmentResponse{Assignment: a}); sendErr != nil {
 			cancel()
+			return
 		}
 	}
-	return s.bgpServer.ListPolicyAssignment(ctx, r, fn)
+	err := s.bgpServer.ListPolicyAssignment(ctx, r, fn)
+	if sendErr != nil {
+		return sendErr
+	}
+	return err
 }
 
 func defaultRouteType(d api.RouteAction) table.RouteType {
@@ -2279,18 +2369,19 @@ func newGlobalFromAPIStruct(a *api.Global) *oc.Global {
 		})
 	}
 
-	applyPolicy := &oc.ApplyPolicy{}
-	readApplyPolicyFromAPIStruct(applyPolicy, a.ApplyPolicy)
+	l := make([]netip.Addr, 0, len(a.ListenAddresses))
+	for _, addr := range a.ListenAddresses {
+		l = append(l, netip.MustParseAddr(addr))
+	}
 
 	global := &oc.Global{
 		Config: oc.GlobalConfig{
 			As:               a.Asn,
-			RouterId:         a.RouterId,
+			RouterId:         netip.MustParseAddr(a.RouterId),
 			Port:             a.ListenPort,
-			LocalAddressList: a.ListenAddresses,
+			LocalAddressList: l,
 		},
-		ApplyPolicy: *applyPolicy,
-		AfiSafis:    families,
+		AfiSafis: families,
 		UseMultiplePaths: oc.UseMultiplePaths{
 			Config: oc.UseMultiplePathsConfig{
 				Enabled: a.UseMultiplePaths,

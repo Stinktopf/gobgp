@@ -79,7 +79,6 @@
         passive-mode = true
         local-address = "192.168.10.1"
         remote-port = 2016
-        ttl = 64  # default value on Linux
     [neighbors.ebgp-multihop.config]
         enabled = true #directly connection should be set false，if not ，peer will be deleted after hold-time
         multihop-ttl = 100
@@ -161,8 +160,6 @@
         default-import-policy = "reject-route"
         export-policy-list = ["policy2"]
         default-export-policy = "accept-route"
-        in-policy-list = ["policy3"]
-        default-in-policy = "reject-route"
     [neighbors.route-server.config]
         route-server-client = true
     # To enable TTL Security, uncomment the following.
@@ -283,7 +280,7 @@
     [[policy-definitions.statements]]
         [policy-definitions.statements.conditions.bgp-conditions]
             next-hop-in-list = [
-               "10.0.100.1/32"
+               "10.0.100.1"
             ]
         [policy-definitions.statements.actions]
             route-disposition = "accept-route"

@@ -1,10 +1,10 @@
 package bgp
 
 import (
-	"encoding/binary"
 	"fmt"
 	"math"
 	"net"
+	"net/netip"
 	"slices"
 	"strconv"
 )
@@ -91,31 +91,18 @@ func ValidateAttribute(a PathAttributeInterface, rfs map[Family]BGPAddPathMode, 
 	eSubCodeUnknown := uint8(BGP_ERROR_SUB_UNRECOGNIZED_WELL_KNOWN_ATTRIBUTE)
 	eSubCodeMalformedAspath := uint8(BGP_ERROR_SUB_MALFORMED_AS_PATH)
 
-	checkPrefix := func(l []AddrPrefixInterface) error {
+	checkPrefix := func(family Family, l []PathNLRI) error {
+		if _, ok := rfs[family]; !ok {
+			return NewMessageError(0, 0, nil, fmt.Sprintf("Address-family %s not available for this session", family))
+		}
+
 		for _, prefix := range l {
-			rf := NewFamily(prefix.AFI(), prefix.SAFI())
-			if _, ok := rfs[rf]; !ok {
-				return NewMessageError(0, 0, nil, fmt.Sprintf("Address-family %s not available for this session", rf))
-			}
-			switch rf {
+			switch family {
 			case RF_FS_IPv4_UC, RF_FS_IPv6_UC, RF_FS_IPv4_VPN, RF_FS_IPv6_VPN, RF_FS_L2_VPN:
 				t := BGPFlowSpecType(0)
-				value := make([]FlowSpecComponentInterface, 0)
-				switch rf {
-				case RF_FS_IPv4_UC:
-					value = prefix.(*FlowSpecIPv4Unicast).Value
-				case RF_FS_IPv6_UC:
-					value = prefix.(*FlowSpecIPv6Unicast).Value
-				case RF_FS_IPv4_VPN:
-					value = prefix.(*FlowSpecIPv4VPN).Value
-				case RF_FS_IPv6_VPN:
-					value = prefix.(*FlowSpecIPv6VPN).Value
-				case RF_FS_L2_VPN:
-					value = prefix.(*FlowSpecL2VPN).Value
-				}
-				for _, v := range value {
+				for _, v := range prefix.NLRI.(*FlowSpecNLRI).Value {
 					if v.Type() <= t {
-						return NewMessageError(0, 0, nil, fmt.Sprintf("%s nlri violate strict type ordering", rf))
+						return NewMessageError(0, 0, nil, fmt.Sprintf("%s nlri violate strict type ordering", family))
 					}
 					t = v.Type()
 				}
@@ -126,19 +113,11 @@ func ValidateAttribute(a PathAttributeInterface, rfs map[Family]BGPAddPathMode, 
 
 	switch p := a.(type) {
 	case *PathAttributeMpUnreachNLRI:
-		rf := NewFamily(p.AFI, p.SAFI)
-		if _, ok := rfs[rf]; !ok {
-			return false, NewMessageError(0, 0, nil, fmt.Sprintf("Address-family rf %d not available for session", rf))
-		}
-		if err := checkPrefix(p.Value); err != nil {
+		if err := checkPrefix(NewFamily(p.AFI, p.SAFI), p.Value); err != nil {
 			return false, err
 		}
 	case *PathAttributeMpReachNLRI:
-		rf := NewFamily(p.AFI, p.SAFI)
-		if _, ok := rfs[rf]; !ok {
-			return false, NewMessageError(0, 0, nil, fmt.Sprintf("Address-family rf %d not available for session", rf))
-		}
-		if err := checkPrefix(p.Value); err != nil {
+		if err := checkPrefix(NewFamily(p.AFI, p.SAFI), p.Value); err != nil {
 			return false, err
 		}
 	case *PathAttributeOrigin:
@@ -168,9 +147,9 @@ func ValidateAttribute(a PathAttributeInterface, rfs map[Family]BGPAddPathMode, 
 			res := ip[0] & 0xe0
 			return res == 0xe0
 		}
-
+		addr := net.IP(p.Value.AsSlice())
 		// check IP address represents host address
-		if !loopbackNextHopAllowed && p.Value.IsLoopback() || isZero(p.Value) || isClassDorE(p.Value) {
+		if !loopbackNextHopAllowed && p.Value.IsLoopback() || isZero(addr) || isClassDorE(addr) {
 			eMsg := "invalid nexthop address"
 			data, _ := a.Serialize()
 			e := NewMessageErrorWithErrorHandling(eCode, eSubCodeBadNextHop, data, getErrorHandlingFromPathAttribute(p.GetType()), nil, eMsg)
@@ -297,17 +276,7 @@ func validateAsPathValueBytes(data []byte) (bool, error) {
 	return false, NewMessageError(eCode, eSubCode, nil, "can't parse AS_PATH")
 }
 
-func ValidateBGPMessage(m *BGPMessage) error {
-	if m.Header.Len > BGP_MAX_MESSAGE_LENGTH {
-		buf := make([]byte, 2)
-		binary.BigEndian.PutUint16(buf, m.Header.Len)
-		return NewMessageError(BGP_ERROR_MESSAGE_HEADER_ERROR, BGP_ERROR_SUB_BAD_MESSAGE_LENGTH, buf, "too long length")
-	}
-
-	return nil
-}
-
-func ValidateOpenMsg(m *BGPOpen, expectedAS uint32, myAS uint32, myId net.IP) (uint32, error) {
+func ValidateOpenMsg(m *BGPOpen, expectedAS uint32, myAS uint32, myId netip.Addr) (uint32, error) {
 	if m.Version != 4 {
 		return 0, NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_UNSUPPORTED_VERSION_NUMBER, nil, fmt.Sprintf("unsupported version %d", m.Version))
 	}
@@ -335,7 +304,7 @@ func ValidateOpenMsg(m *BGPOpen, expectedAS uint32, myAS uint32, myId net.IP) (u
 	if routerId.IsUnspecified() {
 		return 0, NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_BAD_BGP_IDENTIFIER, nil, fmt.Sprintf("bad BGP identifier %s (0.0.0.0)", routerId.String()))
 	}
-	if as == myAS && routerId.Equal(myId) {
+	if as == myAS && routerId == myId {
 		return 0, NewMessageError(BGP_ERROR_OPEN_MESSAGE_ERROR, BGP_ERROR_SUB_BAD_BGP_IDENTIFIER, nil, fmt.Sprintf("bad BGP identifier %s", routerId.String()))
 	}
 

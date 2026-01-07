@@ -18,6 +18,7 @@ package mrt
 import (
 	"bufio"
 	"bytes"
+	"net/netip"
 	"reflect"
 	"testing"
 	"time"
@@ -35,8 +36,7 @@ func TestMrtHdr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2 := &MRTHeader{}
-	err = h2.DecodeFromBytes(b1)
+	h2, err := ParseHeader(b1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func testPeer(t *testing.T, p1 *Peer) {
 		t.Fatal(err)
 	}
 	p2 := &Peer{}
-	rest, err := p2.DecodeFromBytes(b1)
+	rest, err := p2.decodeFromBytes(b1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,35 +78,61 @@ func testPeer(t *testing.T, p1 *Peer) {
 }
 
 func TestMrtPeer(t *testing.T) {
-	p := NewPeer("192.168.0.1", "10.0.0.1", 65000, false)
+	p := NewPeer(netip.MustParseAddr("192.168.0.1"), netip.MustParseAddr("10.0.0.1"), 65000, false)
 	testPeer(t, p)
 }
 
 func TestMrtPeerv6(t *testing.T) {
-	p := NewPeer("192.168.0.1", "2001::1", 65000, false)
+	p := NewPeer(netip.MustParseAddr("192.168.0.1"), netip.MustParseAddr("2001::1"), 65000, false)
 	testPeer(t, p)
 }
 
 func TestMrtPeerAS4(t *testing.T) {
-	p := NewPeer("192.168.0.1", "2001::1", 135500, true)
+	p := NewPeer(netip.MustParseAddr("192.168.0.1"), netip.MustParseAddr("2001::1"), 135500, true)
 	testPeer(t, p)
 }
 
 func TestMrtPeerIndexTable(t *testing.T) {
-	p1 := NewPeer("192.168.0.1", "10.0.0.1", 65000, false)
-	p2 := NewPeer("192.168.0.1", "2001::1", 65000, false)
-	p3 := NewPeer("192.168.0.1", "2001::1", 135500, true)
-	pt1 := NewPeerIndexTable("192.168.0.1", "test", []*Peer{p1, p2, p3})
+	p1 := NewPeer(netip.MustParseAddr("192.168.0.1"), netip.MustParseAddr("10.0.0.1"), 65000, false)
+	p2 := NewPeer(netip.MustParseAddr("192.168.0.1"), netip.MustParseAddr("2001::1"), 65000, false)
+	p3 := NewPeer(netip.MustParseAddr("192.168.0.1"), netip.MustParseAddr("2001::1"), 135500, true)
+	pt1 := NewPeerIndexTable(netip.MustParseAddr("192.168.0.1"), "test", []*Peer{p1, p2, p3})
 	b1, err := pt1.Serialize()
 	if err != nil {
 		t.Fatal(err)
 	}
-	pt2 := &PeerIndexTable{}
-	err = pt2.DecodeFromBytes(b1)
+	pt2, err := parsePeerIndexTable(b1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assert.Equal(t, reflect.DeepEqual(pt1, pt2), true)
+}
+
+func TestParsePeerIndexTable_LargeViewNameDoesNotPanic(t *testing.T) {
+	// Regression: viewLen is uint16 in the wire format. Using uint16 arithmetic
+	// in slice indices can wrap (e.g., 6+0xffff == 5), causing a panic even when
+	// the buffer is large enough.
+	viewLen := 0xffff
+
+	data := make([]byte, 0, 4+2+viewLen+2)
+	data = append(data, 192, 0, 2, 1) // CollectorBgpId
+	data = append(data, 0xff, 0xff)   // ViewName length
+	data = append(data, bytes.Repeat([]byte{'a'}, viewLen)...)
+	data = append(data, 0x00, 0x00) // PeerNum
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("parsePeerIndexTable must not panic: %v", r)
+		}
+	}()
+
+	tbl, err := parsePeerIndexTable(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tbl.ViewName) != viewLen {
+		t.Fatalf("unexpected view name length: got %d want %d", len(tbl.ViewName), viewLen)
+	}
 }
 
 func TestMrtRibEntry(t *testing.T) {
@@ -115,11 +141,11 @@ func TestMrtRibEntry(t *testing.T) {
 		bgp.NewAsPathParam(1, []uint16{1001, 1002}),
 		bgp.NewAsPathParam(2, []uint16{1003, 1004}),
 	}
-
+	panh, _ := bgp.NewPathAttributeNextHop(netip.MustParseAddr("129.1.1.2"))
 	p := []bgp.PathAttributeInterface{
 		bgp.NewPathAttributeOrigin(3),
 		bgp.NewPathAttributeAsPath(aspath1),
-		bgp.NewPathAttributeNextHop("129.1.1.2"),
+		panh,
 		bgp.NewPathAttributeMultiExitDisc(1 << 20),
 		bgp.NewPathAttributeLocalPref(1 << 22),
 	}
@@ -130,8 +156,7 @@ func TestMrtRibEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e2 := &RibEntry{}
-	rest, err := e2.DecodeFromBytes(b1)
+	e2, rest, err := parseRibEntry(b1, bgp.RF_IPv4_UC, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,11 +170,11 @@ func TestMrtRibEntryWithAddPath(t *testing.T) {
 		bgp.NewAsPathParam(1, []uint16{1001, 1002}),
 		bgp.NewAsPathParam(2, []uint16{1003, 1004}),
 	}
-
+	panh, _ := bgp.NewPathAttributeNextHop(netip.MustParseAddr("129.1.1.2"))
 	p := []bgp.PathAttributeInterface{
 		bgp.NewPathAttributeOrigin(3),
 		bgp.NewPathAttributeAsPath(aspath1),
-		bgp.NewPathAttributeNextHop("129.1.1.2"),
+		panh,
 		bgp.NewPathAttributeMultiExitDisc(1 << 20),
 		bgp.NewPathAttributeLocalPref(1 << 22),
 	}
@@ -159,12 +184,11 @@ func TestMrtRibEntryWithAddPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e2 := &RibEntry{isAddPath: true}
-	rest, err := e2.DecodeFromBytes(b1)
+	e2, rest2, err := parseRibEntry(b1, bgp.RF_IPv4_UC, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assert.Equal(t, len(rest), 0)
+	assert.Equal(t, len(rest2), 0)
 	assert.Equal(t, reflect.DeepEqual(e1, e2), true)
 }
 
@@ -174,11 +198,11 @@ func TestMrtRib(t *testing.T) {
 		bgp.NewAsPathParam(1, []uint16{1001, 1002}),
 		bgp.NewAsPathParam(2, []uint16{1003, 1004}),
 	}
-
+	panh, _ := bgp.NewPathAttributeNextHop(netip.MustParseAddr("129.1.1.2"))
 	p := []bgp.PathAttributeInterface{
 		bgp.NewPathAttributeOrigin(3),
 		bgp.NewPathAttributeAsPath(aspath1),
-		bgp.NewPathAttributeNextHop("129.1.1.2"),
+		panh,
 		bgp.NewPathAttributeMultiExitDisc(1 << 20),
 		bgp.NewPathAttributeLocalPref(1 << 22),
 	}
@@ -186,16 +210,14 @@ func TestMrtRib(t *testing.T) {
 	e1 := NewRibEntry(1, uint32(time.Now().Unix()), 0, p, false)
 	e2 := NewRibEntry(2, uint32(time.Now().Unix()), 0, p, false)
 	e3 := NewRibEntry(3, uint32(time.Now().Unix()), 0, p, false)
-
-	r1 := NewRib(1, bgp.NewIPAddrPrefix(24, "192.168.0.0"), []*RibEntry{e1, e2, e3})
+	nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("192.168.0.0/24"))
+	r1 := NewRib(1, bgp.RF_IPv4_UC, nlri, []*RibEntry{e1, e2, e3})
 	b1, err := r1.Serialize()
 	if err != nil {
 		t.Fatal(err)
 	}
-	r2 := &Rib{
-		Family: bgp.RF_IPv4_UC,
-	}
-	err = r2.DecodeFromBytes(b1)
+
+	r2, err := parseRib(b1, bgp.RF_IPv4_UC, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,11 +230,11 @@ func TestMrtRibWithAddPath(t *testing.T) {
 		bgp.NewAsPathParam(1, []uint16{1001, 1002}),
 		bgp.NewAsPathParam(2, []uint16{1003, 1004}),
 	}
-
+	panh, _ := bgp.NewPathAttributeNextHop(netip.MustParseAddr("129.1.1.2"))
 	p := []bgp.PathAttributeInterface{
 		bgp.NewPathAttributeOrigin(3),
 		bgp.NewPathAttributeAsPath(aspath1),
-		bgp.NewPathAttributeNextHop("129.1.1.2"),
+		panh,
 		bgp.NewPathAttributeMultiExitDisc(1 << 20),
 		bgp.NewPathAttributeLocalPref(1 << 22),
 	}
@@ -221,16 +243,14 @@ func TestMrtRibWithAddPath(t *testing.T) {
 	e2 := NewRibEntry(2, uint32(time.Now().Unix()), 200, p, true)
 	e3 := NewRibEntry(3, uint32(time.Now().Unix()), 300, p, true)
 
-	r1 := NewRib(1, bgp.NewIPAddrPrefix(24, "192.168.0.0"), []*RibEntry{e1, e2, e3})
+	nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("192.168.0.0/24"))
+	r1 := NewRib(1, bgp.RF_IPv4_UC, nlri, []*RibEntry{e1, e2, e3})
 	b1, err := r1.Serialize()
 	if err != nil {
 		t.Fatal(err)
 	}
-	r2 := &Rib{
-		Family:    bgp.RF_IPv4_UC,
-		isAddPath: true,
-	}
-	err = r2.DecodeFromBytes(b1)
+
+	r2, err := parseRib(b1, bgp.RF_IPv4_UC, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,15 +258,14 @@ func TestMrtRibWithAddPath(t *testing.T) {
 }
 
 func TestMrtGeoPeerTable(t *testing.T) {
-	p1 := NewGeoPeer("192.168.0.1", 28.031157, 86.899684)
-	p2 := NewGeoPeer("192.168.0.1", 35.360556, 138.727778)
-	pt1 := NewGeoPeerTable("192.168.0.1", 12.345678, 98.765432, []*GeoPeer{p1, p2})
+	p1, _ := NewGeoPeer(netip.MustParseAddr("192.168.0.1"), 28.031157, 86.899684)
+	p2, _ := NewGeoPeer(netip.MustParseAddr("192.168.0.1"), 35.360556, 138.727778)
+	pt1, _ := NewGeoPeerTable(netip.MustParseAddr("192.168.0.1"), 12.345678, 98.765432, []*GeoPeer{p1, p2})
 	b1, err := pt1.Serialize()
 	if err != nil {
 		t.Fatal(err)
 	}
-	pt2 := &GeoPeerTable{}
-	err = pt2.DecodeFromBytes(b1)
+	pt2, err := parseGeoPeerTable(b1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,13 +273,12 @@ func TestMrtGeoPeerTable(t *testing.T) {
 }
 
 func TestMrtBgp4mpStateChange(t *testing.T) {
-	c1 := NewBGP4MPStateChange(65000, 65001, 1, "192.168.0.1", "192.168.0.2", false, ACTIVE, ESTABLISHED)
+	c1, _ := NewBGP4MPStateChange(65000, 65001, 1, netip.MustParseAddr("192.168.0.1"), netip.MustParseAddr("192.168.0.2"), false, ACTIVE, ESTABLISHED)
 	b1, err := c1.Serialize()
 	if err != nil {
 		t.Fatal(err)
 	}
-	c2 := &BGP4MPStateChange{BGP4MPHeader: &BGP4MPHeader{}}
-	err = c2.DecodeFromBytes(b1)
+	c2, err := parseBGP4MPStateChange(&BGP4MPHeader{}, b1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,13 +291,12 @@ func TestMrtBgp4mpStateChange(t *testing.T) {
 
 func TestMrtBgp4mpMessage(t *testing.T) {
 	msg := bgp.NewBGPKeepAliveMessage()
-	m1 := NewBGP4MPMessage(65000, 65001, 1, "192.168.0.1", "192.168.0.2", false, msg)
+	m1, _ := NewBGP4MPMessage(65000, 65001, 1, netip.MustParseAddr("192.168.0.1"), netip.MustParseAddr("192.168.0.2"), false, msg)
 	b1, err := m1.Serialize()
 	if err != nil {
 		t.Fatal(err)
 	}
-	m2 := &BGP4MPMessage{BGP4MPHeader: &BGP4MPHeader{}}
-	err = m2.DecodeFromBytes(b1)
+	m2, err := parseBGP4MPMessage(&BGP4MPHeader{}, false, false, b1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +308,7 @@ func TestMrtSplit(t *testing.T) {
 	numwrite, numread := 10, 0
 	for range numwrite {
 		msg := bgp.NewBGPKeepAliveMessage()
-		m1 := NewBGP4MPMessage(65000, 65001, 1, "192.168.0.1", "192.168.0.2", false, msg)
+		m1, _ := NewBGP4MPMessage(65000, 65001, 1, netip.MustParseAddr("192.168.0.1"), netip.MustParseAddr("192.168.0.2"), false, msg)
 		mm, _ := NewMRTMessage(time.Unix(1234, 0), BGP4MP, MESSAGE, m1)
 		b1, err := mm.Serialize()
 		if err != nil {
@@ -317,38 +334,38 @@ func FuzzMRT(f *testing.F) {
 			return
 		}
 
-		hdr := &MRTHeader{}
-		err := hdr.DecodeFromBytes(data[:MRT_COMMON_HEADER_LEN])
+		hdr, err := ParseHeader(data[:MRT_COMMON_HEADER_LEN])
 		if err != nil {
 			return
 		}
 
-		ParseMRTBody(hdr, data[MRT_COMMON_HEADER_LEN:])
+		ParseBody(data[MRT_COMMON_HEADER_LEN:], hdr)
 	})
 }
 
-// grep -r DecodeFromBytes pkg/packet/mrt/ | grep -e ":func " | perl -pe 's|func \(.* \*(.*?)\).*|(&\1\{\})\.DecodeFromBytes(data)|g' | awk -F ':' '{print $2}'
-//
 //nolint:errcheck
 func FuzzDecodeFromBytes(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
-		(&MRTHeader{}).DecodeFromBytes(data)
-		(&Peer{}).DecodeFromBytes(data)
-		(&PeerIndexTable{}).DecodeFromBytes(data)
-		(&RibEntry{}).DecodeFromBytes(data)
-		(&RibEntry{isAddPath: true}).DecodeFromBytes(data)
-		(&Rib{}).DecodeFromBytes(data)
-		(&Rib{isAddPath: true}).DecodeFromBytes(data)
-		(&GeoPeer{}).DecodeFromBytes(data)
-		(&GeoPeerTable{}).DecodeFromBytes(data)
+		ParseHeader(data)
+		parsePeerIndexTable(data)
+		parseRibEntry(data, bgp.RF_IPv4_UC, false)
+		parseRibEntry(data, bgp.RF_IPv4_UC, true)
+		parseRib(data, bgp.RF_IPv4_UC, false)
+		parseRib(data, bgp.RF_IPv4_UC, true)
+		parseGeoPeerTable(data)
+		(&GeoPeer{}).decodeFromBytes(data)
+		(&Peer{}).decodeFromBytes(data)
 		if len(data) > 12 {
 			h := &BGP4MPHeader{isAS4: true}
 			_, err := h.decodeFromBytes(data[:12])
 			if err != nil {
 				return
 			}
-			(&BGP4MPStateChange{BGP4MPHeader: h}).DecodeFromBytes(data[12:])
-			(&BGP4MPMessage{BGP4MPHeader: h}).DecodeFromBytes(data[12:])
+			parseBGP4MPStateChange(h, data[12:])
+			parseBGP4MPMessage(h, true, true, data[12:])
+			parseBGP4MPMessage(h, true, false, data[12:])
+			parseBGP4MPMessage(h, false, true, data[12:])
+			parseBGP4MPMessage(h, false, false, data[12:])
 		}
 		if len(data) > 8 {
 			h := &BGP4MPHeader{isAS4: false}
@@ -356,8 +373,11 @@ func FuzzDecodeFromBytes(f *testing.F) {
 			if err != nil {
 				return
 			}
-			(&BGP4MPStateChange{BGP4MPHeader: h}).DecodeFromBytes(data[8:])
-			(&BGP4MPMessage{BGP4MPHeader: h}).DecodeFromBytes(data[8:])
+			parseBGP4MPStateChange(h, data[8:])
+			parseBGP4MPMessage(h, true, true, data[8:])
+			parseBGP4MPMessage(h, true, false, data[8:])
+			parseBGP4MPMessage(h, false, true, data[8:])
+			parseBGP4MPMessage(h, false, false, data[8:])
 		}
 	})
 }

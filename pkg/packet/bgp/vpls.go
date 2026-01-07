@@ -27,7 +27,6 @@ import (
 //
 // [RFC 4761, section 3.2.2]: https://www.rfc-editor.org/rfc/rfc4761.html#section-3.2.2.
 type VPLSNLRI struct {
-	PrefixDefault
 	VEID           uint16
 	VEBlockOffset  uint16
 	VEBlockSize    uint16
@@ -36,7 +35,7 @@ type VPLSNLRI struct {
 	rd RouteDistinguisherInterface
 }
 
-func (n *VPLSNLRI) DecodeFromBytes(data []byte, options ...*MarshallingOption) error {
+func (n *VPLSNLRI) decodeFromBytes(data []byte, options ...*MarshallingOption) error {
 	/*
 		RFC6074 Section 7 BGP-AD and VPLS-BGP Interoperability
 		Both BGP-AD and VPLS-BGP [RFC4761] use the same AFI/SAFI.  In order
@@ -93,14 +92,6 @@ func (n *VPLSNLRI) Serialize(options ...*MarshallingOption) ([]byte, error) {
 	labelBaseBuf[1] = byte(labelBlockBase >> 8 & 0xff)
 	labelBaseBuf[2] = byte(labelBlockBase & 0xff)
 	return append(buf, labelBaseBuf...), nil
-}
-
-func (n *VPLSNLRI) AFI() uint16 {
-	return AFI_L2VPN
-}
-
-func (n *VPLSNLRI) SAFI() uint8 {
-	return SAFI_VPLS
 }
 
 func (n *VPLSNLRI) Len(options ...*MarshallingOption) int {

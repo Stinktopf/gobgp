@@ -20,6 +20,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -78,10 +79,9 @@ func injectMrt() error {
 				exitWithError(fmt.Errorf("failed to read: %s", err))
 			}
 
-			h := &mrt.MRTHeader{}
-			err = h.DecodeFromBytes(buf)
+			h, err := mrt.ParseHeader(buf)
 			if err != nil {
-				exitWithError(fmt.Errorf("failed to parse"))
+				exitWithError(fmt.Errorf("failed to parse: %s", err))
 			}
 
 			buf = make([]byte, h.Len)
@@ -90,7 +90,7 @@ func injectMrt() error {
 				exitWithError(fmt.Errorf("failed to read"))
 			}
 
-			msg, err := mrt.ParseMRTBody(h, buf)
+			msg, err := mrt.ParseBody(buf, h)
 			if err != nil {
 				printError(fmt.Errorf("failed to parse: %s", err))
 				continue
@@ -145,7 +145,7 @@ func injectMrt() error {
 						if mrtOpts.NextHop != nil {
 							for i, attr := range e.PathAttributes {
 								if attr.GetType() == bgp.BGP_ATTR_TYPE_NEXT_HOP {
-									e.PathAttributes[i] = bgp.NewPathAttributeNextHop(mrtOpts.NextHop.String())
+									e.PathAttributes[i], _ = bgp.NewPathAttributeNextHop(netip.MustParseAddr(mrtOpts.NextHop.String()))
 									break
 								}
 							}
@@ -158,16 +158,17 @@ func injectMrt() error {
 								attrs = append(attrs, attr)
 							} else {
 								a := attr.(*bgp.PathAttributeMpReachNLRI)
-								nexthop := a.Nexthop.String()
+								nexthop := a.Nexthop
 								if mrtOpts.NextHop != nil {
-									nexthop = mrtOpts.NextHop.String()
+									nexthop = netip.MustParseAddr(mrtOpts.NextHop.String())
 								}
-								attrs = append(attrs, bgp.NewPathAttributeMpReachNLRI(nexthop, nlri))
+								attr, _ := bgp.NewPathAttributeMpReachNLRI(rib.Family, []bgp.PathNLRI{{NLRI: nlri}}, nexthop)
+								attrs = append(attrs, attr)
 							}
 						}
 					}
 
-					path, _ := apiutil.NewPath(nlri, false, attrs, time.Unix(int64(e.OriginatedTime), 0))
+					path, _ := apiutil.NewPath(rib.Family, nlri, false, attrs, time.Unix(int64(e.OriginatedTime), 0))
 					path.SourceAsn = peers[e.PeerIndex].AS
 					path.SourceId = peers[e.PeerIndex].BgpId.String()
 
@@ -208,6 +209,12 @@ func injectMrt() error {
 			return fmt.Errorf("failed to send: %s", err)
 		}
 	}
+
+	_, err = stream.CloseAndRecv()
+	if err != nil {
+		return fmt.Errorf("failed to close stream: %s", err)
+	}
+
 	return nil
 }
 

@@ -20,12 +20,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"net"
+	"log/slog"
+	"net/netip"
 	"slices"
 	"sort"
 
 	"github.com/osrg/gobgp/v4/pkg/config/oc"
-	"github.com/osrg/gobgp/v4/pkg/log"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
 
@@ -80,13 +80,13 @@ func (r *BestPathReason) String() string {
 
 type PeerInfo struct {
 	AS                      uint32
-	ID                      net.IP
 	LocalAS                 uint32
-	LocalID                 net.IP
-	Address                 net.IP
-	LocalAddress            net.IP
+	ID                      netip.Addr
+	LocalID                 netip.Addr
+	Address                 netip.Addr
+	LocalAddress            netip.Addr
+	RouteReflectorClusterID netip.Addr
 	RouteReflectorClient    bool
-	RouteReflectorClusterID net.IP
 	MultihopTtl             uint8
 	Confederation           bool
 }
@@ -100,14 +100,14 @@ func (lhs *PeerInfo) Equal(rhs *PeerInfo) bool {
 		return false
 	}
 
-	if lhs.AS == rhs.AS && lhs.ID.Equal(rhs.ID) && lhs.LocalID.Equal(rhs.LocalID) && lhs.Address.Equal(rhs.Address) {
+	if lhs.AS == rhs.AS && lhs.ID == rhs.ID && lhs.LocalID == rhs.LocalID && lhs.Address == rhs.Address {
 		return true
 	}
 	return false
 }
 
 func (i *PeerInfo) String() string {
-	if i.Address == nil {
+	if !i.Address.IsValid() {
 		return "local"
 	}
 	s := bytes.NewBuffer(make([]byte, 0, 64))
@@ -121,32 +121,29 @@ func (i *PeerInfo) String() string {
 	return s.String()
 }
 
-func NewPeerInfo(g *oc.Global, p *oc.Neighbor) *PeerInfo {
-	clusterID := net.ParseIP(string(p.RouteReflector.State.RouteReflectorClusterId)).To4()
-	// exclude zone info
-	naddr, _ := net.ResolveIPAddr("ip", p.State.NeighborAddress)
+func NewPeerInfo(g *oc.Global, p *oc.Neighbor, AS, localAS uint32, ID, localID netip.Addr, addr, localAddr netip.Addr) *PeerInfo {
 	return &PeerInfo{
-		AS:                      p.Config.PeerAs,
-		LocalAS:                 g.Config.As,
-		LocalID:                 net.ParseIP(g.Config.RouterId).To4(),
+		AS:                      AS,
+		LocalAS:                 localAS,
+		ID:                      ID,
+		LocalID:                 localID,
+		Address:                 addr,
+		LocalAddress:            localAddr,
+		RouteReflectorClusterID: p.RouteReflector.State.RouteReflectorClusterId,
 		RouteReflectorClient:    p.RouteReflector.Config.RouteReflectorClient,
-		Address:                 naddr.IP,
-		RouteReflectorClusterID: clusterID,
 		MultihopTtl:             p.EbgpMultihop.Config.MultihopTtl,
 		Confederation:           p.IsConfederationMember(g),
 	}
 }
 
 type Destination struct {
-	family        bgp.Family
-	nlri          bgp.AddrPrefixInterface
+	nlri          bgp.NLRI
 	knownPathList []*Path
 	localIdMap    *Bitmap
 }
 
-func NewDestination(nlri bgp.AddrPrefixInterface, mapSize int, known ...*Path) *Destination {
+func NewDestination(nlri bgp.NLRI, mapSize int, known ...*Path) *Destination {
 	d := &Destination{
-		family:        bgp.NewFamily(nlri.AFI(), nlri.SAFI()),
 		nlri:          nlri,
 		knownPathList: known,
 		localIdMap:    NewBitmap(mapSize),
@@ -158,19 +155,11 @@ func NewDestination(nlri bgp.AddrPrefixInterface, mapSize int, known ...*Path) *
 	return d
 }
 
-func (dd *Destination) Family() bgp.Family {
-	return dd.family
-}
-
-func (dd *Destination) setFamily(Family bgp.Family) {
-	dd.family = Family
-}
-
-func (dd *Destination) GetNlri() bgp.AddrPrefixInterface {
+func (dd *Destination) GetNlri() bgp.NLRI {
 	return dd.nlri
 }
 
-func (dd *Destination) setNlri(nlri bgp.AddrPrefixInterface) {
+func (dd *Destination) setNlri(nlri bgp.NLRI) {
 	dd.nlri = nlri
 }
 
@@ -271,14 +260,14 @@ outer:
 //
 // Modifies destination's state related to stored paths. Removes withdrawn
 // paths from known paths. Also, adds new paths to known paths.
-func (dest *Destination) Calculate(logger log.Logger, newPath *Path) *Update {
+func (dest *Destination) Calculate(logger *slog.Logger, newPath *Path) *Update {
 	oldKnownPathList := make([]*Path, len(dest.knownPathList))
 	copy(oldKnownPathList, dest.knownPathList)
 
 	if newPath.IsWithdraw {
 		p := dest.explicitWithdraw(logger, newPath)
 		if p != nil && newPath.IsDropped() {
-			if id := p.GetNlri().PathLocalIdentifier(); id != 0 {
+			if id := p.localID; id != 0 {
 				dest.localIdMap.Unflag(uint(id))
 			}
 		}
@@ -290,13 +279,13 @@ func (dest *Destination) Calculate(logger log.Logger, newPath *Path) *Update {
 	}
 
 	for _, path := range dest.knownPathList {
-		if path.GetNlri().PathLocalIdentifier() == 0 {
+		if path.localID == 0 {
 			id, err := dest.localIdMap.FindandSetZeroBit()
 			if err != nil {
 				dest.localIdMap.Expand()
 				id, _ = dest.localIdMap.FindandSetZeroBit()
 			}
-			path.GetNlri().SetPathLocalIdentifier(uint32(id))
+			path.localID = uint32(id)
 		}
 	}
 
@@ -315,23 +304,17 @@ func (dest *Destination) Calculate(logger log.Logger, newPath *Path) *Update {
 // since not all paths get installed into the table due to bgp policy and
 // we can receive withdraws for such paths and withdrawals may not be
 // stopped by the same policies.
-func (dest *Destination) explicitWithdraw(logger log.Logger, withdraw *Path) *Path {
-	if logger.GetLevel() >= log.DebugLevel {
-		logger.Debug("Removing withdrawals",
-			log.Fields{
-				"Topic": "Table",
-				"Key":   dest.GetNlri().String(),
-			})
-	}
+func (dest *Destination) explicitWithdraw(logger *slog.Logger, withdraw *Path) *Path {
+	logger.Debug("Removing withdrawals",
+		slog.String("Topic", "Table"),
+		slog.String("Key", dest.GetNlri().String()))
 
 	// If we have some withdrawals and no know-paths, it means it is safe to
 	// delete these withdraws.
 	if len(dest.knownPathList) == 0 {
 		logger.Debug("Found withdrawals for path(s) that did not get installed",
-			log.Fields{
-				"Topic": "Table",
-				"Key":   dest.GetNlri().String(),
-			})
+			slog.String("Topic", "Table"),
+			slog.String("Key", dest.GetNlri().String()))
 		return nil
 	}
 
@@ -341,18 +324,16 @@ func (dest *Destination) explicitWithdraw(logger log.Logger, withdraw *Path) *Pa
 		// We have a match if the source and path-id are same.
 		if path.EqualBySourceAndPathID(withdraw) {
 			isFound = i
-			withdraw.GetNlri().SetPathLocalIdentifier(path.GetNlri().PathLocalIdentifier())
+			withdraw.localID = path.localID
 		}
 	}
 
 	// We do no have any match for this withdraw.
 	if isFound == -1 {
 		logger.Warn("No matching path for withdraw found, may be path was not installed into table",
-			log.Fields{
-				"Topic": "Table",
-				"Key":   dest.GetNlri().String(),
-				"Path":  withdraw,
-			})
+			slog.String("Topic", "Table"),
+			slog.String("Key", dest.GetNlri().String()),
+			slog.String("Path", withdraw.String()))
 		return nil
 	} else {
 		p := dest.knownPathList[isFound]
@@ -365,7 +346,7 @@ func (dest *Destination) explicitWithdraw(logger log.Logger, withdraw *Path) *Pa
 //
 // Known paths will no longer have paths whose new version is present in
 // new paths.
-func (dest *Destination) implicitWithdraw(logger log.Logger, newPath *Path) {
+func (dest *Destination) implicitWithdraw(logger *slog.Logger, newPath *Path) {
 	found := -1
 	for i, path := range dest.knownPathList {
 		if path.NoImplicitWithdraw() {
@@ -376,17 +357,13 @@ func (dest *Destination) implicitWithdraw(logger log.Logger, newPath *Path) {
 		// paths and when doing RouteRefresh (not EnhancedRouteRefresh)
 		// we get same paths again.
 		if newPath.EqualBySourceAndPathID(path) {
-			if logger.GetLevel() >= log.DebugLevel {
-				logger.Debug("Implicit withdrawal of old path, since we have learned new path from the same peer",
-					log.Fields{
-						"Topic": "Table",
-						"Key":   dest.GetNlri().String(),
-						"Path":  path,
-					})
-			}
+			logger.Debug("Implicit withdrawal of old path, since we have learned new path from the same peer",
+				slog.String("Topic", "Table"),
+				slog.String("Key", dest.GetNlri().String()),
+				slog.String("Path", path.String()))
 
 			found = i
-			newPath.GetNlri().SetPathLocalIdentifier(path.GetNlri().PathLocalIdentifier())
+			newPath.localID = path.localID
 			break
 		}
 	}
@@ -842,8 +819,8 @@ func compareByRouterID(path1, path2 *Path) (*Path, error) {
 	}
 
 	// At least one path is not coming from NC, so we get local bgp id.
-	id1 := binary.BigEndian.Uint32(path1.GetSource().ID)
-	id2 := binary.BigEndian.Uint32(path2.GetSource().ID)
+	id1 := binary.BigEndian.Uint32(path1.GetSource().ID.AsSlice())
+	id2 := binary.BigEndian.Uint32(path2.GetSource().ID.AsSlice())
 
 	// If both router ids are same/equal we cannot decide.
 	// This case is possible since router ids are arbitrary.
@@ -861,15 +838,15 @@ func compareByNeighborAddress(path1, path2 *Path) *Path {
 	// per RFC 4271 9.1.2.2. g
 
 	p1 := path1.GetSource().Address
-	if p1 == nil {
+	if !p1.IsValid() {
 		return path1
 	}
 	p2 := path2.GetSource().Address
-	if p2 == nil {
+	if !p2.IsValid() {
 		return path2
 	}
 
-	cmp := bytes.Compare(p1, p2)
+	cmp := p1.Compare(p2)
 	if cmp < 0 {
 		return path1
 	} else if cmp > 0 {

@@ -20,7 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net"
+	"net/netip"
 
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
@@ -55,12 +55,6 @@ const (
 	BMP_PEER_FLAG_ADJ_RIB_TYP = 1 << 4
 )
 
-func makeIP(data []byte) net.IP {
-	ip := make(net.IP, len(data))
-	copy(ip, data)
-	return ip
-}
-
 func (h *BMPHeader) DecodeFromBytes(data []byte) error {
 	if len(data) < BMP_HEADER_SIZE {
 		return errors.New("invalid BMP header length")
@@ -86,28 +80,41 @@ type BMPPeerHeader struct {
 	PeerType          uint8
 	Flags             uint8
 	PeerDistinguisher uint64
-	PeerAddress       net.IP
+	PeerAddress       netip.Addr
 	PeerAS            uint32
-	PeerBGPID         net.IP
+	PeerBGPID         netip.Addr
 	Timestamp         float64
 }
 
-func NewBMPPeerHeader(t uint8, flags uint8, dist uint64, address string, as uint32, id string, stamp float64) *BMPPeerHeader {
+func NewBMPPeerHeader(t uint8, flags uint8, dist uint64, address netip.Addr, as uint32, id netip.Addr, stamp float64) *BMPPeerHeader {
+	// TODO: check id is v4
+	// RFC9069: For Peer Type = 3 (Loc-RIB Instance Peer), bit 0 (0x80)
+	// is redefined as the F (Filtered) flag, and the V (IPv6) flag is not applicable.
+	if t != BMP_PEER_TYPE_LOCAL_RIB && address.Is6() {
+		flags |= BMP_PEER_FLAG_IPV6
+	}
 	h := &BMPPeerHeader{
 		PeerType:          t,
 		Flags:             flags,
 		PeerDistinguisher: dist,
+		PeerAddress:       address,
 		PeerAS:            as,
-		PeerBGPID:         net.ParseIP(id).To4(),
+		PeerBGPID:         id,
 		Timestamp:         stamp,
 	}
-	if net.ParseIP(address).To4() != nil {
-		h.PeerAddress = net.ParseIP(address).To4()
-	} else {
-		h.PeerAddress = net.ParseIP(address).To16()
-		h.Flags |= BMP_PEER_FLAG_IPV6
-	}
 	return h
+}
+
+func (h *BMPPeerHeader) hasVFlag() bool {
+	return h.PeerType != BMP_PEER_TYPE_LOCAL_RIB && h.Flags&BMP_PEER_FLAG_IPV6 != 0
+}
+
+func (h *BMPPeerHeader) isLocRIBInstancePeer() bool {
+	return h.PeerType == BMP_PEER_TYPE_LOCAL_RIB
+}
+
+func (h *BMPPeerHeader) isFilteredLocRIB() bool {
+	return h.PeerType == BMP_PEER_TYPE_LOCAL_RIB && h.Flags&BMP_PEER_FLAG_IPV6 != 0
 }
 
 func (h *BMPPeerHeader) IsPostPolicy() bool {
@@ -129,13 +136,16 @@ func (h *BMPPeerHeader) DecodeFromBytes(data []byte) error {
 	h.PeerType = data[0]
 	h.Flags = data[1]
 	h.PeerDistinguisher = binary.BigEndian.Uint64(data[2:10])
-	if h.Flags&BMP_PEER_FLAG_IPV6 != 0 {
-		h.PeerAddress = makeIP(data[10:26]).To16()
+	if h.PeerType == BMP_PEER_TYPE_LOCAL_RIB {
+		// RFC9069: Peer Address is set to 0 and has no meaning for Peer Type = 3.
+		h.PeerAddress = netip.Addr{}
+	} else if h.hasVFlag() {
+		h.PeerAddress, _ = netip.AddrFromSlice(data[10:26])
 	} else {
-		h.PeerAddress = makeIP(data[22:26]).To4()
+		h.PeerAddress, _ = netip.AddrFromSlice(data[22:26])
 	}
 	h.PeerAS = binary.BigEndian.Uint32(data[26:30])
-	h.PeerBGPID = data[30:34]
+	h.PeerBGPID, _ = netip.AddrFromSlice(data[30:34])
 
 	timestamp1 := binary.BigEndian.Uint32(data[34:38])
 	timestamp2 := binary.BigEndian.Uint32(data[38:42])
@@ -148,13 +158,16 @@ func (h *BMPPeerHeader) Serialize() ([]byte, error) {
 	buf[0] = h.PeerType
 	buf[1] = h.Flags
 	binary.BigEndian.PutUint64(buf[2:10], h.PeerDistinguisher)
-	if h.Flags&BMP_PEER_FLAG_IPV6 != 0 {
-		copy(buf[10:26], h.PeerAddress)
+	if h.PeerType == BMP_PEER_TYPE_LOCAL_RIB {
+		// RFC9069: Peer Address MUST be set to 0 for Peer Type = 3.
+		// Leave the field as zeros.
+	} else if h.hasVFlag() {
+		copy(buf[10:26], h.PeerAddress.AsSlice())
 	} else {
-		copy(buf[22:26], h.PeerAddress.To4())
+		copy(buf[22:26], h.PeerAddress.AsSlice())
 	}
 	binary.BigEndian.PutUint32(buf[26:30], h.PeerAS)
-	copy(buf[30:34], h.PeerBGPID)
+	copy(buf[30:34], h.PeerBGPID.AsSlice())
 	t1, t2 := math.Modf(h.Timestamp)
 	t2 = math.Ceil(t2 * math.Pow10(6))
 	binary.BigEndian.PutUint32(buf[34:38], uint32(t1))
@@ -412,15 +425,20 @@ const (
 	BMP_PEER_DOWN_REASON_REMOTE_BGP_NOTIFICATION
 	BMP_PEER_DOWN_REASON_REMOTE_NO_NOTIFICATION
 	BMP_PEER_DOWN_REASON_PEER_DE_CONFIGURED
+	// RFC9069: Peer Down reason code 6 indicates that a sequence of
+	// Information TLVs follows.
+	BMP_PEER_DOWN_REASON_TLV_FOLLOWS
 )
 
 type BMPPeerDownNotification struct {
 	Reason          uint8
 	BGPNotification *bgp.BGPMessage
 	Data            []byte
+	// Info carries RFC9069 Peer Down Information TLVs (reason=6).
+	Info []BMPInfoTLVInterface
 }
 
-func NewBMPPeerDownNotification(p BMPPeerHeader, reason uint8, notification *bgp.BGPMessage, data []byte) *BMPMessage {
+func NewBMPPeerDownNotification(p BMPPeerHeader, reason uint8, notification *bgp.BGPMessage, data []byte, info ...BMPInfoTLVInterface) *BMPMessage {
 	b := &BMPPeerDownNotification{
 		Reason: reason,
 	}
@@ -429,6 +447,8 @@ func NewBMPPeerDownNotification(p BMPPeerHeader, reason uint8, notification *bgp
 		b.BGPNotification = notification
 	case BMP_PEER_DOWN_REASON_LOCAL_NO_NOTIFICATION:
 		b.Data = data
+	case BMP_PEER_DOWN_REASON_TLV_FOLLOWS:
+		b.Info = append([]BMPInfoTLVInterface(nil), info...)
 	default:
 	}
 	return &BMPMessage{
@@ -442,15 +462,27 @@ func NewBMPPeerDownNotification(p BMPPeerHeader, reason uint8, notification *bgp
 }
 
 func (body *BMPPeerDownNotification) ParseBody(msg *BMPMessage, data []byte, options ...*bgp.MarshallingOption) error {
+	if len(data) < 1 {
+		return errors.New("invalid BMP Peer Down notification length")
+	}
 	body.Reason = data[0]
 	data = data[1:]
-	if body.Reason == BMP_PEER_DOWN_REASON_LOCAL_BGP_NOTIFICATION || body.Reason == BMP_PEER_DOWN_REASON_REMOTE_BGP_NOTIFICATION {
+	switch body.Reason {
+	case BMP_PEER_DOWN_REASON_LOCAL_BGP_NOTIFICATION, BMP_PEER_DOWN_REASON_REMOTE_BGP_NOTIFICATION:
 		notification, err := bgp.ParseBGPMessage(data, options...)
 		if err != nil {
 			return err
 		}
 		body.BGPNotification = notification
-	} else {
+	case BMP_PEER_DOWN_REASON_TLV_FOLLOWS:
+		if len(data) > 0 {
+			info, err := parseBMPInfoTLVs(data)
+			if err != nil {
+				return err
+			}
+			body.Info = info
+		}
+	default:
 		body.Data = data
 	}
 	return nil
@@ -469,6 +501,14 @@ func (body *BMPPeerDownNotification) Serialize(options ...*bgp.MarshallingOption
 				buf = append(buf, b...)
 			}
 		}
+	case BMP_PEER_DOWN_REASON_TLV_FOLLOWS:
+		if len(body.Info) > 0 {
+			tlvBuf, err := serializeBMPInfoTLVs(body.Info)
+			if err != nil {
+				return nil, err
+			}
+			buf = append(buf, tlvBuf...)
+		}
 	default:
 		if body.Data != nil {
 			buf = append(buf, body.Data...)
@@ -478,25 +518,24 @@ func (body *BMPPeerDownNotification) Serialize(options ...*bgp.MarshallingOption
 }
 
 type BMPPeerUpNotification struct {
-	LocalAddress    net.IP
+	LocalAddress    netip.Addr
 	LocalPort       uint16
 	RemotePort      uint16
 	SentOpenMsg     *bgp.BGPMessage
 	ReceivedOpenMsg *bgp.BGPMessage
+	// Info carries RFC7854/RFC9069 Peer Up Information TLVs.
+	// These TLVs, if present, follow the two BGP OPEN messages.
+	Info []BMPInfoTLVInterface
 }
 
-func NewBMPPeerUpNotification(p BMPPeerHeader, lAddr string, lPort, rPort uint16, sent, recv *bgp.BGPMessage) *BMPMessage {
+func NewBMPPeerUpNotification(p BMPPeerHeader, lAddr netip.Addr, lPort, rPort uint16, sent, recv *bgp.BGPMessage, info ...BMPInfoTLVInterface) *BMPMessage {
 	b := &BMPPeerUpNotification{
+		LocalAddress:    lAddr,
 		LocalPort:       lPort,
 		RemotePort:      rPort,
 		SentOpenMsg:     sent,
 		ReceivedOpenMsg: recv,
-	}
-	addr := net.ParseIP(lAddr)
-	if addr.To4() != nil {
-		b.LocalAddress = addr.To4()
-	} else {
-		b.LocalAddress = addr.To16()
+		Info:            append([]BMPInfoTLVInterface(nil), info...),
 	}
 	return &BMPMessage{
 		Header: BMPHeader{
@@ -509,10 +548,10 @@ func NewBMPPeerUpNotification(p BMPPeerHeader, lAddr string, lPort, rPort uint16
 }
 
 func (body *BMPPeerUpNotification) ParseBody(msg *BMPMessage, data []byte, options ...*bgp.MarshallingOption) error {
-	if msg.PeerHeader.Flags&BMP_PEER_FLAG_IPV6 != 0 {
-		body.LocalAddress = makeIP(data[:16]).To16()
+	if msg.PeerHeader.PeerType != BMP_PEER_TYPE_LOCAL_RIB && msg.PeerHeader.Flags&BMP_PEER_FLAG_IPV6 != 0 {
+		body.LocalAddress, _ = netip.AddrFromSlice(data[:16])
 	} else {
-		body.LocalAddress = makeIP(data[12:16]).To4()
+		body.LocalAddress, _ = netip.AddrFromSlice(data[12:16])
 	}
 
 	body.LocalPort = binary.BigEndian.Uint16(data[16:18])
@@ -529,15 +568,23 @@ func (body *BMPPeerUpNotification) ParseBody(msg *BMPMessage, data []byte, optio
 	if err != nil {
 		return err
 	}
+	data = data[body.ReceivedOpenMsg.Header.Len:]
+	if len(data) > 0 {
+		info, err := parseBMPInfoTLVs(data)
+		if err != nil {
+			return err
+		}
+		body.Info = info
+	}
 	return nil
 }
 
 func (body *BMPPeerUpNotification) Serialize(options ...*bgp.MarshallingOption) ([]byte, error) {
 	buf := make([]byte, 20)
-	if body.LocalAddress.To4() != nil {
-		copy(buf[12:16], body.LocalAddress.To4())
+	if body.LocalAddress.Is4() {
+		copy(buf[12:16], body.LocalAddress.AsSlice())
 	} else {
-		copy(buf[:16], body.LocalAddress.To16())
+		copy(buf[:16], body.LocalAddress.AsSlice())
 	}
 
 	binary.BigEndian.PutUint16(buf[16:18], body.LocalPort)
@@ -547,13 +594,22 @@ func (body *BMPPeerUpNotification) Serialize(options ...*bgp.MarshallingOption) 
 	buf = append(buf, m...)
 	m, _ = body.ReceivedOpenMsg.Serialize(options...)
 	buf = append(buf, m...)
+	if len(body.Info) > 0 {
+		tlvBuf, err := serializeBMPInfoTLVs(body.Info)
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, tlvBuf...)
+	}
 	return buf, nil
 }
 
 const (
-	BMP_INIT_TLV_TYPE_STRING = iota
+	BMP_INIT_TLV_TYPE_STRING uint16 = iota
 	BMP_INIT_TLV_TYPE_SYS_DESCR
 	BMP_INIT_TLV_TYPE_SYS_NAME
+	// RFC9069: Peer Up Information TLV for Loc-RIB monitoring.
+	BMP_INIT_TLV_TYPE_VRF_TABLE_NAME
 )
 
 type BMPInfoTLVInterface interface {
@@ -635,6 +691,20 @@ func NewBMPInitiation(info []BMPInfoTLVInterface) *BMPMessage {
 }
 
 func (body *BMPInitiation) ParseBody(msg *BMPMessage, data []byte, options ...*bgp.MarshallingOption) error {
+	info, err := parseBMPInfoTLVs(data)
+	if err != nil {
+		return err
+	}
+	body.Info = info
+	return nil
+}
+
+func (body *BMPInitiation) Serialize(options ...*bgp.MarshallingOption) ([]byte, error) {
+	return serializeBMPInfoTLVs(body.Info)
+}
+
+func parseBMPInfoTLVs(data []byte) ([]BMPInfoTLVInterface, error) {
+	var info []BMPInfoTLVInterface
 	for len(data) >= 4 {
 		tl := BMPInfoTLV{
 			Type:   binary.BigEndian.Uint16(data[:2]),
@@ -642,30 +712,30 @@ func (body *BMPInitiation) ParseBody(msg *BMPMessage, data []byte, options ...*b
 		}
 		data = data[4:]
 		if len(data) < int(tl.Length) {
-			return fmt.Errorf("value length is not enough: %d bytes (%d bytes expected)", len(data), tl.Length)
+			return nil, fmt.Errorf("value length is not enough: %d bytes (%d bytes expected)", len(data), tl.Length)
 		}
 		var tlv BMPInfoTLVInterface
 		switch tl.Type {
-		case BMP_INIT_TLV_TYPE_STRING, BMP_INIT_TLV_TYPE_SYS_DESCR, BMP_INIT_TLV_TYPE_SYS_NAME:
+		case BMP_INIT_TLV_TYPE_STRING, BMP_INIT_TLV_TYPE_SYS_DESCR, BMP_INIT_TLV_TYPE_SYS_NAME, BMP_INIT_TLV_TYPE_VRF_TABLE_NAME:
 			tlv = &BMPInfoTLVString{BMPInfoTLV: tl}
 		default:
 			tlv = &BMPInfoTLVUnknown{BMPInfoTLV: tl}
 		}
 		if err := tlv.ParseValue(data); err != nil {
-			return err
+			return nil, err
 		}
-		body.Info = append(body.Info, tlv)
+		info = append(info, tlv)
 		data = data[tl.Length:]
 	}
-	return nil
+	return info, nil
 }
 
-func (body *BMPInitiation) Serialize(options ...*bgp.MarshallingOption) ([]byte, error) {
+func serializeBMPInfoTLVs(info []BMPInfoTLVInterface) ([]byte, error) {
 	buf := make([]byte, 0)
-	for _, tlv := range body.Info {
+	for _, tlv := range info {
 		b, err := tlv.Serialize()
 		if err != nil {
-			return buf, err
+			return nil, err
 		}
 		buf = append(buf, b...)
 	}

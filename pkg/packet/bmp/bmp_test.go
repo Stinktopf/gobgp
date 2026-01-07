@@ -16,6 +16,7 @@
 package bmp
 
 import (
+	"net/netip"
 	"testing"
 
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
@@ -52,28 +53,93 @@ func Test_Termination(t *testing.T) {
 
 func Test_PeerUpNotification(t *testing.T) {
 	m := bgp.NewTestBGPOpenMessage()
-	p0 := NewBMPPeerHeader(0, 0, 1000, "10.0.0.1", 70000, "10.0.0.2", 1)
-	verify(t, NewBMPPeerUpNotification(*p0, "10.0.0.3", 10, 100, m, m))
-	p1 := NewBMPPeerHeader(0, 0, 1000, "fe80::6e40:8ff:feab:2c2a", 70000, "10.0.0.2", 1)
-	verify(t, NewBMPPeerUpNotification(*p1, "fe80::6e40:8ff:feab:2c2a", 10, 100, m, m))
+	p0 := NewBMPPeerHeader(0, 0, 1000, netip.MustParseAddr("10.0.0.1"), 70000, netip.MustParseAddr("10.0.0.2"), 1)
+	verify(t, NewBMPPeerUpNotification(*p0, netip.MustParseAddr("10.0.0.3"), 10, 100, m, m))
+	p1 := NewBMPPeerHeader(0, 0, 1000, netip.MustParseAddr("fe80::6e40:8ff:feab:2c2a"), 70000, netip.MustParseAddr("10.0.0.2"), 1)
+	verify(t, NewBMPPeerUpNotification(*p1, netip.MustParseAddr("fe80::6e40:8ff:feab:2c2a"), 10, 100, m, m))
+}
+
+func Test_PeerUpNotificationWithInfoTLVs(t *testing.T) {
+	m := bgp.NewTestBGPOpenMessage()
+	p0 := NewBMPPeerHeader(0, 0, 1000, netip.MustParseAddr("10.0.0.1"), 70000, netip.MustParseAddr("10.0.0.2"), 1)
+	verify(t, NewBMPPeerUpNotification(
+		*p0,
+		netip.MustParseAddr("10.0.0.3"),
+		10,
+		100,
+		m,
+		m,
+		NewBMPInfoTLVString(BMP_INIT_TLV_TYPE_VRF_TABLE_NAME, "global"),
+		NewBMPInfoTLVString(BMP_INIT_TLV_TYPE_VRF_TABLE_NAME, "blue"),
+	))
+}
+
+func Test_NewBMPPeerHeader_LocalRIBDoesNotAutoSetVFlag(t *testing.T) {
+	p := NewBMPPeerHeader(
+		BMP_PEER_TYPE_LOCAL_RIB,
+		0,
+		1000,
+		netip.MustParseAddr("2001:db8::1"),
+		65000,
+		netip.MustParseAddr("10.0.0.2"),
+		1,
+	)
+	assert.Equal(t, BMP_PEER_TYPE_LOCAL_RIB, p.PeerType)
+	assert.Equal(t, uint8(0), p.Flags)
+}
+
+func Test_LocalRIBPeerHeader_FilteredFlagRoundTrip(t *testing.T) {
+	m := bgp.NewTestBGPUpdateMessage()
+	p := NewBMPPeerHeader(
+		BMP_PEER_TYPE_LOCAL_RIB,
+		BMP_PEER_FLAG_IPV6, // RFC9069: F flag (Filtered) for peer type 3
+		1000,
+		netip.Addr{},
+		0,
+		netip.MustParseAddr("10.0.0.2"),
+		1,
+	)
+	assert.True(t, p.isLocRIBInstancePeer())
+	assert.True(t, p.isFilteredLocRIB())
+	verify(t, NewBMPRouteMonitoring(*p, m))
 }
 
 func Test_PeerDownNotification(t *testing.T) {
-	p0 := NewBMPPeerHeader(0, 0, 1000, "10.0.0.1", 70000, "10.0.0.2", 1)
+	p0 := NewBMPPeerHeader(0, 0, 1000, netip.MustParseAddr("10.0.0.1"), 70000, netip.MustParseAddr("10.0.0.2"), 1)
 	verify(t, NewBMPPeerDownNotification(*p0, BMP_PEER_DOWN_REASON_LOCAL_NO_NOTIFICATION, nil, []byte{0x3, 0xb}))
 	m := bgp.NewBGPNotificationMessage(1, 2, nil)
 	verify(t, NewBMPPeerDownNotification(*p0, BMP_PEER_DOWN_REASON_LOCAL_BGP_NOTIFICATION, m, nil))
 }
 
+func Test_PeerDownNotificationWithInfoTLVs(t *testing.T) {
+	p0 := NewBMPPeerHeader(
+		BMP_PEER_TYPE_LOCAL_RIB,
+		BMP_PEER_FLAG_IPV6,
+		1000,
+		netip.Addr{},
+		0,
+		netip.MustParseAddr("10.0.0.2"),
+		1,
+	)
+	verify(t, NewBMPPeerDownNotification(
+		*p0,
+		BMP_PEER_DOWN_REASON_TLV_FOLLOWS,
+		nil,
+		nil,
+		NewBMPInfoTLVString(BMP_INIT_TLV_TYPE_VRF_TABLE_NAME, "blue"),
+		NewBMPInfoTLVString(BMP_INIT_TLV_TYPE_VRF_TABLE_NAME, "global"),
+	))
+}
+
 func Test_RouteMonitoring(t *testing.T) {
 	m := bgp.NewTestBGPUpdateMessage()
-	p0 := NewBMPPeerHeader(0, 0, 1000, "fe80::6e40:8ff:feab:2c2a", 70000, "10.0.0.2", 1)
+	p0 := NewBMPPeerHeader(0, 0, 1000, netip.MustParseAddr("fe80::6e40:8ff:feab:2c2a"), 70000, netip.MustParseAddr("10.0.0.2"), 1)
 	verify(t, NewBMPRouteMonitoring(*p0, m))
 }
 
 func Test_RouteMonitoringAdjRIBOut(t *testing.T) {
 	m := bgp.NewTestBGPUpdateMessage()
-	p0 := NewBMPPeerHeader(0, 16, 1000, "10.0.0.1", 12345, "10.0.0.2", 1)
+	p0 := NewBMPPeerHeader(0, 16, 1000, netip.MustParseAddr("10.0.0.1"), 12345, netip.MustParseAddr("10.0.0.2"), 1)
 	assert.True(t, p0.IsAdjRIBOut())
 	verify(t, NewBMPRouteMonitoring(*p0, m))
 }
@@ -82,14 +148,14 @@ func Test_RouteMonitoringAddPath(t *testing.T) {
 	opt := &bgp.MarshallingOption{
 		AddPath: map[bgp.Family]bgp.BGPAddPathMode{bgp.RF_IPv4_UC: bgp.BGP_ADD_PATH_BOTH},
 	}
-	p1 := bgp.NewIPAddrPrefix(24, "10.10.10.0")
-	p1.SetPathLocalIdentifier(10)
+	p1, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("10.10.10.0/24"))
+	panh, _ := bgp.NewPathAttributeNextHop(netip.MustParseAddr("129.1.1.2"))
 	p := []bgp.PathAttributeInterface{
 		bgp.NewPathAttributeOrigin(3),
-		bgp.NewPathAttributeNextHop("129.1.1.2"),
+		panh,
 	}
-	m := bgp.NewBGPUpdateMessage([]*bgp.IPAddrPrefix{}, p, []*bgp.IPAddrPrefix{p1})
-	p0 := NewBMPPeerHeader(0, 0, 1000, "fe80::6e40:8ff:feab:2c2a", 70000, "10.0.0.2", 1)
+	m := bgp.NewBGPUpdateMessage([]bgp.PathNLRI{}, p, []bgp.PathNLRI{{NLRI: p1, ID: 10}})
+	p0 := NewBMPPeerHeader(0, 0, 1000, netip.MustParseAddr("fe80::6e40:8ff:feab:2c2a"), 70000, netip.MustParseAddr("10.0.0.2"), 1)
 
 	m1 := NewBMPRouteMonitoring(*p0, m)
 	buf1, _ := m1.Serialize(opt)
@@ -100,16 +166,13 @@ func Test_RouteMonitoringAddPath(t *testing.T) {
 
 	// We need to fix tha path identifier (local/remote)
 	u2 := m2.Body.(*BMPRouteMonitoring).BGPUpdate.Body.(*bgp.BGPUpdate).NLRI[0]
-	assert.Equal(t, u2.PathIdentifier(), uint32(10))
-	assert.Equal(t, u2.PathLocalIdentifier(), uint32(0))
-	u2.SetPathIdentifier(0)
-	u2.SetPathLocalIdentifier(10)
+	assert.Equal(t, u2.ID, uint32(10))
 
 	assert.Equal(t, m1, m2)
 }
 
 func Test_StatisticsReport(t *testing.T) {
-	p0 := NewBMPPeerHeader(0, 0, 1000, "10.0.0.1", 70000, "10.0.0.2", 1)
+	p0 := NewBMPPeerHeader(0, 0, 1000, netip.MustParseAddr("10.0.0.1"), 70000, netip.MustParseAddr("10.0.0.2"), 1)
 	s0 := NewBMPStatisticsReport(
 		*p0,
 		[]BMPStatsTLVInterface{
@@ -122,7 +185,7 @@ func Test_StatisticsReport(t *testing.T) {
 }
 
 func Test_StatisticsReportAdjRIBOut(t *testing.T) {
-	p0 := NewBMPPeerHeader(0, 8, 1000, "10.0.0.1", 12345, "10.0.0.2", 1)
+	p0 := NewBMPPeerHeader(0, 8, 1000, netip.MustParseAddr("10.0.0.1"), 12345, netip.MustParseAddr("10.0.0.2"), 1)
 	s0 := NewBMPStatisticsReport(
 		*p0,
 		[]BMPStatsTLVInterface{
@@ -134,7 +197,7 @@ func Test_StatisticsReportAdjRIBOut(t *testing.T) {
 }
 
 func Test_RouteMirroring(t *testing.T) {
-	p0 := NewBMPPeerHeader(0, 0, 1000, "10.0.0.1", 70000, "10.0.0.2", 1)
+	p0 := NewBMPPeerHeader(0, 0, 1000, netip.MustParseAddr("10.0.0.1"), 70000, netip.MustParseAddr("10.0.0.2"), 1)
 	s0 := NewBMPRouteMirroring(
 		*p0,
 		[]BMPRouteMirrTLVInterface{

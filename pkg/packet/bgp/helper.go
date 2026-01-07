@@ -15,6 +15,10 @@
 
 package bgp
 
+import (
+	"net/netip"
+)
+
 func NewTestBGPOpenMessage() *BGPMessage {
 	p1 := NewOptionParameterCapability(
 		[]ParameterCapabilityInterface{NewCapRouteRefresh()})
@@ -28,14 +32,15 @@ func NewTestBGPOpenMessage() *BGPMessage {
 		[]ParameterCapabilityInterface{NewCapFourOctetASNumber(100000)})
 	p5 := NewOptionParameterCapability(
 		[]ParameterCapabilityInterface{NewCapAddPath([]*CapAddPathTuple{NewCapAddPathTuple(RF_IPv4_UC, BGP_ADD_PATH_BOTH)})})
-	return NewBGPOpenMessage(11033, 303, "100.4.10.3",
+	msg, _ := NewBGPOpenMessage(11033, 303, netip.MustParseAddr("100.4.10.3"),
 		[]OptionParameterInterface{p1, p2, p3, p4, p5})
+	return msg
 }
 
 func NewTestBGPUpdateMessage() *BGPMessage {
-	w1 := NewIPAddrPrefix(23, "121.1.3.2")
-	w2 := NewIPAddrPrefix(17, "100.33.3.0")
-	w := []*IPAddrPrefix{w1, w2}
+	w1, _ := NewIPAddrPrefix(netip.MustParsePrefix("121.1.3.2/23"))
+	w2, _ := NewIPAddrPrefix(netip.MustParsePrefix("100.33.3.0/17"))
+	w := []NLRI{w1, w2}
 
 	aspath1 := []AsPathParamInterface{
 		NewAsPathParam(2, []uint16{1000}),
@@ -57,10 +62,11 @@ func NewTestBGPUpdateMessage() *BGPMessage {
 
 	isTransitive := true
 
+	ex3, _ := NewIPv4AddressSpecificExtended(EC_SUBTYPE_ROUTE_TARGET, netip.MustParseAddr("192.2.1.2"), 3000, isTransitive)
 	ecommunities := []ExtendedCommunityInterface{
 		NewTwoOctetAsSpecificExtended(EC_SUBTYPE_ROUTE_TARGET, 10003, 3<<20, isTransitive),
 		NewFourOctetAsSpecificExtended(EC_SUBTYPE_ROUTE_TARGET, 1<<20, 300, isTransitive),
-		NewIPv4AddressSpecificExtended(EC_SUBTYPE_ROUTE_TARGET, "192.2.1.2", 3000, isTransitive),
+		ex3,
 		NewOpaqueExtended(false, []byte{1, 2, 3, 4, 5, 6, 7}),
 		NewValidationExtended(VALIDATION_STATE_INVALID),
 		NewUnknownExtended(99, []byte{0, 1, 2, 3, 4, 5, 6, 7}),
@@ -69,61 +75,82 @@ func NewTestBGPUpdateMessage() *BGPMessage {
 		NewMacMobilityExtended(123, false),
 	}
 
-	prefixes1 := []AddrPrefixInterface{
-		NewLabeledVPNIPAddrPrefix(24, "192.0.9.0", *NewMPLSLabelStack(1, 2, 3),
-			NewRouteDistinguisherTwoOctetAS(256, 10000)),
-		NewLabeledVPNIPAddrPrefix(24, "192.10.8.0", *NewMPLSLabelStack(5, 6, 7, 8),
-			NewRouteDistinguisherIPAddressAS("10.0.1.1", 10001)),
-	}
+	vpn1, _ := NewLabeledVPNIPAddrPrefix(netip.MustParsePrefix("192.0.9.0/24"), *NewMPLSLabelStack(1, 2, 3),
+		NewRouteDistinguisherTwoOctetAS(256, 10000))
+	rd, _ := NewRouteDistinguisherIPAddressAS(netip.MustParseAddr("10.0.1.1"), 10001)
+	vpn2, _ := NewLabeledVPNIPAddrPrefix(netip.MustParsePrefix("192.10.8.0/24"), *NewMPLSLabelStack(5, 6, 7, 8), rd)
+	prefixes1 := []NLRI{vpn1, vpn2}
 
-	prefixes2 := []AddrPrefixInterface{NewIPv6AddrPrefix(128,
-		"fe80:1234:1234:5667:8967:af12:8912:1023")}
+	nlri, _ := NewIPAddrPrefix(netip.MustParsePrefix("fe80:1234:1234:5667:8967:af12:8912:1023/128"))
+	prefixes2 := []NLRI{nlri}
 
-	prefixes3 := []AddrPrefixInterface{NewLabeledVPNIPv6AddrPrefix(128,
-		"fe80:1234:1234:5667:8967:af12:1203:33a1", *NewMPLSLabelStack(5, 6),
-		NewRouteDistinguisherFourOctetAS(5, 6))}
+	vpn3, _ := NewLabeledVPNIPAddrPrefix(netip.MustParsePrefix("fe80:1234:1234:5667:8967:af12:1203:33a1/128"), *NewMPLSLabelStack(5, 6), NewRouteDistinguisherFourOctetAS(5, 6))
+	prefixes3 := []NLRI{vpn3}
 
-	prefixes4 := []AddrPrefixInterface{NewLabeledIPAddrPrefix(25, "192.168.0.0",
-		*NewMPLSLabelStack(5, 6, 7))}
+	mpls, _ := NewLabeledIPAddrPrefix(netip.MustParsePrefix("192.168.0.0/25"), *NewMPLSLabelStack(5, 6, 7))
+	prefixes4 := []NLRI{mpls}
 
-	prefixes5 := []AddrPrefixInterface{
+	r2, _ := NewEVPNMacIPAdvertisementRoute(NewRouteDistinguisherFourOctetAS(5, 6), EthernetSegmentIdentifier{ESI_ARBITRARY, make([]byte, 9)}, 3, "01:23:45:67:89:ab", netip.MustParseAddr("192.2.1.2"), []uint32{3, 4})
+	r3, _ := NewEVPNMulticastEthernetTagRoute(NewRouteDistinguisherFourOctetAS(5, 6), 3, netip.MustParseAddr("192.2.1.2"))
+	r4, _ := NewEVPNEthernetSegmentRoute(NewRouteDistinguisherFourOctetAS(5, 6), EthernetSegmentIdentifier{ESI_ARBITRARY, make([]byte, 9)}, netip.MustParseAddr("192.2.1.1"))
+	r5, _ := NewEVPNIPPrefixRoute(NewRouteDistinguisherFourOctetAS(5, 6), EthernetSegmentIdentifier{ESI_ARBITRARY, make([]byte, 9)}, 5, 24, netip.MustParseAddr("192.2.1.0"), netip.MustParseAddr("192.3.1.1"), 5)
+	prefixes5 := []NLRI{
 		NewEVPNEthernetAutoDiscoveryRoute(NewRouteDistinguisherFourOctetAS(5, 6), EthernetSegmentIdentifier{ESI_ARBITRARY, make([]byte, 9)}, 2, 2),
-		NewEVPNMacIPAdvertisementRoute(NewRouteDistinguisherFourOctetAS(5, 6), EthernetSegmentIdentifier{ESI_ARBITRARY, make([]byte, 9)}, 3, "01:23:45:67:89:ab", "192.2.1.2", []uint32{3, 4}),
-		NewEVPNMulticastEthernetTagRoute(NewRouteDistinguisherFourOctetAS(5, 6), 3, "192.2.1.2"),
-		NewEVPNEthernetSegmentRoute(NewRouteDistinguisherFourOctetAS(5, 6), EthernetSegmentIdentifier{ESI_ARBITRARY, make([]byte, 9)}, "192.2.1.1"),
-		NewEVPNIPPrefixRoute(NewRouteDistinguisherFourOctetAS(5, 6), EthernetSegmentIdentifier{ESI_ARBITRARY, make([]byte, 9)}, 5, 24, "192.2.1.0", "192.3.1.1", 5),
+		r2,
+		r3,
+		r4,
+		r5,
 	}
 
-	prefixes6 := []AddrPrefixInterface{NewVPLSNLRI(NewRouteDistinguisherFourOctetAS(5, 6), 101, 100, 10, 1000)}
+	prefixes6 := []NLRI{NewVPLSNLRI(NewRouteDistinguisherFourOctetAS(5, 6), 101, 100, 10, 1000)}
 
+	panh, _ := NewPathAttributeNextHop(netip.MustParseAddr("129.1.1.2"))
+	paag1, _ := NewPathAttributeAggregator(uint16(30002), netip.MustParseAddr("129.0.2.99"))
+	paag2, _ := NewPathAttributeAggregator(uint32(30002), netip.MustParseAddr("129.0.2.99"))
+	paag3, _ := NewPathAttributeAggregator(uint32(300020), netip.MustParseAddr("129.0.2.99"))
+	paag4, _ := NewPathAttributeAs4Aggregator(10000, netip.MustParseAddr("112.22.2.1"))
+	paorig, _ := NewPathAttributeOriginatorId(netip.MustParseAddr("10.10.0.1"))
+	pacluster, _ := NewPathAttributeClusterList([]netip.Addr{netip.MustParseAddr("10.10.0.2"), netip.MustParseAddr("10.10.0.3")})
 	p := []PathAttributeInterface{
 		NewPathAttributeOrigin(3),
 		NewPathAttributeAsPath(aspath1),
 		NewPathAttributeAsPath(aspath2),
-		NewPathAttributeNextHop("129.1.1.2"),
+		panh,
 		NewPathAttributeMultiExitDisc(1 << 20),
 		NewPathAttributeLocalPref(1 << 22),
 		NewPathAttributeAtomicAggregate(),
-		NewPathAttributeAggregator(uint16(30002), "129.0.2.99"),
-		NewPathAttributeAggregator(uint32(30002), "129.0.2.99"),
-		NewPathAttributeAggregator(uint32(300020), "129.0.2.99"),
+		paag1,
+		paag2,
+		paag3,
 		NewPathAttributeCommunities([]uint32{1, 3}),
-		NewPathAttributeOriginatorId("10.10.0.1"),
-		NewPathAttributeClusterList([]string{"10.10.0.2", "10.10.0.3"}),
+		paorig,
+		pacluster,
 		NewPathAttributeExtendedCommunities(ecommunities),
 		NewPathAttributeAs4Path(aspath3),
-		NewPathAttributeAs4Aggregator(10000, "112.22.2.1"),
-		NewPathAttributeMpReachNLRI("112.22.2.0", prefixes1...),
-		NewPathAttributeMpReachNLRI("1023::", prefixes2...),
-		NewPathAttributeMpReachNLRI("fe80::", prefixes3...),
-		NewPathAttributeMpReachNLRI("129.1.1.1", prefixes4...),
-		NewPathAttributeMpReachNLRI("129.1.1.1", prefixes5...),
-		NewPathAttributeMpReachNLRI("135.1.1.1", prefixes6...),
-		NewPathAttributeMpUnreachNLRI(prefixes1...),
-		// NewPathAttributeMpReachNLRI("112.22.2.0", []AddrPrefixInterface{}),
-		// NewPathAttributeMpUnreachNLRI([]AddrPrefixInterface{}),
-		NewPathAttributeUnknown(BGP_ATTR_FLAG_TRANSITIVE, 100, []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}),
+		paag4,
 	}
-	n := []*IPAddrPrefix{NewIPAddrPrefix(24, "13.2.3.1")}
-	return NewBGPUpdateMessage(w, p, n)
+	toList := func(l []NLRI) []PathNLRI {
+		r := make([]PathNLRI, 0, len(l))
+		for _, p := range l {
+			r = append(r, PathNLRI{NLRI: p})
+		}
+		return r
+	}
+
+	// Create MP_REACH_NLRI attributes with error handling
+	mp1, _ := NewPathAttributeMpReachNLRI(RF_IPv4_VPN, toList(prefixes1), netip.MustParseAddr("112.22.2.0"))
+	mp2, _ := NewPathAttributeMpReachNLRI(RF_IPv6_UC, toList(prefixes2), netip.MustParseAddr("1023::"))
+	mp3, _ := NewPathAttributeMpReachNLRI(RF_IPv6_VPN, toList(prefixes3), netip.MustParseAddr("fe80::"))
+	mp4, _ := NewPathAttributeMpReachNLRI(RF_IPv4_MPLS, toList(prefixes4), netip.MustParseAddr("129.1.1.1"))
+	mp5, _ := NewPathAttributeMpReachNLRI(RF_EVPN, toList(prefixes5), netip.MustParseAddr("129.1.1.1"))
+	mp6, _ := NewPathAttributeMpReachNLRI(RF_VPLS, toList(prefixes6), netip.MustParseAddr("135.1.1.1"))
+	mpUnreach1, _ := NewPathAttributeMpUnreachNLRI(RF_IPv4_VPN, toList(prefixes1))
+	p = append(p, mp1, mp2, mp3, mp4, mp5, mp6, mpUnreach1,
+		// NewPathAttributeMpReachNLRI("112.22.2.0", []NLRI{}),
+		// NewPathAttributeMpUnreachNLRI([]NLRI{}),
+		NewPathAttributeUnknown(BGP_ATTR_FLAG_TRANSITIVE, 100, []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}),
+	)
+	prefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("13.2.3.1/24"))
+	n := []NLRI{prefix}
+	return NewBGPUpdateMessage(toList(w), p, toList(n))
 }

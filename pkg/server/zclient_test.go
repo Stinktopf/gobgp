@@ -16,14 +16,15 @@
 package server
 
 import (
-	"net"
+	"log/slog"
+	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 
 	"github.com/osrg/gobgp/v4/internal/pkg/table"
-	"github.com/osrg/gobgp/v4/pkg/log"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 	"github.com/osrg/gobgp/v4/pkg/zebra"
 )
 
@@ -47,12 +48,12 @@ func Test_newPathFromIPRouteMessage(t *testing.T) {
 			Message: message,
 			Safi:    zebra.SafiUnicast, // 1, FRR_ZAPI5_SAFI_UNICAST is same
 			Prefix: zebra.Prefix{
-				Prefix:    net.ParseIP("192.168.100.0"),
+				Prefix:    netip.MustParseAddr("192.168.100.0"),
 				PrefixLen: uint8(24),
 			},
 			Nexthops: []zebra.Nexthop{
 				{
-					Gate: net.ParseIP("0.0.0.0"),
+					Gate: netip.IPv4Unspecified(),
 				},
 				{
 					Ifindex: uint32(1),
@@ -65,10 +66,10 @@ func Test_newPathFromIPRouteMessage(t *testing.T) {
 		}
 		m.Header = *h
 		m.Body = b
-		logger := log.NewDefaultLogger()
+		logger := slog.Default()
 		zebra.BackwardIPv6RouteDelete.ToEach(v, software)
 		path := newPathFromIPRouteMessage(logger, m, v, software)
-		pp := table.NewPath(nil, path.GetNlri(), path.IsWithdraw, path.GetPathAttrs(), time.Now(), false)
+		pp := table.NewPath(bgp.RF_IPv4_UC, nil, bgp.PathNLRI{NLRI: path.GetNlri()}, path.IsWithdraw, path.GetPathAttrs(), time.Now(), false)
 		pp.SetIsFromExternal(path.IsFromExternal())
 		assert.Equal("0.0.0.0", pp.GetNexthop().String())
 		assert.Equal("192.168.100.0/24", pp.GetNlri().String())
@@ -82,7 +83,7 @@ func Test_newPathFromIPRouteMessage(t *testing.T) {
 		m.Body = b
 
 		path = newPathFromIPRouteMessage(logger, m, v, software)
-		pp = table.NewPath(nil, path.GetNlri(), path.IsWithdraw, path.GetPathAttrs(), time.Now(), false)
+		pp = table.NewPath(bgp.RF_IPv4_UC, nil, bgp.PathNLRI{NLRI: path.GetNlri()}, path.IsWithdraw, path.GetPathAttrs(), time.Now(), false)
 		pp.SetIsFromExternal(path.IsFromExternal())
 		assert.Equal("0.0.0.0", pp.GetNexthop().String())
 		assert.Equal("192.168.100.0/24", pp.GetNlri().String())
@@ -100,14 +101,14 @@ func Test_newPathFromIPRouteMessage(t *testing.T) {
 		if v < 5 {
 			b.API = zebra.BackwardIPv6RouteAdd.ToEach(v, software)
 		}
-		b.Prefix.Prefix = net.ParseIP("2001:db8:0:f101::")
+		b.Prefix.Prefix = netip.MustParseAddr("2001:db8:0:f101::")
 		b.Prefix.PrefixLen = uint8(64)
-		b.Nexthops = []zebra.Nexthop{{Gate: net.ParseIP("::")}}
+		b.Nexthops = []zebra.Nexthop{{Gate: netip.IPv6Unspecified()}}
 		m.Header = *h
 		m.Body = b
 
 		path = newPathFromIPRouteMessage(logger, m, v, software)
-		pp = table.NewPath(nil, path.GetNlri(), path.IsWithdraw, path.GetPathAttrs(), time.Now(), false)
+		pp = table.NewPath(bgp.RF_IPv6_UC, nil, bgp.PathNLRI{NLRI: path.GetNlri()}, path.IsWithdraw, path.GetPathAttrs(), time.Now(), false)
 		pp.SetIsFromExternal(path.IsFromExternal())
 		assert.Equal("::", pp.GetNexthop().String())
 		assert.Equal("2001:db8:0:f101::/64", pp.GetNlri().String())
@@ -129,7 +130,7 @@ func Test_newPathFromIPRouteMessage(t *testing.T) {
 		m.Body = b
 
 		path = newPathFromIPRouteMessage(logger, m, v, software)
-		pp = table.NewPath(nil, path.GetNlri(), path.IsWithdraw, path.GetPathAttrs(), time.Now(), false)
+		pp = table.NewPath(bgp.RF_IPv6_UC, nil, bgp.PathNLRI{NLRI: path.GetNlri()}, path.IsWithdraw, path.GetPathAttrs(), time.Now(), false)
 		pp.SetIsFromExternal(path.IsFromExternal())
 		assert.Equal("::", pp.GetNexthop().String())
 		assert.Equal("2001:db8:0:f101::/64", pp.GetNlri().String())

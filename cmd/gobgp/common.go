@@ -17,7 +17,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
@@ -26,9 +25,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -38,8 +37,6 @@ import (
 	"github.com/osrg/gobgp/v4/api"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
-
-const globalRIBName = "global"
 
 const (
 	cmdGlobal         = "global"
@@ -311,23 +308,17 @@ func newConn() (*grpc.ClientConn, error) {
 	target := globalOpts.Target
 	if target == "" {
 		target = net.JoinHostPort(globalOpts.Host, strconv.Itoa(globalOpts.Port))
-	} else if strings.HasPrefix(target, "unix://") {
-		target = target[len("unix://"):]
-		dialer := func(ctx context.Context, addr string) (net.Conn, error) {
-			return net.Dial("unix", addr)
-		}
-		grpcOpts = append(grpcOpts, grpc.WithContextDialer(dialer))
 	}
 	return grpc.NewClient(target, grpcOpts...)
 }
 
-func addr2AddressFamily(a net.IP) *api.Family {
-	if a.To4() != nil {
+func addr2AddressFamily(a netip.Addr) *api.Family {
+	if a.Is4() {
 		return &api.Family{
 			Afi:  api.Family_AFI_IP,
 			Safi: api.Family_SAFI_UNICAST,
 		}
-	} else if a.To16() != nil {
+	} else if a.Is6() {
 		return &api.Family{
 			Afi:  api.Family_AFI_IP6,
 			Safi: api.Family_SAFI_UNICAST,
@@ -487,7 +478,7 @@ func exitWithError(err error) {
 	os.Exit(1)
 }
 
-func getNextHopFromPathAttributes(attrs []bgp.PathAttributeInterface) net.IP {
+func getNextHopFromPathAttributes(attrs []bgp.PathAttributeInterface) netip.Addr {
 	for _, attr := range attrs {
 		switch a := attr.(type) {
 		case *bgp.PathAttributeNextHop:
@@ -496,5 +487,5 @@ func getNextHopFromPathAttributes(attrs []bgp.PathAttributeInterface) net.IP {
 			return a.Nexthop
 		}
 	}
-	return nil
+	return netip.Addr{}
 }

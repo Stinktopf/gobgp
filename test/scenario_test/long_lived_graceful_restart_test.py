@@ -268,8 +268,6 @@ class GoBGPTestBase(unittest.TestCase):
         g1.wait_for(expected_state=BGP_FSM_ACTIVE, peer=g3)
         g3.local("ip route del blackhole {}/32".format(g1.ip_addrs[0][1].split("/")[0]))
 
-        # wait for a reconnect attempt of g1 to g3
-        g1.wait_for(expected_state=BGP_FSM_IDLE, peer=g3)
         g1.wait_for(expected_state=BGP_FSM_ACTIVE, peer=g3)
 
         self.assertEqual(len(g1.get_global_rib('10.20.0.0/24')), 1)

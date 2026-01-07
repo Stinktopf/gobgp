@@ -13,21 +13,22 @@ package main
 
 import (
 	"context"
+	"log/slog"
+	"net/netip"
 	"time"
-
-	"github.com/sirupsen/logrus"
 
 	"github.com/osrg/gobgp/v4/api"
 	"github.com/osrg/gobgp/v4/pkg/apiutil"
-	"github.com/osrg/gobgp/v4/pkg/log"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 	"github.com/osrg/gobgp/v4/pkg/server"
 )
 
 func main() {
-	log := logrus.New()
+	log := slog.Default()
+	lvl := &slog.LevelVar{}
+	lvl.Set(slog.LevelInfo)
 
-	s := server.NewBgpServer(server.LoggerOption(&myLogger{logger: log}))
+	s := server.NewBgpServer(server.LoggerOption(log, lvl))
 	go s.Serve()
 
 	// global configuration
@@ -38,17 +39,25 @@ func main() {
 			ListenPort: -1, // gobgp won't listen on tcp:179
 		},
 	}); err != nil {
-		log.Fatal(err)
+		log.Error("failed to start BGP", slog.String("Error", err.Error()))
 	}
+
+	// set default import policy
+	s.SetPolicyAssignment(context.Background(), &api.SetPolicyAssignmentRequest{
+		Assignment: &api.PolicyAssignment{
+			Direction:     api.PolicyDirection_POLICY_DIRECTION_IMPORT,
+			DefaultAction: api.RouteAction_ROUTE_ACTION_REJECT,
+		},
+	})
 
 	// monitor the change of the peer state
 	if err := s.WatchEvent(context.Background(), server.WatchEventMessageCallbacks{
 		OnPeerUpdate: func(peer *apiutil.WatchEventMessage_PeerEvent, _ time.Time) {
 			if peer.Type == apiutil.PEER_EVENT_STATE {
-				log.Info(peer.Peer)
+				log.Info("peer state changed", slog.Any("Peer", peer.Peer))
 			}
 		}}); err != nil {
-		log.Fatal(err)
+		log.Error("failed to watch event", slog.String("Error", err.Error()))
 	}
 
 	// neighbor configuration
@@ -62,13 +71,13 @@ func main() {
 	if err := s.AddPeer(context.Background(), &api.AddPeerRequest{
 		Peer: n,
 	}); err != nil {
-		log.Fatal(err)
+		log.Error("failed to add peer", slog.String("Error", err.Error()))
 	}
 
 	// add routes
-	nlri := bgp.NewIPAddrPrefix(24, "10.0.0.0")
+	nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
 	a1 := bgp.NewPathAttributeOrigin(0)
-	a2 := bgp.NewPathAttributeNextHop("10.0.0.1")
+	a2, _ := bgp.NewPathAttributeNextHop(netip.MustParseAddr("10.0.0.1"))
 	a3 := bgp.NewPathAttributeAsPath([]bgp.AsPathParamInterface{bgp.NewAsPathParam(2, []uint16{6762, 39919, 65000, 35753, 65000})})
 	attrs := []bgp.PathAttributeInterface{a1, a2, a3}
 
@@ -77,12 +86,12 @@ func main() {
 		Attrs: attrs,
 	}}})
 	if err != nil {
-		log.Fatal(err)
+		log.Error("failed to add path", slog.String("Error", err.Error()))
 	}
 
 	// add v6 route
-	v6Nlri := bgp.NewIPv6AddrPrefix(64, "2001:db8:1::")
-	aMpr := bgp.NewPathAttributeMpReachNLRI("2001:db8::1", v6Nlri)
+	v6Nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("2001:db8:1::/64"))
+	aMpr, _ := bgp.NewPathAttributeMpReachNLRI(bgp.RF_IPv4_UC, []bgp.PathNLRI{{NLRI: v6Nlri}}, netip.MustParseAddr("2001:db8::1"))
 	aC := bgp.NewPathAttributeCommunities([]uint32{100, 200})
 	attrs = []bgp.PathAttributeInterface{aMpr, aC}
 
@@ -91,61 +100,24 @@ func main() {
 		Attrs: attrs,
 	}}})
 	if err != nil {
-		log.Fatal(err)
+		log.Error("failed to add v6 path", slog.String("Error", err.Error()))
 	}
 
 	s.ListPath(apiutil.ListPathRequest{
 		TableType: api.TableType_TABLE_TYPE_GLOBAL,
-	}, func(prefix bgp.AddrPrefixInterface, paths []*apiutil.Path) {
+	}, func(prefix bgp.NLRI, paths []*apiutil.Path) {
 		log.Info(prefix.String())
 		for _, p := range paths {
-			log.WithFields(logrus.Fields{
-				"peer_asn":     p.PeerASN,
-				"peer_address": p.PeerAddress,
-				"age":          p.Age,
-				"best":         p.Best,
-			}).Info("path")
+			log.Info("path",
+				slog.Uint64("peer_asn", uint64(p.PeerASN)),
+				slog.String("peer_address", p.PeerAddress.String()),
+				slog.Uint64("age", uint64(p.Age)),
+				slog.Bool("best", p.Best),
+			)
 		}
 	})
 
 	// do something useful here instead of exiting
 	time.Sleep(time.Minute * 3)
-}
-
-// implement github.com/osrg/gobgp/v4/pkg/log/Logger interface
-type myLogger struct {
-	logger *logrus.Logger
-}
-
-func (l *myLogger) Panic(msg string, fields log.Fields) {
-	l.logger.WithFields(logrus.Fields(fields)).Panic(msg)
-}
-
-func (l *myLogger) Fatal(msg string, fields log.Fields) {
-	l.logger.WithFields(logrus.Fields(fields)).Fatal(msg)
-}
-
-func (l *myLogger) Error(msg string, fields log.Fields) {
-	l.logger.WithFields(logrus.Fields(fields)).Error(msg)
-}
-
-func (l *myLogger) Warn(msg string, fields log.Fields) {
-	l.logger.WithFields(logrus.Fields(fields)).Warn(msg)
-}
-
-func (l *myLogger) Info(msg string, fields log.Fields) {
-	l.logger.WithFields(logrus.Fields(fields)).Info(msg)
-}
-
-func (l *myLogger) Debug(msg string, fields log.Fields) {
-	l.logger.WithFields(logrus.Fields(fields)).Debug(msg)
-}
-
-func (l *myLogger) SetLevel(level log.LogLevel) {
-	l.logger.SetLevel(logrus.Level(level))
-}
-
-func (l *myLogger) GetLevel() log.LogLevel {
-	return log.LogLevel(l.logger.GetLevel())
 }
 ```

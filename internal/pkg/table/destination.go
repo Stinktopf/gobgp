@@ -24,6 +24,7 @@ import (
 	"net/netip"
 	"slices"
 	"sort"
+	"sync"
 
 	"github.com/osrg/gobgp/v4/pkg/config/oc"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
@@ -140,6 +141,7 @@ type Destination struct {
 	nlri          bgp.NLRI
 	knownPathList []*Path
 	localIdMap    *Bitmap
+	mu            sync.Mutex
 }
 
 func NewDestination(nlri bgp.NLRI, mapSize int, known ...*Path) *Destination {
@@ -240,39 +242,45 @@ func (dd *Destination) GetMultiBestPath(id string) []*Path {
 	return getMultiBestPath(id, dd.knownPathList)
 }
 
-func containsASSubsequence(haystack, needle []uint32) bool {
-	if len(needle) == 0 || len(needle) > len(haystack) {
-		return false
-	}
-outer:
-	for i := 0; i <= len(haystack)-len(needle); i++ {
-		for j := 0; j < len(needle); j++ {
-			if haystack[i+j] != needle[j] {
-				continue outer
-			}
-		}
-		return true
-	}
-	return false
-}
-
 // Calculates best-path among known paths for this destination.
 //
 // Modifies destination's state related to stored paths. Removes withdrawn
 // paths from known paths. Also, adds new paths to known paths.
 func (dest *Destination) Calculate(logger *slog.Logger, newPath *Path) *Update {
+	if IsOperaEnabled() {
+		dest.mu.Lock()
+		defer dest.mu.Unlock()
+	}
+
 	oldKnownPathList := make([]*Path, len(dest.knownPathList))
 	copy(oldKnownPathList, dest.knownPathList)
 
 	if newPath.IsWithdraw {
 		p := dest.explicitWithdraw(logger, newPath)
-		if p != nil && newPath.IsDropped() {
-			if id := p.localID; id != 0 {
-				dest.localIdMap.Unflag(uint(id))
+		if p != nil {
+			dest.PruneSupersets(p.GetAsList())
+
+			if newPath.IsDropped() {
+				if id := p.localID; id != 0 {
+					dest.localIdMap.Unflag(uint(id))
+				}
 			}
 		}
 	} else {
+		var oldAS []uint32
+		for _, p := range dest.knownPathList {
+			if newPath.EqualBySourceAndPathID(p) {
+				oldAS = p.GetAsList()
+				break
+			}
+		}
+
 		dest.implicitWithdraw(logger, newPath)
+
+		if len(oldAS) > 0 {
+			dest.PruneSupersets(oldAS)
+		}
+
 		if OperaImportAccept(dest.knownPathList, newPath) {
 			dest.insertSort(newPath)
 		}

@@ -142,3 +142,35 @@ func IsWorseOperaPath(newPath, existingPath *Path) bool {
 	}
 	return false
 }
+
+func (dest *Destination) PruneSupersets(baseAS []uint32) {
+	if !IsOperaEnabled() || len(baseAS) == 0 {
+		return
+	}
+
+	n := 0
+	for _, other := range dest.knownPathList {
+		if containsASSubsequence(other.GetAsList(), baseAS) {
+			continue
+		}
+		dest.knownPathList[n] = other
+		n++
+	}
+	dest.knownPathList = dest.knownPathList[:n]
+}
+
+func containsASSubsequence(haystack, needle []uint32) bool {
+	if len(needle) == 0 || len(needle) > len(haystack) {
+		return false
+	}
+outer:
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		for j := 0; j < len(needle); j++ {
+			if haystack[i+j] != needle[j] {
+				continue outer
+			}
+		}
+		return true
+	}
+	return false
+}

@@ -8,5 +8,5 @@ if result.returncode != 0:
     print("lab-multi failed. Stopping execution.")
     sys.exit(result.returncode)
 
-print("Running lan-single...")
-subprocess.run([sys.executable, "lan-single.py"])
+print("Running lab-single...")
+subprocess.run([sys.executable, "lab-single.py"])

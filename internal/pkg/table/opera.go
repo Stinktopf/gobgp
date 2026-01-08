@@ -55,7 +55,7 @@ func OperaImportAcceptInternal(known []*Path, cand *Path) bool {
 	var worstKnownPath *Path = nil
 
 	for _, existing := range known {
-		if existing == nil || existing.IsWithdraw {
+		if existing == nil || existing.IsWithdraw || existing.IsNexthopInvalid {
 			continue
 		}
 

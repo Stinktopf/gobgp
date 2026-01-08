@@ -8,6 +8,8 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.ticker import MaxNLocator
 
+VIS_DIR = "vis"
+
 MODE_COLORS = {
     "oBGP": "#f15bb5",
     "BGP": "#00f5d4",
@@ -59,10 +61,8 @@ def plot_min_max_avg_multi(ax, series, color, mode_label,
                            set_xlabel=False, set_ylabel=False):
     x = np.arange(len(series["avg"]))
     ax.plot(x, series["avg"], color=color, label=mode_label, linewidth=1.4)
-    ax.fill_between(x, series["global_min"], series["global_max"],
-                    color=color, alpha=0.06)
-    ax.fill_between(x, series["mean_min"], series["mean_max"],
-                    color=color, alpha=0.20)
+    ax.fill_between(x, series["global_min"], series["global_max"], color=color, alpha=0.06)
+    ax.fill_between(x, series["mean_min"], series["mean_max"], color=color, alpha=0.20)
     if set_xlabel:
         ax.set_xlabel("Time in Seconds", fontsize=9)
     if set_ylabel and ylabel is not None:
@@ -73,7 +73,13 @@ def plot_min_max_avg_multi(ax, series, color, mode_label,
     ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax.yaxis.set_major_locator(MaxNLocator(integer=True))
 
-bases = ["experiments-germany", "experiments-bad_gadget"]
+BASE_TO_TOPO = {
+    "experiments-germany": "Germany50",
+    "experiments-bad_gadget": "BadGadget",
+    "experiments-noble-eu": "NobleEU",
+}
+
+bases = list(BASE_TO_TOPO.keys())
 
 groups = [(1, 2, 3), (4, 5, 6), (7, 8, 9)]
 group_names = ["Full Drain", "Partial Drain", "Fill"]
@@ -100,7 +106,10 @@ metrics = [
 
 if __name__ == "__main__":
     for base in bases:
-        topo = "Germany50" if "germany" in base else "BAD GADGET"
+        topo = BASE_TO_TOPO.get(base, base)
+        out_dir = os.path.join(VIS_DIR, topo)
+        os.makedirs(out_dir, exist_ok=True)
+
         for g_idx, group in enumerate(groups, 1):
             series_cache = {}
             ylimits = {field: [None, None] for field, _ in metrics}
@@ -139,7 +148,7 @@ if __name__ == "__main__":
 
             fig, axes = plt.subplots(
                 5, 3, figsize=(10.5, 11.5),
-                sharex=True, sharey='row'
+                sharex=True, sharey="row"
             )
 
             for col, seq in enumerate(group):
@@ -149,44 +158,36 @@ if __name__ == "__main__":
                     key_obgp = (seq, "oBGP", field)
                     if key_bgp not in series_cache or key_obgp not in series_cache:
                         continue
-                    s_bgp = series_cache[key_bgp]
-                    s_obgp = series_cache[key_obgp]
-                    ylim = ylimits[field]
                     ax = axes[row, col]
-                    set_xlabel = (row == len(metrics) - 1)
-                    set_ylabel = (col == 0)
                     plot_min_max_avg_multi(
                         ax,
-                        s_bgp,
+                        series_cache[key_bgp],
                         MODE_COLORS["BGP"],
                         "BGP avg",
-                        ylabel=ylabel,
-                        ylim=ylim,
-                        set_xlabel=set_xlabel,
-                        set_ylabel=set_ylabel,
+                        ylabel=ylabel if col == 0 else None,
+                        ylim=ylimits[field],
+                        set_xlabel=row == len(metrics) - 1,
+                        set_ylabel=col == 0,
                     )
                     plot_min_max_avg_multi(
                         ax,
-                        s_obgp,
+                        series_cache[key_obgp],
                         MODE_COLORS["oBGP"],
                         "oBGP avg",
-                        ylabel=None,
-                        ylim=ylim,
-                        set_xlabel=False,
-                        set_ylabel=False,
+                        ylim=ylimits[field],
                     )
                     if row == 0:
                         ax.set_title(label, fontsize=10.5, weight="bold")
 
             plt.tight_layout(rect=[0, 0.24, 1, 1])
 
-            line_bgp = Line2D([0], [0], color=MODE_COLORS["BGP"], lw=1.4, label="BGP Average")
-            line_obgp = Line2D([0], [0], color=MODE_COLORS["oBGP"], lw=1.4, label="oBGP Average")
-            band_mean = Patch(facecolor="0.5", alpha=0.50, label="Mean Minimum and Maximum")
-            band_global = Patch(facecolor="0.5", alpha=0.30, label="Global Minimum and Maximum")
-
             fig.legend(
-                handles=[line_bgp, line_obgp, band_mean, band_global],
+                handles=[
+                    Line2D([0], [0], color=MODE_COLORS["BGP"], lw=1.4, label="BGP Average"),
+                    Line2D([0], [0], color=MODE_COLORS["oBGP"], lw=1.4, label="oBGP Average"),
+                    Patch(facecolor="0.5", alpha=0.50, label="Mean Minimum and Maximum"),
+                    Patch(facecolor="0.5", alpha=0.30, label="Global Minimum and Maximum"),
+                ],
                 loc="lower center",
                 ncol=4,
                 fontsize=8,
@@ -194,6 +195,6 @@ if __name__ == "__main__":
                 bbox_to_anchor=(0.5, 0.20),
             )
 
-            outfile = f"{topo.replace(' ', '')}_{group_names[g_idx-1].replace(' ', '')}.pdf"
+            outfile = os.path.join(out_dir, f"{group_names[g_idx-1].replace(' ', '')}.pdf")
             plt.savefig(outfile)
             plt.close()

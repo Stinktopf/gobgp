@@ -584,7 +584,11 @@ func (u *Update) GetChanges(id string, as uint32, peerDown bool) (*Path, *Path, 
 		if IsOperaEnabled() {
 			// OPERA: Force single path propagation (the selected worst path)
 			// in the Global RIB to ensure only one path is advertised.
-			multi = []*Path{best}
+			if best != nil {
+				multi = []*Path{best}
+			} else {
+				multi = []*Path{}
+			}
 		} else if UseMultiplePaths.Enabled {
 			diff := func(lhs, rhs []*Path) bool {
 				if len(lhs) != len(rhs) {

@@ -307,7 +307,7 @@ if __name__ == "__main__":
     fig.legend(
         handles=[
             Line2D([0], [0], color=MODE_COLORS["BGP"], lw=1.4, label="BGP Average"),
-            Line2D([0], [0], color=MODE_COLORS["oBGP"], lw=1.4, label="oBGP Average"),
+            Line2D([0], [0], color=MODE_COLORS["oBGP"], lw=1.4, label="OBGP Average"),
             Patch(facecolor="0.5", alpha=0.20, label="Mean Min/Max"),
             Patch(facecolor="0.5", alpha=0.06, label="Global Min/Max"),
         ],

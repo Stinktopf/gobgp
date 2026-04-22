@@ -12,6 +12,12 @@ from matplotlib.ticker import MaxNLocator
 # CONFIG
 # ============================================================
 
+plt.rcParams.update({
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+    "font.size": 10,
+})
+
 MODE_COLORS = {
     "oBGP": "#f15bb5",
     "BGP": "#00f5d4",

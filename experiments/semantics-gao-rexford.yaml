@@ -1,0 +1,17 @@
+name: semantics-gao-rexford
+description: Whether routes stay valley-free on three tiers that follow Gao-Rexford, filled and drained.
+cluster: {cpus: 12, memory_mb: 13000}
+runs: 6
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp, mode: obgp}
+  - {name: obgp-np, mode: obgp-np}
+  - {name: hybrid, mode: hybrid}
+  - {name: hybrid-np, mode: hybrid-np}
+  - {name: random, mode: random, share: 0.5}
+  - {name: random-np, mode: random-np, share: 0.5}
+topologies: [gao-rexford-20]
+scenarios:
+  - fill-60
+  - full-drain-60
+  - valley-free

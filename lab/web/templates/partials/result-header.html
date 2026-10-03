@@ -1,0 +1,56 @@
+{% from "macros.html" import state_badge, visibility_tag, progress, page_header, delete_button, icon %}
+{% call page_header("/results", "Results") %}
+  <h1 class="truncate font-mono text-2xl font-semibold tracking-tight">{{ result.name }}</h1>
+  {{ visibility_tag(result) }}
+  {% if status.state != "finished" %}{{ state_badge("queued" if queued and status.state != "running" else status.state) }}{% endif %}
+  <div class="ml-auto flex items-center gap-2">
+    {% set live = status.state == "running" or queued %}
+    {% if source and not live %}
+    <form method="post" action="/experiments/{{ source }}/start"><button class="btn" data-tip="Runs {{ source }} again, as its file is now" data-tip-align="end">{{ icon("play") }}Run again</button></form>
+    {% endif %}
+    {{ delete_button("/results/" ~ result.name ~ "/delete", result.name, reason="Stop it first." if live else "Make it private first." if result.public else "", text="Its runs and samples are gone for good.") }}
+    {% if live %}
+    <form method="post" action="/results/{{ result.name }}/stop"><button class="btn btn-danger" data-confirm="Stop {{ result.name }}?" data-confirm-text="It can be resumed later.">Stop</button></form>
+    {% elif status.state in ("stopped", "failed") %}
+    <form method="post" action="/results/{{ result.name }}/resume"><button class="btn btn-primary">Resume</button></form>
+    {% endif %}
+  </div>
+{% endcall %}
+<div class="-mt-3 mb-6 flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+  <p class="max-w-2xl text-[15px] text-slate-600 dark:text-slate-300">{{ experiment.description }}</p>
+  <span class="muted text-sm whitespace-nowrap">Experiment {% if source %}<a href="/experiments/{{ source }}" class="font-mono hover:underline">{{ experiment.name }}</a>{% else %}<span class="font-mono">{{ experiment.name }}</span>{% endif %}</span>
+</div>
+{% if status.state == "failed" and status.error %}<p class="error mb-6">Failed: {{ status.error }}</p>{% endif %}
+{% if failed %}{% set n = failed.values() | sum %}{% set where = topology if topology in failed else (failed | first) %}
+<p class="mb-6 text-sm text-rose-700 dark:text-rose-300">{{ n }} run{{ "s" if n != 1 }} failed a check.
+  <a href="/results/{{ result.name }}?tab=table&topology={{ where }}&metric=checks" class="font-medium underline underline-offset-2">Which and why</a></p>
+{% endif %}
+{% set m = integrity %}
+{% if m.slow or m.busy or m.shifting or m.images or m.skipped %}
+<ul class="mb-6 space-y-1 rounded-lg bg-amber-50 px-4 py-2.5 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200" aria-label="Limits of the measurements">
+  {% if m.slow %}{% set worst = m.slow[0] %}
+  <li data-tip="Sampled least often{% for x in m.slow[:12] %}&#10;{{ x.topology }} · {{ x.scenario }} · {{ x.variant }}: {{ x.hz }} Hz{% endfor %}">Some routers sampled far less often than the set {{ m.set | round | int }} Hz, down to {{ worst.hz }} Hz in {{ worst.topology }} · {{ worst.scenario }}. Times there, such as convergence, are only exact to about {{ (1 / worst.hz) | round(1) }} s.</li>
+  {% endif %}
+  {% if m.busy %}{% set worst = m.busy[0] %}
+  <li data-tip="Busiest host{% for x in m.busy[:12] %}&#10;{{ x.topology }} · {{ x.scenario }} · {{ x.variant }}: {{ (100 * x.cpu) | round | int }} %{% endfor %}">The host was nearly saturated, up to {{ (100 * worst.cpu) | round | int }} % of its CPUs in {{ worst.topology }} · {{ worst.scenario }}. There the runs may measure the host as much as the protocol.</li>
+  {% endif %}
+  {% if m.shifting %}{% set worst = m.shifting[0] %}
+  <li data-tip="Load of others changed most{% for x in m.shifting[:12] %}&#10;{{ x.topology }} · {{ x.scenario }} · {{ x.variant }}: {{ (100 * x.spread) | round | int }} %{% endfor %}">Others on the host changed their load during runs, by up to {{ (100 * worst.spread) | round | int }} % of its CPUs in {{ worst.topology }} · {{ worst.scenario }}. Times there are less comparable between runs.</li>
+  {% endif %}
+  {% if m.skipped %}
+  <li data-tip="Too large for this host: {{ m.limit }}{% for t, why in m.skipped.items() %}&#10;{{ t }}: {{ why | join(", ") }}{% endfor %}">Skipped on this host, too large for it: {{ m.skipped | join(", ") }}.</li>
+  {% endif %}
+  {% if m.images %}
+  <li data-tip="Images{% for v, tags in m.images.items() %}&#10;{{ v }}: {{ tags | join(', ') }}{% endfor %}">Runs of {{ m.images | list | join(", ") }} ran on different images, the same daemon with another controller, e.g. after the result was resumed.</li>
+  {% endif %}
+</ul>
+{% endif %}
+{% if status.total and status.done < status.total %}
+<div class="mb-6">
+  <div class="muted mb-1.5 flex justify-between text-sm">
+    <span>{{ status.done }} of {{ status.total }} runs{% if status.errors %} · {{ status.errors }} with errors{% endif %}</span>
+    <span>{% if status.state == "running" and active and active.name == result.name and left_s is not none %}{{ left_s | duration }} left{% endif %}</span>
+  </div>
+  {{ progress(status.done, status.total) }}
+</div>
+{% endif %}

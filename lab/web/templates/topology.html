@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "macros.html" import save_state, icon_button, copy_button, page_header, delete_button, save_dialog, problem %}
+{% block title %}{{ name or copy or "New topology" }} · Topologies · OBGP Lab{% endblock %}
+{% block head %}
+<script src="{{ static('cytoscape.min.js') }}" defer></script>
+<script src="{{ static('graph.js') }}" defer></script>
+<script src="{{ static('topology.js') }}" defer></script>
+{% endblock %}
+{% block content %}
+{% call page_header("/topologies", "Topologies") %}
+  <input id="name" value="{{ copy or name }}" placeholder="untitled" aria-label="Name" class="input-title" spellcheck="false">
+  {% if topology.source %}<span class="tag">{{ topology.source }}</span>{% endif %}
+  {{ save_state() }}
+  <div class="ml-auto flex flex-wrap items-center justify-end gap-2">
+    <nav id="modes" class="segmented" hidden>
+      <button type="button" data-mode="graph" aria-pressed="false">Graph</button>
+      <button type="button" data-mode="map" aria-pressed="false">Map</button>
+    </nav>
+    <div class="flex gap-1">
+      {{ icon_button("add", "Add router", id="add") }}
+      {{ icon_button("connect", "Connect two routers", id="connect", attrs='aria-pressed="false"') }}
+      {{ icon_button("layout", "Auto layout", id="layout") }}
+    </div>
+    {% if name %}{{ copy_button("/topologies/new?like=" ~ name) }}{{ delete_button("/topologies/" ~ name ~ "/delete", name, used) }}{% endif %}
+    <button id="save" class="btn btn-primary" data-tip="Save · Ctrl+S">Save</button>
+  </div>
+{% endcall %}
+{{ problem(error) }}
+
+<div class="grid gap-4 lg:grid-cols-[1fr_17rem]">
+  <div class="card relative h-[70vh] overflow-hidden">
+    <div id="graph" class="h-full w-full"></div>
+    <p id="hint" class="pointer-events-none absolute bottom-3 left-4 text-xs text-slate-400"></p>
+  </div>
+  <aside id="panel" class="card h-fit space-y-4 p-4 text-sm"></aside>
+</div>
+
+{{ save_dialog() }}
+<script type="application/json" id="topology-data">{{ topology | tojson }}</script>
+<script>window.TOPOLOGY_NAME = {{ name | tojson }}; window.TOPOLOGY_USED = {{ used | tojson }}; window.AS_NAMES = {{ (as_names or {}) | tojson }};</script>
+{% endblock %}

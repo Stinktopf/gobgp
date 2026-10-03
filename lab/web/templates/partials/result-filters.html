@@ -1,0 +1,19 @@
+{# Shared by the table and the charts: the topology and the variants they show; the browser keeps the variants. #}
+{% from "macros.html" import icon, variant_menu %}
+  <div class="card flex flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3">
+    <label class="flex items-center gap-2 text-sm"><span class="label">Topology</span>
+      {% if experiment.topologies | length > 1 %}
+      <select aria-label="Topology" class="input w-auto py-1 font-mono text-sm" onchange="location.href = '?tab={{ tab }}&metric={{ metric }}&scenario={{ scenario }}&topology=' + this.value">
+        {% for t in experiment.topologies %}<option {% if t == topology %}selected{% endif %}>{{ t }}</option>{% endfor %}
+      </select>
+      {% else %}<span class="py-1 font-mono">{{ topology }}</span>{% endif %}
+    </label>
+    {% if tab == "charts" %}
+    <label class="flex items-center gap-2 text-sm"><span class="label">Scenario</span>
+      <select aria-label="Scenario" class="input w-auto py-1 font-mono text-sm" onchange="location.href = '?tab=charts&metric={{ metric }}&topology={{ topology }}&scenario=' + this.value">
+        {% for s in experiment.cases() %}<option {% if s == scenario %}selected{% endif %}>{{ s }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
+    {{ variant_menu(experiment.variants) }}
+  </div>

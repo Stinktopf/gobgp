@@ -13,9 +13,11 @@ spec:
       labels:
         app: {{ $name }}
     spec:
+      # Routers are replaced for every run; they need no time to shut down.
+      terminationGracePeriodSeconds: 2
       containers:
-        - name: gobgp
-          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+        - name: router
+          image: "{{ required "the lab sets image.repository" $.Values.image.repository }}:{{ required "the lab sets image.tag" $.Values.image.tag }}"
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           env:
             - name: POD_NAMESPACE
@@ -26,22 +28,50 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+            - name: ROUTER_NAME
+              value: {{ $name | quote }}
             - name: ASN
               value: "{{ $r.asn }}"
             - name: ROUTER_ID
               value: "{{ $r.routerId }}"
             - name: NEIGHBORS_JSON
               value: {{ toJson ($r.neighbors | default list) | quote }}
-            {{- if $r.communities }}
-            - name: COMMUNITIES
-              value: {{ join "," $r.communities | quote }}
+            # The mode of the daemon, e.g. GOBGP_OPERA_ENABLED.
+            {{- range $k, $v := required (printf "the lab sets routers.%s.env" $name) $r.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
             {{- end }}
-            - name: GOBGP_OPERA_ENABLED
-              value: {{ $.Values.opera.enabled | quote }}
+            - name: LAB_SEED
+              value: {{ required "the lab sets seed" $.Values.seed | quote }}
+            - name: HOLD_TIME
+              value: {{ required "the lab sets bgp.holdTime" $.Values.bgp.holdTime | quote }}
+            - name: KEEPALIVE
+              value: {{ required "the lab sets bgp.keepalive" $.Values.bgp.keepalive | quote }}
+            - name: CONNECT_RETRY
+              value: {{ required "the lab sets bgp.connectRetry" $.Values.bgp.connectRetry | quote }}
+            - name: GRACEFUL_RESTART
+              value: {{ required "the lab sets bgp.gracefulRestart" $.Values.bgp.gracefulRestart | quote }}
+          {{- with $.Values.memory }}
+          resources:
+            requests:
+              memory: "{{ .requestMi }}Mi"
+            limits:
+              memory: "{{ .limitMi }}Mi"
+          {{- end }}
+          # Link failures and degradation use iptables and tc.
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
           ports:
             - name: bgp
               containerPort: 179
-            - name: ipapi
+            - name: api
               containerPort: 8080
+          # Ready once all BGP sessions are established.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: api
+            periodSeconds: 2
 ---
 {{- end }}

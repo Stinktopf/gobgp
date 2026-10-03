@@ -1,0 +1,171 @@
+{# The form of the CAIDA import, with a search for ASes and a preview of what it gives. #}
+<div class="space-y-5 py-2" data-caida hx-get="/topologies/caida/preview" hx-include="closest form" hx-target="#caida-preview" hx-indicator="#caida-result"
+     hx-trigger="load, change, input changed from:[name=size] delay:400ms">
+  {% if not online %}
+  <p class="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">CAIDA is not reachable. Only months downloaded before can be used.</p>
+  {% endif %}
+  <div class="flex items-center justify-between gap-3">
+    <span class="label" data-tip="CAIDA infers who is customer, provider and peer of whom once a month, from the BGP data of RouteViews and RIPE RIS">Internet as of</span>
+    <span class="flex gap-2">
+      <select data-date="month" aria-label="Month" class="input w-36 py-1.5">
+        {% for name in month_names %}<option value="{{ '%02d' % loop.index }}" {% if loop.index == newest[5:] | int %}selected{% endif %}>{{ name }}</option>{% endfor %}
+      </select>
+      <select data-date="year" aria-label="Year" class="input w-24 py-1.5 tabular-nums">
+        {% for y in range(newest[:4] | int, oldest[:4] | int - 1, -1) %}<option {% if loop.first %}selected{% endif %}>{{ y }}</option>{% endfor %}
+      </select>
+    </span>
+    <input type="hidden" name="month" value="{{ newest }}">
+  </div>
+  <div class="segmented grid w-full grid-cols-3" role="radiogroup" aria-label="Part of the Internet">
+    {% for value, label in [("core", "Core"), ("cone", "Customer cone"), ("country", "Country")] %}
+    <label class="flex items-center justify-center whitespace-nowrap"><input type="radio" name="part" value="{{ value }}" {{ "checked" if loop.first }}>{{ label }}</label>
+    {% endfor %}
+  </div>
+  <div class="space-y-1.5" data-how="core">
+    <label class="flex items-center justify-between gap-3"><span class="label" data-tip="Every AS becomes a router in a pod of its own. Before a run, the lab checks that they fit into the cluster">Routers</span>
+      <input name="size" type="number" min="3" value="32" required class="input w-28 py-1.5 tabular-nums">
+    </label>
+    <p class="muted text-xs">The largest networks by AS Rank, and their relations.</p>
+  </div>
+  <div class="space-y-1" data-cone data-how="cone" hidden>
+    <input type="hidden" name="asn" value="680">
+    <div class="relative">
+    <input type="search" name="q" autocomplete="off" spellcheck="false" class="input py-1.5" aria-label="Search for an AS"
+           placeholder="Name, organization or AS number, e.g. dfn" value="AS680 Verein zur Foerderung eines Deutschen Forschungsnetzes e.V."
+           hx-get="/topologies/caida/search" hx-include="[name=month]" hx-target="#caida-hits"
+           hx-trigger="input changed delay:250ms, focus" hx-sync="this:replace" hx-indicator="#caida-searching" onfocus="this.select()">
+    <span id="caida-searching" class="htmx-indicator spinner pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-slate-400" aria-hidden="true"></span>
+    </div>
+    <div id="caida-hits"></div>
+    <p class="muted text-xs">An AS with all its direct and indirect customers.</p>
+  </div>
+  <div class="space-y-1.5" data-how="country" hidden>
+    <input type="hidden" name="country" value="SI">
+    <input type="search" autocomplete="off" spellcheck="false" class="input py-1.5" aria-label="Search for a country"
+           placeholder="Name or code of a country, e.g. slovenia" value="Slovenia" data-country-search
+           onfocus="this.select()" onchange="event.stopPropagation()">
+    <div data-country-hits></div>
+    <p class="muted text-xs">All ASes registered in the country that connect.</p>
+  </div>
+  <div id="caida-result" class="relative">
+    <p class="htmx-indicator pointer-events-none absolute inset-0 z-10 flex items-start justify-center pt-3" role="status"><span class="flex items-center gap-2 rounded-full bg-white px-3 py-1.5 text-xs text-slate-600 shadow ring-1 ring-slate-900/5 dark:bg-slate-800 dark:text-slate-300 dark:ring-white/10"><span class="spinner size-3.5"></span>Loading CAIDA data</span></p>
+    <div id="caida-preview" class="min-h-10 text-sm" data-reloads aria-live="polite"></div>
+  </div>
+</div>
+<script>
+  (() => {
+    const box = document.currentScript.previousElementSibling;
+    const search = box.querySelector("[name=q]"), asn = box.querySelector("[name=asn]"), hits = box.querySelector("#caida-hits");
+    const cone = box.querySelector("[data-cone]");
+    // Month and year make the month of the form, before htmx reads it.
+    const month = box.querySelector("[name=month]");
+    box.addEventListener("change", (e) => {
+      if (!e.target.dataset.date) return;
+      month.value = `${box.querySelector("[data-date=year]").value}-${box.querySelector("[data-date=month]").value}`;
+    }, true);
+    // Only the fields of the chosen part show.
+    box.addEventListener("change", (e) => {
+      if (e.target.name !== "part") return;
+      box.querySelectorAll("[data-how]").forEach((p) => (p.hidden = p.dataset.how !== e.target.value));
+    });
+    // Countries by their English name.
+    const names = new Intl.DisplayNames("en", { type: "region" });
+    box.addEventListener("htmx:afterSwap", (e) => {
+      e.target.querySelectorAll?.("[data-country-name]").forEach((n) => {
+        try { n.textContent = names.of(n.dataset.countryName); } catch { /* not a region code */ }
+      });
+    });
+    // A country is searched by its name or code, among those of the month.
+    const country = box.querySelector("[name=country]"), countrySearch = box.querySelector("[data-country-search]");
+    const countryHits = box.querySelector("[data-country-hits]");
+    let countries = [];
+    async function loadCountries() {
+      try {
+        const r = await fetch(`/topologies/caida/countries?month=${encodeURIComponent(month.value)}`);
+        countries = (await r.json()).map(([cc, ases]) => {
+          let name = cc;
+          try { name = names.of(cc); } catch { /* not a region code */ }
+          return { cc, ases, name };
+        });
+      } catch { countries = []; }
+    }
+    loadCountries();
+    box.addEventListener("change", (e) => { if (e.target.dataset.date) loadCountries(); });
+    const pickCountry = (c) => {
+      country.value = c.cc;
+      countrySearch.value = c.name;
+      countryHits.replaceChildren();
+      country.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    countrySearch.addEventListener("input", () => {
+      const q = countrySearch.value.trim().toLowerCase();
+      const found = !q ? [] : countries
+        .filter((c) => c.name.toLowerCase().includes(q) || c.cc.toLowerCase() === q)
+        .sort((a, b) => b.name.toLowerCase().startsWith(q) - a.name.toLowerCase().startsWith(q) || a.name.localeCompare(b.name))
+        .slice(0, 8);
+      if (!q) return countryHits.replaceChildren();
+      const list = document.createElement("ul");
+      list.className = "max-h-60 overflow-y-auto rounded-lg border border-slate-200 py-1 dark:border-white/10";
+      list.setAttribute("role", "listbox");
+      for (const c of found) {
+        const item = document.createElement("li"), button = document.createElement("button");
+        button.type = "button";
+        button.setAttribute("role", "option");
+        button.className = "flex w-full items-baseline gap-3 px-3 py-1.5 text-left text-sm hover:bg-slate-50 focus:bg-uoft-50 focus:outline-none dark:hover:bg-slate-800 dark:focus:bg-uoft-900/60";
+        button.innerHTML = `<span class="min-w-0 flex-1 truncate"></span><span class="w-8 shrink-0 font-mono text-xs text-slate-500"></span><span class="muted shrink-0 text-xs tabular-nums"></span>`;
+        button.children[0].textContent = c.name;
+        button.children[1].textContent = c.cc;
+        button.children[2].textContent = `${c.ases.toLocaleString("en")} ASes`;
+        button.onclick = () => pickCountry(c);
+        item.append(button);
+        list.append(item);
+      }
+      if (!found.length) list.innerHTML = '<li class="muted px-3 py-1.5 text-sm">No country found.</li>';
+      countryHits.replaceChildren(list);
+    });
+    countrySearch.addEventListener("keydown", (e) => {
+      const all = [...countryHits.querySelectorAll("button")];
+      if (e.key === "Enter") { e.preventDefault(); all[0]?.click(); }
+      if (e.key === "Escape") countryHits.replaceChildren();
+      if (e.key === "ArrowDown" && all.length) { e.preventDefault(); all[0].focus(); }
+    });
+    countryHits.addEventListener("keydown", (e) => {
+      const all = [...countryHits.querySelectorAll("button")], i = all.indexOf(document.activeElement);
+      if (e.key === "ArrowDown") { e.preventDefault(); all[Math.min(i + 1, all.length - 1)]?.focus(); }
+      if (e.key === "ArrowUp") { e.preventDefault(); (i > 0 ? all[i - 1] : countrySearch).focus(); }
+      if (e.key === "Escape") { countryHits.replaceChildren(); countrySearch.focus(); }
+    });
+    document.addEventListener("click", (e) => { if (!countrySearch.parentElement.contains(e.target)) countryHits.replaceChildren(); });
+    // A hit becomes the AS: its number for the form, its name in the box.
+    hits.addEventListener("click", (e) => {
+      const hit = e.target.closest("[data-asn]");
+      if (!hit) return;
+      asn.value = hit.dataset.asn;
+      search.value = hit.dataset.label;
+      hits.replaceChildren();
+      asn.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    // Enter takes the first hit, Escape closes them, arrows walk them.
+    search.addEventListener("keydown", (e) => {
+      const all = [...hits.querySelectorAll("[data-asn]")];
+      if (e.key === "Enter") { e.preventDefault(); all[0]?.click(); }
+      if (e.key === "Escape") hits.replaceChildren();
+      if (e.key === "ArrowDown" && all.length) { e.preventDefault(); all[0].focus(); }
+    });
+    hits.addEventListener("keydown", (e) => {
+      const all = [...hits.querySelectorAll("[data-asn]")], i = all.indexOf(document.activeElement);
+      if (e.key === "ArrowDown") { e.preventDefault(); all[Math.min(i + 1, all.length - 1)]?.focus(); }
+      if (e.key === "ArrowUp") { e.preventDefault(); (i > 0 ? all[i - 1] : search).focus(); }
+      if (e.key === "Escape") { hits.replaceChildren(); search.focus(); }
+    });
+    document.addEventListener("click", (e) => { if (!cone.contains(e.target)) hits.replaceChildren(); });
+    // The name an import gets unless one is given, and no import of what does not fit.
+    box.addEventListener("htmx:afterSwap", (e) => {
+      if (e.target.id !== "caida-preview") return;
+      const name = e.target.querySelector("[data-name]");
+      if (name) document.getElementById("caida-name").placeholder = name.dataset.name;
+      const submit = box.closest("form")?.querySelector(".btn-primary");
+      if (submit) submit.disabled = !name || name.dataset.fits !== "true";
+    });
+  })();
+</script>

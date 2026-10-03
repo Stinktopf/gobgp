@@ -1,0 +1,37 @@
+{% from "macros.html" import icon, loading, band_toggle %}
+<div id="overview" data-result="{{ result.name }}" class="space-y-4">
+{% include "partials/result-filters.html" %}
+{% include "partials/result-live.html" %}
+
+  {# A metric over the values of the sweep, or over the size of the topologies. #}
+  {% set sweep = experiment.sweep_of(scenario) %}{% set swept = sweep is not none %}
+  {% if swept or size_series(experiment.topologies) %}
+  {% set firsts = metrics | reject("equalto", "checks") | list %}{% set m = metric if metric in firsts else firsts[0] %}
+  {% set over = sweep.param if swept else "routers" %}
+  <section class="card p-4">
+    <div class="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+      <h3 class="text-sm font-medium">By {{ over }}</h3>
+      <span class="ml-auto">{{ band_toggle("curve", experiment.runs, m in router_metrics) }}</span>
+      <select class="btn px-2 py-1 text-xs" aria-label="Metric"
+              onchange="location.href = '?tab=charts&topology={{ topology }}&scenario={{ scenario | urlencode }}&metric=' + this.value">
+        {% for key, x in metrics.items() if key != "checks" %}<option value="{{ key }}" {% if key == m %}selected{% endif %}>{{ x[0] }}, {{ x[1] }}</option>{% endfor %}
+      </select>
+    </div>
+    <div data-curve data-src="/results/{{ result.name }}/curve?topology={{ topology }}&scenario={{ scenario | urlencode }}&metric={{ m }}" data-unit="{{ metrics[m][1] }}"></div>
+    <p class="muted mt-2 text-xs">Median of up to {{ experiment.runs }} run{{ "s" if experiment.runs != 1 }}. Whiskers: interval of the median by order statistics, or the router spread.</p>
+  </section>
+  {% endif %}
+
+  {# The charts: the chosen scenario over time. #}
+  <section class="space-y-4">
+    {# Like the bar of the table: the choice on the left, switches and the export on the right. #}
+    <div class="card flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2">
+      <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1" role="group" aria-label="Charts" data-chart-picker><span class="label mr-1">Charts</span></div>
+      <span class="ml-auto flex shrink-0 items-center gap-2">{{ band_toggle("charts", experiment.runs) }}
+      <a class="btn btn-icon size-7" aria-label="CSV" href="/results/{{ result.name }}/series.csv?topology={{ topology }}&scenario={{ scenario }}" data-tip="CSV of these series">{{ icon("download") }}</a></span>
+    </div>
+    <div data-charts data-src="/results/{{ result.name }}/series?topology={{ topology }}&scenario={{ scenario }}">
+      <div class="card py-10">{{ loading("Loading the series") }}</div>
+    </div>
+  </section>
+</div>

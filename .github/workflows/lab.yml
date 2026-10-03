@@ -1,0 +1,29 @@
+# Checks of the emulation lab: lint and its tests, which need no cluster.
+# The smoke experiment runs by hand (uv run lab run experiments/lab-smoke.yaml),
+# not on GitHub. The Go tests run in ci.yml.
+name: lab
+
+on:
+  push:
+    paths: ["lab/**", "tests/**", "controller/**", "gobgp-lab/**", "experiments/**", "scenarios/**",
+            "scripts/**", "pyproject.toml", "uv.lock", ".github/workflows/lab.yml"]
+  pull_request:
+    paths: ["lab/**", "tests/**", "controller/**", "gobgp-lab/**", "experiments/**", "scenarios/**",
+            "scripts/**", "pyproject.toml", "uv.lock", ".github/workflows/lab.yml"]
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Lint
+        run: |
+          uvx ruff check lab controller tests scripts
+          shellcheck scripts/*.sh
+      - name: Run the tests
+        run: uv run --group dev pytest -q
+      - name: Check that the stylesheet is built from the current templates
+        run: scripts/build-css.sh && git diff --exit-code lab/web/static/app.css
+

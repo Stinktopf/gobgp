@@ -1,0 +1,18 @@
+<table class="w-full text-sm">
+  <thead class="sticky top-0 bg-white text-left dark:bg-slate-900"><tr class="label">
+    <th class="py-2 font-medium">Network</th>
+    <th class="py-2 text-right font-medium">Routers</th><th class="py-2 text-right font-medium">Links</th><th class="py-2"></th>
+  </tr></thead>
+  <tbody>
+    {% for n in networks %}
+    <tr class="cursor-pointer border-t border-slate-100 hover:bg-slate-50 has-focus-visible:outline-2 has-focus-visible:outline-uoft-500 has-checked:bg-uoft-50 dark:border-white/5 dark:hover:bg-slate-800/50 dark:has-checked:bg-uoft-900/60"
+        onclick="this.querySelector('input').checked = true">
+      <td class="py-1.5"><label class="flex items-center gap-2 font-mono"><input type="radio" name="network" value="{{ n.name }}" class="sr-only">
+        {{ n.name }}{% if n.map %}<svg class="icon size-3.5 text-slate-400" aria-label="on a map"><use href="{{ static('icons.svg') }}#map"/></svg>{% endif %}</label></td>
+      <td class="py-1.5 text-right tabular-nums">{{ n.routers }}</td>
+      <td class="py-1.5 text-right tabular-nums">{{ n.links }}</td>
+      <td class="muted py-1.5 pl-3 text-right text-xs">{% if n.imported %}as {{ n.imported | join(", ") }}{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>

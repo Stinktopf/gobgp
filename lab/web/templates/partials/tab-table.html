@@ -1,0 +1,151 @@
+{% from "macros.html" import icon, band_toggle %}
+{% set label, unit, help, group, caveat = metrics[metric] %}
+{# Relative to a variant: every other value as its difference to that one, in percent. #}
+{% set baseline = request.query_params.get("baseline", "") %}
+{% set baseline = baseline if baseline in experiment.variants | map(attribute="name") | list and metric != "checks" else "" %}
+{% set base = "?tab=table&topology=" ~ topology ~ ("&baseline=" ~ baseline if baseline else "") %}
+{% set charts = "?tab=charts&topology=" ~ topology %}
+{# Best and worst only where less is better: times and resources. The sizes of the tables and the path length just describe. #}
+{% set ranked = metric in ("convergence_s", "settle_s", "hold_churn", "rss_mean", "heap_mean", "objects_mean", "cpu_s_mean") %}
+{% set higher_better = false %}
+{% set best_badge = "rounded bg-emerald-100 px-1.5 py-0.5 font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" %}
+{% set partial_badge = "rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-300" %}
+{% set worst_badge = "rounded bg-rose-100 px-1.5 py-0.5 font-medium text-rose-800 dark:bg-rose-950 dark:text-rose-300" %}
+<div id="overview" data-result="{{ result.name }}" class="space-y-4">
+{% include "partials/result-filters.html" %}
+{% include "partials/result-live.html" %}
+
+  {# How many runs reached the time, said once in the caption, so that the cells stay plain. #}
+  {% set ns = namespace(runs=0, reached=0) %}
+  {% if metric in ("convergence_s", "settle_s") %}
+  {% for row in table %}{% for cell in row.cells if cell and cell.runs and (cell.metrics[metric] or cell.measurable or metric == "settle_s") %}{% set ns.runs = ns.runs + cell.runs %}{% set ns.reached = ns.reached + ((cell.metrics[metric] or {}).n or 0) %}{% endfor %}{% endfor %}
+  {% endif %}
+
+  {# The table: one metric of every scenario and variant. #}
+  <section class="card overflow-hidden">
+    {# The metric of the table, as tabs, the outcome first. #}
+    <div class="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-slate-100 px-4 py-2 dark:border-white/5">
+      <nav class="segmented flex-wrap text-sm" aria-label="Metric">
+        {% for name in ["Outcome", "Resources"] %}{% for key, m in metrics.items() if m[3] == name %}<a href="{{ base }}&metric={{ key }}" data-tip="{{ m[2][:1] | upper }}{{ m[2][1:] }}" {% if metric == key %}aria-current="page"{% endif %}>{{ m[0] }}</a>{% endfor %}{% endfor %}
+      </nav>
+    </div>
+    <div class="flex items-center gap-3 border-b border-slate-100 px-4 py-1.5 dark:border-white/5">
+      {# What it measures, short; how many runs and how exact in the bar on the right. #}
+      <span class="muted min-w-0 flex-1 text-xs">{% if metric == "checks" %}<span class="font-semibold">Checks</span>: runs that passed every expect step{% else %}<span class="font-semibold" {% if caveat %}data-tip="{{ caveat }}"{% endif %}>{{ label }}</span> in {{ unit }}: {{ help }}{% if ns.runs and ns.reached < ns.runs %} · {{ ns.runs - ns.reached }} of {{ ns.runs }} runs did not {{ 'converge' if metric == 'convergence_s' else 'settle' }}{% endif %}{% endif %}</span>
+      <span class="muted text-xs whitespace-nowrap tabular-nums" data-tip="The median of the runs{% if metric in ('convergence_s', 'settle_s') %}, exact to two sampling intervals{% endif %}">{{ experiment.runs }} run{{ "s" if experiment.runs != 1 }}{% if metric in ("convergence_s", "settle_s") %} · ±{{ (2 * experiment.sampling.interval) | round(3) }} s{% endif %}</span>
+      {% if metric != "checks" %}
+      <label class="muted flex items-center gap-1.5 text-xs whitespace-nowrap" data-tip="Every other value as its difference to this variant">Relative to
+        <select class="btn px-2 py-1 font-mono text-xs" aria-label="Relative to"
+                onchange="location.href = '?tab=table&topology={{ topology }}&metric={{ metric }}' + (this.value ? '&baseline=' + this.value : '')">
+          <option value="">–</option>
+          {% for v in experiment.variants %}<option {% if v.name == baseline %}selected{% endif %}>{{ v.name }}</option>{% endfor %}
+        </select></label>
+      {{ band_toggle("table", experiment.runs, metric in router_metrics) }}
+      {% endif %}
+      <a class="btn px-2 py-1 text-xs" href="/results/{{ result.name }}/summary.csv" data-tip="Every metric of every scenario and variant: median, range and runs">{{ icon("download") }}CSV</a>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="border-b border-slate-100 dark:border-white/5">
+          <tr class="text-left [&>th]:px-4 [&>th]:py-2.5 [&>th]:font-medium [&>th]:text-slate-500 dark:[&>th]:text-slate-400">
+            <th>Scenario</th>
+            {% for v in experiment.variants %}<th class="text-right font-mono" data-variant="{{ v.name }}">{{ v.name }}{% if v.name == baseline %}<span class="block font-sans text-[11px] font-normal text-slate-400">baseline</span>{% endif %}</th>{% endfor %}
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100 dark:divide-white/5">
+          {% for row in table %}
+          {% set medians = row.cells | select | map(attribute="metrics") | map(attribute=metric, default=none) | select | map(attribute="median") | map("shown", metric, experiment.sampling.digits()) | list %}
+          {# A time never reached is the worst of its row: the values beside it can still be best. #}
+          {% set nr = namespace(missing=false) %}
+          {% for cell in row.cells if cell and cell.runs and not cell.metrics.get(metric) and (metric == "settle_s" or (metric == "convergence_s" and cell.measurable)) %}{% set nr.missing = true %}{% endfor %}
+          {% set spread = ranked and (medians | unique | list | length > 1 or (nr.missing and medians)) %}
+          {# A variant that converged in fewer runs is not the best of its row: its median leaves out the rest. #}
+          {% set ns = namespace(whole=[]) %}
+          {% for cell in row.cells if cell and cell.metrics.get(metric) and (metric not in ("convergence_s", "settle_s") or cell.metrics[metric].n == cell.runs) %}{% set ns.whole = ns.whole + [cell.metrics[metric].median | shown(metric, experiment.sampling.digits())] %}{% endfor %}
+          {% set best = ((ns.whole | max if higher_better else ns.whole | min) if ns.whole else none) if spread else none %}
+          {% set worst = (medians | min if higher_better else medians | max) if spread and not nr.missing else none %}
+          <tr class="[&>td]:px-4 [&>td]:py-2.5">
+            <td>
+              <a href="{{ charts }}&metric={{ metric }}&scenario={{ row.scenario }}" class="font-mono hover:underline" data-tip="Its charts over time">
+                {{ row.scenario }}
+              </a>
+            </td>
+            {% for cell in row.cells %}
+            {% set v = experiment.variants[loop.index0] %}
+            {% set m = cell.metrics[metric] if cell and metric in cell.metrics else none %}
+            <td class="text-right tabular-nums" data-variant="{{ v.name }}">
+              {% if not cell or not cell.runs %}
+              <span class="text-xs text-slate-400">{{ "running" if running and running.startswith(topology ~ "/" ~ v.name ~ "/" ~ row.scenario ~ "#") else "pending" }}</span>
+              {% elif metric == "checks" %}
+              {% set c = cell.checks %}
+              {% if c %}<span class="rounded px-1.5 py-0.5 text-xs font-medium {{ 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' if c.passed == c.runs else 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300' }}" data-tip="{{ c.passed }} of {{ c.runs }} runs passed every check">{{ c.passed }}/{{ c.runs }}</span>
+              {% else %}<span class="text-slate-300 dark:text-slate-600" data-tip="No checks in this scenario">–</span>{% endif %}
+              {% elif m %}
+              {% set partial = metric in ("convergence_s", "settle_s") and m.n < cell.runs %}
+              {# What the cell says on hover; only if nothing, where its link leads. #}
+              {% set cell_tip %}{% if partial %}Only {{ m.n }} of {{ cell.runs }} runs {{ 'converged' if metric == 'convergence_s' else 'settled' }}, the median is of those. {% endif %}{{ 'Best of this row. ' if best is not none and (m.median | shown(metric, experiment.sampling.digits())) == best and not partial else 'Worst of this row. ' if worst is not none and (m.median | shown(metric, experiment.sampling.digits())) == worst and not partial else '' }}{% if baseline and v.name != baseline %}{% set pr = paired(row.scenario, v.name, metric, baseline) %}{% if pr %}Paired by seed over {{ pr.n }} runs: {% if pr.change is not none %}{{ '%+.0f' | format(pr.change) | replace('-', '−') }} % in the median of the pairs, {% endif %}{% if pr.p is not none %}p = {{ '%.3f' | format(pr.p) }} (Wilcoxon){% if pr.p >= 0.05 %}, not significant{% if pr.n < 6 %}: {{ pr.n }} pairs cannot be{% endif %}{% else %}, * significant at 5 %{% endif %}{% else %}too few to test{% endif %}.{% if pr.shift is defined %} Shift {{ pr.shift | metric_value(metric, experiment.sampling.digits()) }} {{ unit }}, {{ (100 * pr.shift_level) | round(1) }} % CI {{ pr.shift_low | metric_value(metric, experiment.sampling.digits()) }} to {{ pr.shift_high | metric_value(metric, experiment.sampling.digits()) }} (Hodges–Lehmann).{% endif %} {% endif %}{% endif %}{% endset %}
+              {% set badge = partial_badge if partial else best_badge if best is not none and (m.median | shown(metric, experiment.sampling.digits())) == best else worst_badge if worst is not none and (m.median | shown(metric, experiment.sampling.digits())) == worst else '' %}
+              <a href="?tab=replay&topology={{ topology }}&scenario={{ row.scenario }}&run=1&variant={{ v.name }}" class="rounded px-1.5 py-0.5 hover:underline {{ badge }}" data-value
+                 data-tip="{{ cell_tip | trim or 'Replay its first run' }}">
+                {%- set b = (row.cells[(experiment.variants | map(attribute="name") | list).index(baseline)] or {}).get("metrics", {}).get(metric) if baseline else none -%}
+                {%- if baseline and v.name != baseline -%}
+                {%- if b and b.median -%}{{ "%+.0f" | format(100 * (m.median - b.median) / b.median) | replace("-", "−") }} %{%- elif b and m.median == b.median -%}±0 %{%- else -%}–{%- endif -%}
+                {%- set pr = paired(row.scenario, v.name, metric, baseline) -%}
+                {%- if pr and pr.p is not none and pr.p < 0.05 -%}<sup class="ml-0.5 text-uoft-700 dark:text-uoft-300">*</sup>{%- endif -%}
+                {%- else -%}{{ m.median | metric_value(metric, experiment.sampling.digits()) }}{%- endif -%}
+              </a>
+                            {% if m.ci_low is defined and (not baseline or v.name == baseline) %}{% set weak = m.ci_level < 0.95 %}<span class="rounded px-1.5 py-0.5 {{ badge }}" data-range="ci" data-tip="{{ (100 * m.ci_level) | round(1) }} % confidence interval of the median, from order statistics, n = {{ m.n }}{% if weak %}&#10;{{ m.n }} runs reach no 95 %: 6 do{% endif %}" hidden>{{ m.ci_low | metric_value(metric, experiment.sampling.digits()) }}–{{ m.ci_high | metric_value(metric, experiment.sampling.digits()) }}</span>{% endif %}
+              {% if m.router_min is defined and (not baseline or v.name == baseline) %}<span class="rounded px-1.5 py-0.5 {{ badge }}" data-range="routers" data-tip="The smallest and the largest router of all {{ cell.runs }} runs, each at its own peak" hidden>{{ m.router_min | metric_value(metric, experiment.sampling.digits()) }}–{{ m.router_max | metric_value(metric, experiment.sampling.digits()) }}</span>{% endif %}
+              {% if metric not in ("convergence_s", "settle_s") and cell.statuses.get("error") %}
+              <span class="error ml-1 text-xs" data-tip="{{ cell.statuses.error }} runs with errors">!{{ cell.statuses.error }}</span>
+              {% endif %}
+              {% elif metric == "settle_s" %}
+              {# Settling needs no expected prefixes: never reached means routes kept changing. #}
+              {% set osc = (cell.metrics.oscillates or {}).median %}
+              <span class="{{ worst_badge }}" data-tip="{{ 'Routes kept changing to the end of every run' if osc else 'No run settled before its next step' }}">never</span>
+              {% elif metric == "convergence_s" and cell.measurable %}
+              <span class="{{ worst_badge }}" data-tip="No run converged">never</span>
+              {% else %}<span class="px-1.5 text-slate-300 dark:text-slate-600" data-tip="Not measured in this scenario or by these runs">–</span>{% endif %}
+            </td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {# Every failed expect step of this topology, with what the router held instead. #}
+  {% if metric == "checks" %}
+  {% set failed = failed_checks() %}
+  <section class="card overflow-hidden">
+    <div class="border-b border-slate-100 px-4 py-2 text-sm font-medium dark:border-white/5">Failed checks</div>
+    {% if failed %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="border-b border-slate-100 dark:border-white/5">
+          <tr class="text-left [&>th]:px-4 [&>th]:py-2 [&>th]:font-medium [&>th]:text-slate-500 dark:[&>th]:text-slate-400">
+            <th>Scenario</th><th>Variant</th><th>Run</th><th data-tip="Step of the scenario, from 0">Step</th><th class="text-right">At</th><th>Problems</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100 dark:divide-white/5">
+          {% for f in failed %}
+          <tr class="align-top [&>td]:px-4 [&>td]:py-2">
+            <td class="font-mono">{{ f.scenario }}</td>
+            <td class="font-mono">{{ f.variant }}</td>
+            <td><a href="?tab=replay&topology={{ topology }}&scenario={{ f.scenario }}&run={{ f.run }}&variant={{ f.variant }}" class="hover:underline" data-tip="Replay this run">#{{ f.run }}</a></td>
+            <td class="tabular-nums">{{ f.step }}</td>
+            <td class="text-right tabular-nums whitespace-nowrap">{{ "%.1f" | format(f.t or 0) }} s</td>
+            <td class="error">{{ f.problems | join("; ") or "–" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted px-4 py-3 text-sm">None.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+</div>

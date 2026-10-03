@@ -257,6 +257,12 @@ var (
 		"Number of routes advertised to peer",
 		rfLabels, nil,
 	)
+
+	bgpObgpSuppressedDesc = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "obgp", "suppressed_paths"),
+		"Number of paths OBGP keeps in the global RIB without admitting them",
+		[]string{"route_family"}, nil,
+	)
 )
 
 func NewBgpCollector(server *server.BgpServer) prometheus.Collector {
@@ -298,6 +304,7 @@ func (c *bgpCollector) Describe(out chan<- *prometheus.Desc) {
 	out <- bgpRoutesReceivedDesc
 	out <- bgpRoutesAcceptedDesc
 	out <- bgpRoutesAdvertisedDesc
+	out <- bgpObgpSuppressedDesc
 }
 
 func (c *bgpCollector) Collect(out chan<- prometheus.Metric) {
@@ -420,5 +427,12 @@ func (c *bgpCollector) Collect(out chan<- prometheus.Metric) {
 	})
 	if err != nil {
 		out <- prometheus.NewInvalidMetric(prometheus.NewDesc("error", "error during metric collection", nil, nil), err)
+	}
+
+	// Zero without OBGP, so that a missing value means a daemon without it.
+	for _, family := range []bgp.Family{bgp.RF_IPv4_UC, bgp.RF_IPv6_UC} {
+		if n, err := c.server.GetOperaSuppressed(family); err == nil {
+			out <- prometheus.MustNewConstMetric(bgpObgpSuppressedDesc, prometheus.GaugeValue, float64(n), family.String())
+		}
 	}
 }

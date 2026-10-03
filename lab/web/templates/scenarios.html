@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% from "macros.html" import delete_button, icon, list_header, problem %}
+{% block title %}Scenarios · OBGP Lab{% endblock %}
+{% block content %}
+{% call list_header("Scenarios", "#scenarios") %}<a href="/scenarios/new" class="btn btn-primary">{{ icon("add") }}New scenario</a>{% endcall %}
+{{ problem(error) }}
+<div class="card overflow-x-auto">
+  <table class="list" id="scenarios">
+    <thead><tr><th>Scenario</th><th class="hidden sm:table-cell">Steps</th><th class="hidden md:table-cell">Used by</th><th class="num">Duration</th></tr></thead>
+    <tbody>
+      {% for s in scenarios %}
+      <tr {% if not s.error %}onclick="location.href = '/scenarios/{{ s.name }}'"{% else %}class="broken"{% endif %} data-search="{{ s.name }} {{ s.description }}">
+        <td class="w-full max-w-0">{# all the room the other columns leave, the note cut at its end #}
+          {% if s.error %}<span class="item-name">{{ s.name }}</span>{% else %}<a href="/scenarios/{{ s.name }}" class="item-name">{{ s.name }}</a>{% endif %}
+          {% if s.error %}<span class="error block truncate text-xs">{{ s.error }}</span>
+          {% elif s.description %}<span class="item-note" data-tip="{{ s.description }}">{{ s.description }}</span>{% endif %}
+        </td>
+        <td class="hidden w-0 text-slate-400 sm:table-cell">
+          {# Six at most in one line; the rest named in the tooltip of +n. #}
+          {% set kinds = s.kinds or [] %}
+          <span class="flex w-max items-center gap-1.5">{% for k in kinds[:6] %}<span data-tip="{{ k.replace('_', ' ') }}">{{ icon(k) }}</span>{% endfor %}
+            {% if kinds | length > 6 %}<span class="rounded bg-slate-100 px-1 text-[11px] font-medium text-slate-500 tabular-nums dark:bg-slate-800 dark:text-slate-400" data-tip="Also{% for k in kinds[6:] %}&#10;{{ k.replace('_', ' ') }}{% endfor %}">+{{ kinds | length - 6 }}</span>{% endif %}</span>
+        </td>
+        <td class="muted hidden font-mono text-xs whitespace-nowrap md:table-cell" data-tip="{{ (s.used or []) | join(', ') }}">{{ (s.used or []) | listing or "–" }}</td>
+        <td class="num muted whitespace-nowrap">{% if s.error %}{{ delete_button("/scenarios/" ~ s.name ~ "/delete", s.name, text="The file does not load.") }}{% else %}{{ s.duration_s | duration }}{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr class="empty"><td colspan="4">No scenarios yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

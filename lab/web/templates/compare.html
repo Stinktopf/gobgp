@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_header %}
+{% block title %}Compare · Results · OBGP Lab{% endblock %}
+{% block content %}
+{% set label, unit, help, group, caveat = metrics[metric] %}
+{% set base = "?a=" ~ first.name ~ "&b=" ~ second.name ~ "&topology=" ~ topology %}
+{# More is better only for the selected routes; less for everything else. #}
+{# Better or worse only where less is better, as in the table: times and resources. #}
+{% set ranked = metric in ("convergence_s", "settle_s", "hold_churn", "rss_mean", "heap_mean", "objects_mean", "cpu_s_mean") %}
+{% call page_header("/results", "Results") %}
+  <h1 class="font-mono text-2xl font-semibold tracking-tight">
+    <a href="/results/{{ first.name }}" class="hover:underline">{{ first.name }}</a>
+    <span class="text-slate-400">→</span>
+    <a href="/results/{{ second.name }}" class="hover:underline">{{ second.name }}</a>
+  </h1>
+{% endcall %}
+
+<div class="space-y-4">
+  {# What differs, so that a change can be told from its cause. #}
+  <section class="card p-5">
+    <h2 class="section-title mb-3">What differs</h2>
+    {% if differences %}
+    <dl class="facts">
+      {# A long list as its first three and +n, all of it in the tooltip. #}
+      {% macro short(value) -%}
+      {% set items = value.split(", ") %}{% if items | length > 3 %}<span data-tip="{{ value }}">{{ items[:3] | join(", ") }}, +{{ items | length - 3 }}</span>{% else %}{{ value }}{% endif %}
+      {%- endmacro %}
+      {% for what, x, y in differences %}
+      <div><dt>{{ what }}</dt><dd class="font-mono text-xs">{{ short(x) }} <span class="text-slate-400">→</span> {{ short(y) }}</dd></div>
+      {% endfor %}
+    </dl>
+    {% else %}<p class="muted text-sm">The same setup, code and files.</p>{% endif %}
+  </section>
+
+  {% if not topology or not variants %}
+  <p class="card p-5 text-sm">They share no topology or no variant, so there is nothing to compare.</p>
+  {% else %}
+  <section class="card overflow-hidden">
+    <div class="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-slate-100 px-4 py-2 dark:border-white/5">
+      <label class="flex items-center gap-2 text-sm"><span class="label">Topology</span>
+        {% if topologies | length > 1 %}
+        <select aria-label="Topology" class="input w-auto py-1 font-mono text-sm" onchange="location.href = '?a={{ first.name }}&b={{ second.name }}&metric={{ metric }}&topology=' + this.value">
+          {% for t in topologies %}<option {% if t == topology %}selected{% endif %}>{{ t }}</option>{% endfor %}
+        </select>
+        {% else %}<span class="py-1 font-mono">{{ topology }}</span>{% endif %}
+      </label>
+      <nav class="segmented flex-wrap text-sm" aria-label="Metric">
+        {% for name in ["Outcome", "Resources"] %}{% for key, m in metrics.items() if m[3] == name %}<a href="{{ base }}&metric={{ key }}" data-tip="{{ m[2][:1] | upper }}{{ m[2][1:] }}" {% if metric == key %}aria-current="page"{% endif %}>{{ m[0] }}</a>{% endfor %}{% endfor %}
+      </nav>
+    </div>
+    <p class="muted border-b border-slate-100 px-4 py-1.5 text-xs dark:border-white/5">
+      <span class="font-semibold">{{ label }}</span> in {{ unit }}: {{ help }} · first → second</p>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="border-b border-slate-100 dark:border-white/5">
+          <tr class="text-left [&>th]:px-4 [&>th]:py-2.5 [&>th]:font-medium [&>th]:text-slate-500 dark:[&>th]:text-slate-400">
+            <th>Scenario</th>{% for v in variants %}<th class="text-right font-mono">{{ v }}</th>{% endfor %}
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100 dark:divide-white/5">
+          {% if not rows %}<tr><td colspan="{{ variants | length + 1 }}" class="muted px-4 py-6 text-center">{{ "No scenario ran in both." if topologies else "No topology ran in both." }}</td></tr>{% endif %}
+          {% for row in rows %}
+          <tr class="[&>td]:px-4 [&>td]:py-2.5">
+            <td class="font-mono">{{ row.scenario }}</td>
+            {% for a, b in row.cells %}
+            <td class="text-right whitespace-nowrap tabular-nums">
+              {% if a and b %}
+              <span class="text-slate-400">{{ a.median | metric_value(metric, digits) }} →</span> {{ b.median | metric_value(metric, digits) }}
+              {# The change of the values as shown: what looks the same is ±0. #}
+              {% set sa, sb = a.median | shown(metric, digits), b.median | shown(metric, digits) %}
+              {% if sa %}{% set change = 100 * (sb - sa) / sa %}
+              {% set better = change < 0 %}
+              {% if sa != sb and change | round(0) != 0 %}<span class="ml-1 rounded px-1.5 py-0.5 text-xs font-medium {{ 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300' if not ranked else 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300' if better else 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300' }}">{{ "%+.0f" | format(change) | replace("-", "−") }} %</span>
+              {% endif %}{% endif %}
+              {% else %}<span class="text-slate-300 dark:text-slate-600" data-tip="Not measured in one of them">–</span>{% endif %}
+            </td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

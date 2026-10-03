@@ -1,0 +1,15 @@
+name: lab-smoke
+description: Whether the lab runs on this host, once per mode, and a sweep of two values.
+cluster: {cpus: 2, memory_mb: 4096}
+runs: 1
+bgp: {hold_time: 6, keepalive: 2}
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp, mode: obgp}
+  - {name: obgp-np, mode: obgp-np}
+topologies: [bad-gadget]
+scenarios:
+  - smoke-drain
+  - smoke-all
+sweeps:
+  - {scenario: smoke-all, param: rate, values: [1, 2]}

@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% from "macros.html" import state_badge, visibility_tag, list_header, problem, delete_button, icon %}
+{% block title %}Results · OBGP Lab{% endblock %}
+{% block content %}
+{% call list_header("Results", "#results") %}
+  <a class="btn" hidden data-compare data-tip="Two results side by side, with what differs">Compare</a>
+  <form method="post" hidden data-picked="run-again"><button class="btn" data-confirm="Run again?" data-confirm-text="Queues the experiment of each picked result once more, as its file is now." aria-label="Run again">{{ icon("play") }}Run again <span data-count></span></button></form>
+  <form method="post" hidden data-picked="delete"><button class="btn btn-danger" data-confirm="Delete?" data-confirm-text="Their runs and samples are gone for good. Public or running ones are kept." aria-label="Delete">{{ icon("delete") }}Delete <span data-count></span></button></form>
+  <nav class="segmented" aria-label="Visibility">
+    {% for key, label in [("all", "All"), ("public", "Public"), ("private", "Private")] %}
+    <a href="?show={{ key }}" {% if show == key %}aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+{% endcall %}
+{{ problem(error) }}
+<div class="card overflow-x-auto">
+  <table class="list" id="results">
+    <thead><tr>
+      <th class="w-0"><span class="sr-only">Pick</span></th><th>Result</th><th class="hidden md:table-cell">Variants</th><th class="num">Runs</th><th class="num hidden sm:table-cell">Size</th><th class="num hidden sm:table-cell">Created</th><th></th>
+    </tr></thead>
+    <tbody>
+      {% for r in results %}
+      {% set s = r.status %}{% set e = r.experiment %}
+      <tr onclick="location.href = '/results/{{ r.name }}'" data-search="{{ r.name }} {{ r.experiment.description }}">
+        <td class="w-0 pr-0" onclick="event.stopPropagation()">
+          <input type="checkbox" class="accent-uoft-700 dark:accent-uoft-400" value="{{ r.name }}" aria-label="Pick {{ r.name }}" data-pick>
+        </td>
+        <td class="max-w-md">
+          <a href="/results/{{ r.name }}" class="flex items-center gap-2">
+            <span class="item-name">{{ r.name }}</span>
+            {% if r.public %}{{ visibility_tag(r) }}{% endif %}
+          </a>
+          <span class="item-note" {% if e.description %}data-tip="{{ e.description }}"{% endif %}>
+            {% if e.name != r.name %}<span class="font-mono">{{ e.name }}</span>{% else %}{{ e.description }}{% endif %}{% if s.state and s.state != "finished" %} · {{ s.state }}{% endif %}{% if s.errors %} · {{ s.errors }} with errors{% endif %}{% if failed[r.name] %} · <span class="text-rose-700 dark:text-rose-300">{{ failed[r.name] }} runs failed a check</span>{% endif %}</span>
+        </td>
+        {% set names = e.variants | map(attribute="name") | list %}
+        <td class="muted hidden font-mono text-xs whitespace-nowrap md:table-cell" data-tip="{{ names | join(', ') }}">{{ names | listing }}</td>
+        <td class="num muted">{% if s.total and s.done < s.total %}{{ s.done }}/{{ s.total }}{% else %}{{ e.runs_total() }}{% endif %}</td>
+        <td class="num muted hidden sm:table-cell">{{ sizes[r.name] | size }}</td>
+        <td class="num muted hidden whitespace-nowrap sm:table-cell">{{ r.meta.created | created }}</td>
+        <td class="w-0 pr-5 text-right">{% if s.state != "finished" %}{{ state_badge(s.state) }}{% endif %}</td>
+      </tr>
+      {% else %}
+      {% if not older %}<tr class="empty"><td colspan="7">No results yet.</td></tr>{% endif %}
+      {% endfor %}
+      {% for r in older %}
+      <tr class="broken" data-search="{{ r.name }}">
+        <td></td>
+        <td class="max-w-md">
+          <span class="item-name text-slate-500 dark:text-slate-400">{{ r.name }}</span>
+          <span class="item-note">An older format of the lab{% if r.public %} · public{% endif %}</span>
+        </td>
+        <td class="hidden md:table-cell"></td><td></td>
+        <td class="num muted hidden sm:table-cell">{{ sizes[r.name] | size }}</td>
+        <td class="hidden sm:table-cell"></td>
+        <td class="w-0 pr-5 text-right">
+          {% if r.public %}<form method="post" action="/results/{{ r.name }}/visibility"><input type="hidden" name="public" value="false"><button class="btn">Make private</button></form>
+          {% else %}{{ delete_button("/results/" ~ r.name ~ "/delete", r.name, text="Its runs and samples are gone for good.") }}{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% set low = storage.free < 0.1 * storage.total %}
+<p class="mt-3 text-right text-xs {{ 'text-amber-700 dark:text-amber-300' if low else 'muted' }}">
+  Public {{ storage.public | size }} · private {{ storage.private | size }} · {{ storage.free | size }} free{% if low %}, less than a tenth of the disk{% endif %}
+</p>
+<script>
+  // Picked results: two can be compared, in the order they were picked; any can be run again or deleted.
+  const picked = [];
+  const compare = document.querySelector("[data-compare]");
+  document.querySelectorAll("[data-pick]").forEach((box) => (box.onchange = () => {
+    if (box.checked) picked.push(box.value); else picked.splice(picked.indexOf(box.value), 1);
+    compare.hidden = picked.length !== 2;
+    if (picked.length === 2) compare.href = `/results/compare?a=${encodeURIComponent(picked[0])}&b=${encodeURIComponent(picked[1])}`;
+    const names = picked.map((n) => `names=${encodeURIComponent(n)}`).join("&");
+    document.querySelectorAll("[data-picked]").forEach((form) => {
+      form.hidden = !picked.length;
+      form.action = `/results/${form.dataset.picked}?${names}`;
+      form.querySelector("[data-count]").textContent = picked.length;
+      form.querySelector("button").dataset.confirm = `${form.dataset.picked === "delete" ? "Delete" : "Run again"} ${picked.length} result${picked.length === 1 ? "" : "s"}?`;
+    });
+  }));
+</script>
+{% endblock %}

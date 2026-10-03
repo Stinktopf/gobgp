@@ -1,0 +1,528 @@
+/* The design system of the lab: source of static/app.css, built with
+   scripts/build-css.sh.
+
+   Colours have one job each:
+   - accent (U of T Blue): titles, interaction, selection, what stands
+     out (the best value, OBGP), roles such as origins
+   - neutrals (slate): structure, text, the graph itself
+   - series 1–8: variants, in charts and replays only
+   - activity (U of T Blue, from pale to deep): how busy a router or link
+     is, in replays only, where origins turn neutral
+   - status: sky running, emerald done, amber waiting for you (unsaved,
+     timeouts, low disk), rose errors */
+@import "tailwindcss";
+@source "./templates";
+
+/* Dark follows data-theme on <html>, which the page sets before it draws:
+   from the choice of the viewer, or else from the system (base.html). */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+@theme {
+  /* U of T Blue (#1e3765 at 700) with tints and shades of the same hue. */
+  --color-uoft-50: #f1f5fe;
+  --color-uoft-100: #dfe8f9;
+  --color-uoft-200: #bfd2f3;
+  --color-uoft-300: #9bb8eb;
+  --color-uoft-400: #759be0;
+  --color-uoft-500: #4a6fb5;
+  --color-uoft-600: #345695;
+  --color-uoft-700: #1e3765;
+  --color-uoft-800: #13274d;
+  --color-uoft-900: #0a1936;
+  --color-uoft-950: #040c20;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+}
+
+/* Tokens read by the charts and graphs (JavaScript), per colour scheme. */
+:root {
+  /* Variants: passes the colour vision checks on the chart surface. */
+  --series-1: #007c9c;
+  --series-2: #bd1d57;
+  --series-3: #b58900;
+  --series-4: #83458e;
+  --series-5: #2f8f46;
+  --series-6: #4b5fc8;
+  --series-7: #d4621c;
+  --series-8: #c23d9b;
+  --chart-muted: #64748b;
+  --chart-grid: #eef1f5;
+  --chart-surface: #ffffff;  /* the card under a chart, for rings around marks */
+  --chart-axis: #cbd5e1;
+  /* Graphs of topologies */
+  --graph-bg: #ffffff;
+  --graph-node: #64748b;
+  --graph-edge: #cbd5e1;
+  --graph-label: #475569;
+  --graph-accent: #1e3765;
+  --graph-accent-soft: #9bb8eb;
+  --map-land: #eef1f5;
+  --map-border: #d5dce6;
+  /* Activity, from quiet to busy */
+  --activity-low: #cbd5e1;
+  --activity-high: #345695;
+  --activity-halo: #759be0;
+  --glow: 0 0 0 1px rgb(30 55 101 / 0.28), 0 6px 24px -6px rgb(30 55 101 / 0.35);
+  --scrollbar: #cbd5e1;
+  --range-track: #e2e8f0;
+  --range-thumb: #1e3765;
+  --range-ring: #ffffff;
+  --phase-a: rgb(15 23 42 / 0.035);
+  --phase-b: rgb(30 55 101 / 0.08);
+  --action-line: #64748b;
+}
+/* Unlayered as the light ones above, which they replace. */
+:root[data-theme=dark] {
+  --series-1: #1f9bbd;
+  --series-2: #e0457d;
+  --series-3: #ad8700;
+  --series-4: #a36bb0;
+  --series-5: #45a85a;
+  --series-6: #6f82e0;
+  --series-7: #d8732f;
+  --series-8: #d65cb4;
+  --chart-muted: #94a3b8;
+  --chart-grid: #1e293b;
+  --chart-surface: #0f172a;
+  --chart-axis: #334155;
+  --graph-bg: #0f172a;
+  --graph-node: #94a3b8;
+  --graph-edge: #334155;
+  --graph-label: #cbd5e1;
+  --graph-accent: #9bb8eb;
+  --graph-accent-soft: #345695;
+  --map-land: #1e293b;
+  --map-border: #334155;
+  --activity-low: #475569;
+  --activity-high: #9bb8eb;
+  --activity-halo: #4a6fb5;
+  --glow: 0 0 0 1px rgb(155 184 235 / 0.35), 0 6px 28px -6px rgb(117 155 224 / 0.45);
+  --scrollbar: #475569;
+  --range-track: #334155;
+  --range-thumb: #9bb8eb;
+  --range-ring: #0f172a;
+  --phase-a: rgb(255 255 255 / 0.03);
+  --phase-b: rgb(155 184 235 / 0.08);
+  --action-line: #94a3b8;
+}
+
+/* The crosshair is a solid hairline, like the grid. */
+.uplot .u-cursor-x {
+  border-right: 1px solid var(--chart-muted);
+}
+
+@keyframes tip-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes glow-pulse {
+  50% { box-shadow: 0 0 0 1px rgb(30 55 101 / 0.18), 0 6px 18px -8px rgb(30 55 101 / 0.2); }
+}
+
+@layer base {
+  /* Columns of a grid shrink with it, e.g. around long text. */
+  .grid > * {
+    min-width: 0;
+  }
+  /* Native controls (scrollbars) follow the theme. */
+  :root {
+    color-scheme: light;
+  }
+  :root[data-theme=dark] {
+    color-scheme: dark;
+  }
+  /* Thin scrollbars in the colours of the page */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background: var(--scrollbar) padding-box;
+  }
+  input[type="search"]::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+  }
+  /* Numbers without the browser's spinners */
+  input[type="number"] {
+    -moz-appearance: textfield;
+  }
+  input[type="number"]::-webkit-inner-spin-button, input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  /* Checkboxes of our own */
+  input[type="checkbox"]:not(.sr-only) {
+    @apply size-4 shrink-0 cursor-pointer appearance-none rounded border border-slate-300 bg-white transition checked:border-uoft-700 checked:bg-uoft-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-uoft-500 dark:border-slate-600 dark:bg-slate-900 dark:checked:border-uoft-400 dark:checked:bg-uoft-400;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 75%;
+  }
+  input[type="checkbox"]:checked {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+  }
+  /* The time slider. Its parts are pseudo-elements, which the dark variant
+     cannot follow, so they take their colours from tokens. */
+  input[type="range"] {
+    @apply h-4 cursor-pointer appearance-none bg-transparent;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    @apply h-1 rounded-full bg-(--range-track);
+  }
+  input[type="range"]::-moz-range-track {
+    @apply h-1 rounded-full bg-(--range-track);
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    @apply -mt-1.5 size-4 appearance-none rounded-full border-2 border-(--range-ring) bg-(--range-thumb) shadow ring-1 ring-slate-900/10;
+  }
+  input[type="range"]::-moz-range-thumb {
+    @apply size-3.5 rounded-full border-2 border-(--range-ring) bg-(--range-thumb) shadow;
+  }
+  h1, h2 {
+    @apply text-uoft-700 dark:text-white;
+  }
+}
+
+@layer components {
+  /* Surfaces */
+  .card {
+    @apply rounded-xl bg-white shadow-xs ring-1 ring-slate-900/5 dark:bg-slate-900 dark:ring-white/10;
+  }
+  .glow-live {
+    box-shadow: var(--glow);
+    animation: glow-pulse 3s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .glow-live { animation: none; }
+  }
+  /* The running result and the queue, at the bottom of every page. */
+  .dock-bar {
+    @apply fixed inset-x-0 bottom-0 z-20 border-t border-slate-200 bg-white/90 backdrop-blur dark:border-slate-800 dark:bg-slate-900/90;
+  }
+  .dock-queue {
+    @apply mx-auto hidden max-h-[60vh] max-w-6xl overflow-y-auto border-t border-slate-100 pt-1 pb-2 dark:border-white/5;
+  }
+  .dock-job { @apply px-4 py-1 text-sm; }
+  /* Numbers offered for sweeps, in a colour of their own: neither the blue of a selection nor the amber of a warning. */
+  .sweep-badge { @apply shrink-0 rounded bg-violet-100 px-1.5 py-0.5 font-mono text-[11px] text-violet-800 dark:bg-violet-950 dark:text-violet-200; }
+  .sweep-field { @apply border-violet-400 ring-1 ring-violet-300 dark:border-violet-500 dark:ring-violet-800; }
+  .dock-menu-item { @apply flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm whitespace-nowrap hover:bg-slate-50 dark:hover:bg-slate-800; }
+  .dock-job + .dock-job, [data-queue] > .dock-job:first-child { @apply border-t border-slate-100 dark:border-white/5; }
+  .dock-job-head { @apply flex h-9 items-center gap-2; }
+  .dock-expand {
+    @apply flex size-6 shrink-0 items-center justify-center rounded text-slate-400 hover:text-slate-700 focus-visible:outline-2 focus-visible:outline-uoft-500 dark:hover:text-slate-200;
+  }
+  .dock-expand svg { @apply size-4 -rotate-90 transition-transform; }
+  .dock-job.open .dock-expand svg { @apply rotate-0; }
+  /* Sub-jobs hang from their job on a line, indented under its name. */
+  .dock-parts { @apply mb-1 ml-10 hidden max-h-60 overflow-y-auto border-l border-slate-200 pl-5 text-xs dark:border-slate-700; }
+  .dock-job.open .dock-parts { display: block; }
+  .dock-run { @apply size-2 rounded-full; }
+  /* As the runs of a result (run_dot in macros.html). */
+  .dock-run-pending { @apply bg-slate-200 dark:bg-slate-700; }
+  .dock-run-running { @apply animate-pulse bg-sky-500; }
+  .dock-run-completed { @apply bg-emerald-500; }
+  .dock-run-timeout { @apply bg-amber-500; }
+  .dock-run-error { @apply bg-rose-500; }
+  .dock-run-failed { @apply ring-2 ring-rose-500 ring-inset; }
+  body[data-queue-open] .dock-queue { display: block; }
+  .drag-handle {
+    @apply -ml-1 flex cursor-grab rounded p-0.5 text-slate-300 hover:text-slate-500 focus-visible:outline-2 focus-visible:outline-uoft-500 active:cursor-grabbing dark:text-slate-600 dark:hover:text-slate-400;
+  }
+  .dialog {
+    @apply m-auto w-full max-w-md rounded-xl bg-white p-0 text-slate-900 shadow-xl ring-1 ring-slate-900/5 backdrop:bg-slate-900/40 dark:bg-slate-900 dark:text-slate-100 dark:ring-white/10 dark:backdrop:bg-black/60;
+  }
+
+  /* Text */
+  .label {
+    @apply text-xs font-medium text-slate-500 dark:text-slate-400;
+  }
+  .section-title {
+    @apply text-sm font-semibold text-slate-900 dark:text-slate-100;
+  }
+  .muted {
+    @apply text-slate-500 dark:text-slate-400;
+  }
+  .error {
+    @apply text-sm text-rose-700 dark:text-rose-300;
+  }
+  .tag {
+    @apply inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300;
+  }
+  .tag-accent {
+    @apply bg-uoft-50 text-uoft-700 dark:bg-uoft-900 dark:text-uoft-200;
+  }
+
+  /* Icons from static/icons.svg */
+  .icon {
+    @apply size-4 shrink-0;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  /* Buttons: one primary action per view, the rest as plain or icon buttons. */
+  .btn {
+    @apply inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 shadow-xs transition hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-uoft-500 dark:border-white/10 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700;
+  }
+  .btn-primary {
+    @apply border-uoft-700 bg-uoft-700 text-white hover:bg-uoft-800 hover:shadow-[var(--glow)] dark:border-uoft-500 dark:bg-uoft-500 dark:text-white dark:hover:bg-uoft-600;
+  }
+  .btn-danger {
+    @apply text-rose-700 hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-950;
+  }
+  .btn-icon {
+    @apply size-8 px-0;
+  }
+  .btn:disabled {
+    @apply cursor-not-allowed opacity-45 hover:bg-white dark:hover:bg-slate-800;
+  }
+  /* A disabled button explains itself through the tooltip of its wrapper. */
+  span[data-tip] > .btn:disabled {
+    @apply pointer-events-none;
+  }
+  .btn[aria-pressed="true"] {
+    @apply border-uoft-500 bg-uoft-50 text-uoft-700 dark:bg-uoft-900 dark:text-uoft-200;
+  }
+
+  /* Tooltips: data-tip on any element; ui.js shows one floating tooltip
+     above everything, so no card or chart can cover or cut it. */
+  /* Parts of a tooltip with more than one line */
+  .tip-head {
+    @apply flex items-start gap-1.5 font-medium;
+  }
+  .tip-row {
+    @apply flex items-start gap-1.5 text-slate-300 dark:text-slate-300;
+  }
+  .tip-row svg, .tip-head svg {
+    @apply mt-px size-3.5 shrink-0;
+  }
+  /* Variants of the builder: on a phone, name, ref and remove in a row,
+     the protocol under them. */
+  @media (width < 40rem) {
+    .variants thead { display: none; }
+    .variants tr.variant {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      grid-template-areas: "name ref remove" "protocol protocol protocol";
+      @apply border-b border-slate-100 py-1 dark:border-white/5;
+    }
+    .variants tr.variant > td:nth-child(1) { grid-area: name; }
+    .variants tr.variant > td:nth-child(2) { grid-area: ref; }
+    /* The padding of the cells in the template is for the table. */
+    .variants tr.variant > td:nth-child(3) { grid-area: protocol; @apply pl-5!; }
+    .variants tr.variant > td:nth-child(4) { grid-area: remove; @apply w-auto! pr-3!; }
+  }
+  .tip-params {
+    @apply grid grid-cols-[auto_1fr] gap-x-3 pl-5 text-slate-400;
+  }
+  .tip-params dd {
+    @apply text-slate-200 tabular-nums;
+  }
+  .tip-time {
+    @apply ml-auto pl-3 font-normal whitespace-nowrap text-slate-400 tabular-nums;
+  }
+  /* Loading: a ring that turns; shown by htmx while a request runs (hx-indicator). */
+  .spinner {
+    @apply inline-block size-4 shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent opacity-60;
+  }
+  .loading {
+    @apply flex items-center justify-center gap-2 py-6 text-sm text-slate-500 dark:text-slate-400;
+  }
+  /* Content that is fetched again fades while it does. */
+  .htmx-request [data-reloads], [data-reloads].htmx-request { @apply opacity-50 transition-opacity; }
+
+  .tooltip {
+    @apply pointer-events-none fixed z-50 max-w-72 space-y-1 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs leading-snug font-normal text-white shadow-lg ring-1 ring-black/5 dark:bg-slate-800 dark:text-slate-100 dark:ring-white/10;
+    animation: tip-in 0.12s ease-out both;
+    text-wrap: pretty;  /* no word alone on the last line */
+  }
+
+  /* A choice of a few options, e.g. Graph | Map */
+  .segmented {
+    @apply inline-flex rounded-lg border border-slate-200 bg-white p-0.5 text-sm dark:border-white/10 dark:bg-slate-900;
+  }
+  .segmented > * {
+    @apply cursor-pointer rounded-md px-3 py-1 text-slate-500 transition hover:text-slate-900 dark:text-slate-400 dark:hover:text-white;
+  }
+  .segmented > [aria-pressed="true"], .segmented > [aria-current="page"], .segmented > label:has(:checked) {
+    @apply bg-slate-100 font-medium text-slate-900 dark:bg-slate-800 dark:text-white;
+  }
+  .segmented input {
+    @apply sr-only;
+  }
+
+  /* A toggle chip: a label around a hidden checkbox */
+  .chip {
+    @apply inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-600 transition select-none hover:border-slate-300 dark:border-white/10 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-white/20;
+  }
+  .chip:has(:checked), .chip[aria-pressed=true] {
+    @apply border-uoft-500 bg-uoft-50 text-uoft-800 dark:border-uoft-400 dark:bg-uoft-900 dark:text-uoft-100;
+  }
+  .chip[aria-pressed=false] {
+    @apply text-slate-400 dark:text-slate-500;
+  }
+  .chip-sm {
+    @apply px-2 py-1 text-xs;
+  }
+  .chip input {
+    @apply sr-only;
+  }
+
+  /* Forms */
+  .input {
+    @apply w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-xs placeholder:text-slate-400 focus:border-uoft-500 focus:shadow-[var(--glow)] focus:outline-none dark:border-white/10 dark:bg-slate-950;
+  }
+  /* A title or name edited in place: text with a dashed underline. */
+  .input-title {
+    @apply min-w-0 rounded-sm border-0 border-b border-dashed border-slate-300 bg-transparent px-0 py-0.5 font-mono text-2xl font-semibold tracking-tight text-uoft-700 outline-none placeholder:font-normal placeholder:text-slate-400 hover:border-slate-400 focus:border-solid focus:border-uoft-500 dark:border-slate-600 dark:text-white dark:hover:border-slate-500;
+    field-sizing: content;
+  }
+  /* The name of a thing and its description, in lists and editors. */
+  .item-name {
+    @apply block truncate font-mono text-sm font-medium text-slate-900 dark:text-slate-100;
+  }
+  .item-note {
+    @apply mt-0.5 block truncate text-[13px] leading-snug text-slate-500 dark:text-slate-400;
+  }
+  .input-note {
+    @apply -mt-3 mb-6 w-full max-w-2xl rounded-md border border-transparent bg-transparent px-0 py-1 text-[15px] text-slate-600 outline-none placeholder:text-slate-400 focus:border-b-uoft-500 dark:text-slate-300;
+  }
+
+  /* Custom select: a button that opens a listbox (static/ui.js) */
+  .select-button {
+    @apply inline-flex cursor-pointer items-center justify-between gap-2 text-left;
+  }
+  .select-button > .icon {
+    @apply size-3.5 text-slate-400;
+  }
+  .popover {
+    @apply fixed z-50 max-h-64 overflow-y-auto rounded-lg bg-white p-1 text-sm shadow-lg ring-1 ring-slate-900/10 dark:bg-slate-800 dark:ring-white/10;
+  }
+  .option {
+    @apply flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-1.5 text-left text-slate-700 dark:text-slate-200;
+  }
+  .option.active {
+    @apply bg-slate-100 dark:bg-slate-700;
+  }
+  .option[aria-selected="true"] {
+    @apply font-medium text-uoft-700 dark:text-uoft-200;
+  }
+  .option .icon {
+    @apply size-3.5;
+  }
+
+  /* Navigation */
+  .nav-link {
+    @apply rounded-md px-2.5 py-1.5 whitespace-nowrap text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 sm:px-3 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100;
+  }
+  .nav-link[aria-current="page"] {
+    @apply bg-uoft-50 font-medium text-uoft-700 dark:bg-slate-800 dark:text-uoft-300;
+  }
+  .tabs {
+    @apply mb-6 flex gap-6 overflow-x-auto border-b border-slate-200 text-sm [scrollbar-width:none] dark:border-slate-800;
+  }
+  .tabs > a {
+    @apply -mb-px border-b-2 border-transparent px-0.5 pb-2.5 whitespace-nowrap text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white;
+  }
+  .tabs > a[aria-current="page"] {
+    @apply border-uoft-700 font-medium text-slate-900 dark:border-uoft-300 dark:text-white;
+  }
+
+  /* Lists of things: a table in a card, the whole row opens the thing */
+  .list {
+    @apply w-full text-sm;
+  }
+  .list th {
+    @apply px-4 py-2.5 text-left text-xs font-medium whitespace-nowrap text-slate-500 first:pl-5 last:pr-5 dark:text-slate-400;
+  }
+  .list td {
+    @apply px-4 py-3 align-middle first:pl-5 last:pr-5;
+  }
+  .list tbody tr {
+    @apply cursor-pointer border-t border-slate-100 transition hover:bg-slate-50 dark:border-white/5 dark:hover:bg-slate-800/40;
+  }
+  /* Rows without a page: empty lists, files that do not load, older results */
+  .list tbody tr.empty, .list tbody tr.broken {
+    @apply cursor-default hover:bg-transparent;
+  }
+  .list tr.empty td {
+    @apply py-10 text-center text-sm text-slate-500 dark:text-slate-400;
+  }
+  .list .num {
+    @apply text-right whitespace-nowrap tabular-nums;
+  }
+
+  /* Description lists: term left, value right */
+  .facts {
+    @apply space-y-1.5 text-sm;
+  }
+  .facts > div {
+    @apply flex justify-between gap-4;
+  }
+  .facts dt {
+    @apply shrink-0 text-slate-500 dark:text-slate-400;
+  }
+  .facts dd {
+    @apply min-w-0 truncate text-right;
+  }
+
+  /* Lists of steps: where to drop when empty, and the place of a dragged step */
+  .steps:empty::before {
+    @apply block rounded-md border border-dashed border-slate-300 px-3 py-2 text-xs text-slate-400;
+    content: attr(data-empty);
+  }
+  [data-theme=dark] .steps:empty::before {
+    @apply border-slate-700;  /* dark: cannot follow a pseudo-element */
+  }
+  .sortable-ghost {
+    @apply opacity-40 ring-2 ring-uoft-400;
+  }
+}
+
+/* Room for the dock at the end of every page. Outside the layers, so the
+   padding utilities of main do not override it. */
+body:has(.dock-bar) main { padding-bottom: 5rem; }
+
+/* The intro, the bad gadget: the origin announces (spokes), every router
+   prefers the detour via its neighbor, so under BGP the detour in use runs
+   around the outer ring, a spinner; then all rests. About 2.5 s. */
+#intro { display: none; }
+html.intro #intro {
+  position: fixed; inset: 0; z-index: 100; display: grid; place-content: center; justify-items: center; gap: 1.25rem;
+  background: var(--intro-bg, #f8fafc); animation: intro-out 0.35s ease-in 2.2s both; cursor: pointer;
+}
+:root[data-theme="dark"] #intro { --intro-bg: #020617; }
+.intro-graph { width: min(20rem, 76vw); overflow: visible; }
+.intro-edge { stroke: var(--graph-edge, #cbd5e1); stroke-width: 1.5; opacity: 0; animation: intro-in 0.25s ease-out 0.05s both; }
+.intro-route { stroke: var(--color-uoft-500, #4a6fb5); stroke-width: 3; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; }
+/* One shot outward along each spoke, then they rest. */
+.intro-spoke { animation: intro-draw 0.25s ease-out calc(0.18s + var(--i) * 0.04s) both, intro-rest 0.3s ease-in calc(0.45s + var(--i) * 0.04s) forwards; }
+/* A segment of light spins around the outer ring, as the detour in use does under BGP, then goes out. */
+.intro-spin {
+  fill: none; stroke: var(--color-uoft-500, #4a6fb5); stroke-width: 3; stroke-linecap: round; stroke-dasharray: 0.22 0.78; opacity: 0;
+  animation: intro-spin 0.5s linear 0.55s 3 forwards, intro-spin-out 0.25s ease-in 2s forwards;
+}
+.intro-node {
+  fill: var(--graph-node, #64748b); transform-box: fill-box; transform-origin: center; opacity: 0;
+  animation: intro-in 0.2s ease-out calc(var(--i) * 0.04s) both, intro-reach 0.3s ease-out calc(0.45s + var(--i) * 0.04s) both;
+}
+.intro-origin { fill: var(--color-uoft-500, #4a6fb5); opacity: 0; animation: intro-in 0.2s ease-out 0.05s both; }
+.intro-name { display: flex; align-items: center; gap: 0.6rem; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; animation: intro-in 0.3s ease-out 1.5s both; }
+@keyframes intro-rest { to { opacity: 0; } }
+@keyframes intro-spin { from { opacity: 1; stroke-dashoffset: 0; } to { opacity: 1; stroke-dashoffset: -1; } }
+@keyframes intro-spin-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes intro-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes intro-draw { to { stroke-dashoffset: 0; } }
+@keyframes intro-reach { 0% { fill: var(--graph-node, #64748b); transform: scale(1); } 50% { fill: var(--color-uoft-500, #1e5aa8); transform: scale(1.6); } 100% { fill: var(--color-uoft-500, #1e5aa8); transform: scale(1); } }
+@keyframes intro-out { to { opacity: 0; visibility: hidden; } }

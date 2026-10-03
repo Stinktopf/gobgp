@@ -1,0 +1,153 @@
+{% macro state_badge(state) -%}
+{% set styles = {
+  "running": "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300",
+  "queued": "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
+  "finished": "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
+  "stopped": "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  "failed": "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
+} %}
+<span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium {{ styles.get(state, styles['queued']) }}">
+  {%- if state == "running" %}<span class="size-1.5 animate-pulse rounded-full bg-sky-500"></span>{% endif %}{{ state }}
+</span>
+{%- endmacro %}
+
+{% macro visibility_tag(dataset) -%}
+{% if dataset.public %}<span class="tag tag-accent" data-tip="Published with the repository, in results/public">public</span>
+{% else %}<span class="tag" data-tip="Only on this lab, not in the repository">private</span>{% endif %}
+{%- endmacro %}
+
+{% macro progress(done, total) -%}
+{% set pct = (100 * done / total) if total else 0 %}
+<div class="h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+  <div class="h-full rounded-full bg-uoft-700 dark:bg-uoft-400 transition-all" style="width: {{ pct }}%"></div>
+</div>
+{%- endmacro %}
+
+{# How a run stands, in words. #}
+{% set run_states = {"completed": "Done", "timeout": "Did not settle in time", "failed": "A check failed",
+                     "error": "Broke off with an error", "running": "Running now", "pending": "Waits its turn"} %}
+{% macro run_state(state) %}{{ run_states.get(state, state) }}{% endmacro %}
+
+{% macro run_dot(state) -%}
+{% set styles = {
+  "completed": "bg-emerald-500",
+  "timeout": "bg-amber-500", "error": "bg-rose-500", "failed": "ring-2 ring-inset ring-rose-500",
+  "running": "animate-pulse bg-sky-500", "pending": "bg-slate-200 dark:bg-slate-700",
+} %}
+<span role="img" aria-label="{{ run_state(state) }}" class="inline-block size-2.5 rounded-full {{ styles[state] }}"></span>
+{%- endmacro %}
+
+{% macro icon(name, class="") -%}
+<svg class="icon {{ class }}" aria-hidden="true"><use href="{{ static('icons.svg') }}#{{ name }}"/></svg>
+{%- endmacro %}
+
+{# An icon-only button; tip names the action. #}
+{% macro icon_button(name, tip, id="", attrs="", disabled=false, class="") -%}
+<button type="button" class="btn btn-icon {{ class }}" {% if id %}id="{{ id }}"{% endif %} data-tip="{{ tip }}" aria-label="{{ tip }}" {{ attrs | safe }} {% if disabled %}disabled{% endif %}>{{ icon(name) }}</button>
+{%- endmacro %}
+
+{# Copy: opens a new editor with a copy, saved only when saved. #}
+{% macro copy_button(href) -%}
+<a href="{{ href }}" class="btn btn-icon" data-tip="Copy" aria-label="Copy">{{ icon("copy") }}</a>
+{%- endmacro %}
+
+{# Next to the name in an editor: whether it is unsaved, and what saving said. #}
+{% macro save_state() -%}
+<span class="flex">{{ icon_button("undo", "Undo · Ctrl+Z", id="undo", disabled=true, class="border-transparent shadow-none") }}{{ icon_button("redo", "Redo · Ctrl+Shift+Z", id="redo", disabled=true, class="border-transparent shadow-none") }}</span>
+<span id="dirty" hidden class="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-300">unsaved</span>
+<span id="message"></span>
+{%- endmacro %}
+
+{# The head of a page: back link, title, and the actions of the page. #}
+{% macro page_header(back=none, back_label="") -%}
+{% if back %}<a href="{{ back }}" class="muted text-sm hover:text-slate-900 dark:hover:text-white">← {{ back_label }}</a>{% endif %}
+<div class="{{ 'mt-2' if back else '' }} mb-6 flex flex-wrap items-center gap-x-3 gap-y-3">
+  {{ caller() }}
+</div>
+{%- endmacro %}
+
+{# Delete, asked first in the dialog of the page; disabled with the reason
+   while something uses it or it cannot be deleted now. #}
+{% macro delete_button(action, name, used=[], reason="", text="Results keep their copy.") -%}
+{% if used or reason %}
+<span data-tip="{{ reason or 'Used by ' ~ used | join(', ') }}" data-tip-align="end">{{ icon_button("delete", "Delete", disabled=true, class="btn-danger") }}</span>
+{% else %}
+{{ icon_button("delete", "Delete", attrs='data-action="' ~ action ~ '" data-confirm="Delete ' ~ name ~ '?" data-confirm-text="' ~ text ~ '"', class="btn-danger") }}
+{% endif %}
+{%- endmacro %}
+
+{# Asked on save when the name changed: rename, or keep the original and save a copy. #}
+{% macro save_dialog(id="save-as") -%}
+<dialog id="{{ id }}" class="dialog">
+  <div class="p-5">
+    <h2 class="font-semibold">Save as <span data-new-name class="font-mono"></span></h2>
+    <p class="muted mt-1 text-sm"><span data-old-name class="font-mono"></span> <span data-used></span></p>
+  </div>
+  <div class="flex justify-end gap-2 border-t border-slate-900/5 p-4 dark:border-white/10">
+    <button type="button" class="btn" value="cancel">Cancel</button>
+    <button type="button" class="btn" value="rename" data-rename>Rename</button>
+    <button type="button" class="btn btn-primary" value="copy">Save a copy</button>
+  </div>
+</dialog>
+{%- endmacro %}
+
+{# Search: filters the elements with data-search inside target. #}
+{% macro search(target, placeholder="Search", class="w-48") -%}
+<label class="relative block {{ class }}">
+  <span class="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-slate-400">{{ icon("search", "size-3.5") }}</span>
+  <input type="search" data-filter="{{ target }}" placeholder="{{ placeholder }}" aria-label="{{ placeholder }}" class="input py-1.5 pl-8 text-sm">
+</label>
+{%- endmacro %}
+
+{# The head of a list: title, search, and the primary action (caller). #}
+{% macro list_header(title, target) -%}
+<div class="mb-6 flex flex-wrap items-center gap-3">
+  <h1 class="mr-auto text-2xl font-semibold tracking-tight">{{ title }}</h1>
+  {{ search(target) }}
+  {{ caller() if caller else "" }}
+</div>
+{%- endmacro %}
+
+{% macro problem(text) -%}
+{% if text %}<p class="error mb-4">{{ text }}</p>{% endif %}
+{%- endmacro %}
+
+{# A menu of variants to show, so that it holds any number of them. #}
+{% macro variant_menu(variants) -%}
+    <details class="relative" data-variant-menu>
+      <summary class="btn cursor-pointer list-none py-1 text-sm [&::-webkit-details-marker]:hidden">
+        <span class="label">Variants</span><span class="tabular-nums" data-variant-count>{{ variants | length }} of {{ variants | length }}</span>{{ icon("chevron-down") }}
+      </summary>
+      <div class="absolute left-0 z-30 mt-1 w-80 rounded-xl max-sm:fixed max-sm:inset-x-4 max-sm:w-auto border border-slate-200 bg-white p-2 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+        <div class="flex items-center gap-2 px-2 pb-2">
+          {% if variants | length > 8 %}<input type="search" placeholder="Find" aria-label="Find a variant" class="input py-1 text-sm" data-variant-find>{% endif %}
+          <button type="button" class="ml-auto text-xs text-uoft-700 hover:underline dark:text-uoft-300" data-variant-all>All</button>
+        </div>
+        <div class="max-h-80 overflow-y-auto">
+          {% for v in variants %}
+          <label class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800" data-variant-row="{{ v.name }} {{ v.summary() | lower }}">
+            <input type="checkbox" checked class="accent-uoft-700 dark:accent-uoft-400" data-variant-toggle="{{ v.name }}">
+            <span class="h-3 w-1 shrink-0 rounded-full" style="background: var(--series-{{ loop.index0 % 8 + 1 }})"></span>
+            <span class="font-mono text-sm whitespace-nowrap">{{ v.name }}</span>
+            <span class="muted ml-auto min-w-0 truncate text-xs">{{ v.summary() }}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+    </details>
+{%- endmacro %}
+
+{# While something loads. #}
+{% macro loading(text="Loading") -%}
+<p class="loading" role="status"><span class="spinner"></span>{{ text }}…</p>
+{%- endmacro %}
+
+{# What goes with each median: nothing, the interval of it over the runs, or how the routers differ. One choice for the table and the charts. #}
+{% macro band_toggle(where, runs, routers=true) -%}
+{% set level = runs | interval_level %}
+<span class="segmented shrink-0 text-xs whitespace-nowrap" role="radiogroup" aria-label="With each median">
+  <label data-tip="The median"><input type="radio" name="band-{{ where }}" value="none" data-band>Value</label>
+  <label data-tip="{{ (level ~ ' %, ' ~ runs ~ ' runs') if level else 'None below 3 runs' }}" class="{{ 'opacity-40' if not level }}"><input type="radio" name="band-{{ where }}" value="ci" data-band {% if not level %}disabled{% endif %}>Interval</label>
+  <label data-tip="{{ 'Smallest to largest router' if routers else 'One value per network' }}" class="{{ 'opacity-40' if not routers }}"><input type="radio" name="band-{{ where }}" value="routers" data-band {% if not routers %}disabled{% endif %}>Router spread</label>
+</span>
+{%- endmacro %}

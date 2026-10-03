@@ -142,12 +142,23 @@ type Path struct {
 	family    bgp.Family
 	rejected  bool
 	// doesn't exist in the adj
-	dropped bool
+	dropped dropState
 
 	// For BGP Nexthop Tracking, this field shows if nexthop is invalidated by IGP.
 	IsNexthopInvalid bool
 	IsWithdraw       bool
 }
+
+// dropState records why a path no longer exists in the adj-RIB-in.
+type dropState uint8
+
+const (
+	notDropped dropState = iota
+	// withdrawn by the peer
+	droppedByWithdraw
+	// removed because the session to the peer is gone
+	droppedBySession
+)
 
 type FilteredType uint8
 
@@ -417,11 +428,25 @@ func (path *Path) SetRejected(y bool) {
 }
 
 func (path *Path) IsDropped() bool {
-	return path.dropped
+	return path.dropped != notDropped
 }
 
 func (path *Path) SetDropped(y bool) {
-	path.dropped = y
+	if !y {
+		path.dropped = notDropped
+	} else if path.dropped == notDropped {
+		path.dropped = droppedByWithdraw
+	}
+}
+
+// IsSessionDropped reports whether the path was removed because the session
+// to the peer is gone rather than withdrawn by the peer.
+func (path *Path) IsSessionDropped() bool {
+	return path.dropped == droppedBySession
+}
+
+func (path *Path) SetSessionDropped() {
+	path.dropped = droppedBySession
 }
 
 func (path *Path) HasNoLLGR() bool {

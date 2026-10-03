@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% from "macros.html" import delete_button, icon, icon_button, list_header, loading, problem %}
+{% block title %}Topologies · OBGP Lab{% endblock %}
+{% block head %}<script src="{{ static('cytoscape.min.js') }}" defer></script>
+<script src="{{ static('graph.js') }}" defer></script>{% endblock %}
+{% block content %}
+{% call list_header("Topologies", "#topologies") %}
+  <button class="btn" onclick="document.getElementById('import').showModal(); htmx.trigger('#sndlib-list', 'open')">{{ icon("download") }}Import from SNDlib</button>
+  <button class="btn" onclick="document.getElementById('import-caida').showModal(); htmx.trigger('#caida-form', 'open')" data-tip="A part of the Internet, with its real ASes and their relations">{{ icon("download") }}Import from CAIDA</button>
+  <button class="btn" onclick="document.getElementById('generate').showModal()" data-tip="Networks of several sizes from a model, to see how the results scale">{{ icon("add") }}Generate</button>
+  <a href="/topologies/new" class="btn btn-primary">{{ icon("add") }}New topology</a>
+{% endcall %}
+{{ problem(error) }}
+{% for name, why in broken.items() %}
+<p class="error mb-2 flex items-center gap-2"><span><span class="font-mono">{{ name }}</span>: {{ why }}</span>{{ delete_button("/topologies/" ~ name ~ "/delete", name, text="The file does not load.") }}</p>
+{% endfor %}
+
+<dialog id="import" class="dialog max-w-xl">
+  <form method="post" action="/topologies/sndlib" enctype="multipart/form-data" class="flex max-h-[80vh] flex-col">
+    <div class="flex items-center justify-between px-5 pt-4 pb-3">
+      <h2 class="font-semibold">Import from SNDlib</h2>
+      {{ icon_button("close", "Close", attrs="onclick=\"this.closest('dialog').close()\"", class="border-transparent shadow-none") }}
+    </div>
+    <div id="sndlib-list" class="flex-1 overflow-y-auto px-5" hx-get="/topologies/sndlib" hx-trigger="open once">
+      {{ loading("Loading the networks of SNDlib") }}
+    </div>
+    <div class="flex flex-wrap items-center gap-2 border-t border-slate-900/5 px-5 py-4 dark:border-white/10">
+      <label class="btn cursor-pointer" data-tip="A network in SNDlib's native format">
+        {{ icon("upload") }}<span data-file>Own file</span>
+        <input type="file" name="file" accept=".txt" class="sr-only" onchange="this.form.querySelector('[data-file]').textContent = this.files[0]?.name || 'Own file'">
+      </label>
+      <input name="name" class="input ml-auto w-44 py-1.5 font-mono" placeholder="name" aria-label="Name of the topology">
+      <button class="btn btn-primary">Import</button>
+    </div>
+  </form>
+</dialog>
+
+{% macro generate_row(label, tip) -%}
+<label class="flex items-center justify-between gap-4"><span class="label whitespace-nowrap" data-tip="{{ tip }}">{{ label }}</span>{{ caller() }}</label>
+{%- endmacro %}
+<dialog id="generate" class="dialog w-full max-w-md">
+  <form method="post" action="/topologies/generate" class="flex flex-col" data-generate>
+    <div class="flex items-center justify-between px-5 pt-4 pb-3">
+      <h2 class="font-semibold">Generate topologies</h2>
+      {{ icon_button("close", "Close", attrs="onclick=\"this.closest('dialog').close()\"", class="border-transparent shadow-none") }}
+    </div>
+    <div class="space-y-4 px-5 pb-4 text-sm">
+      <select name="model" class="input py-1.5" aria-label="Model">{% for key, m in models.items() %}<option value="{{ key }}">{{ m.label }}</option>{% endfor %}</select>
+      {% for key, m in models.items() %}
+      <div class="space-y-3" data-for="{{ key }}" {% if not loop.first %}hidden{% endif %}>
+        <div class="space-y-1 text-pretty">
+          <p>{{ m.what }}</p>
+          <p>Good for {{ m.good_for }}</p>
+          <a href="{{ m.url }}" target="_blank" rel="noopener" class="muted inline-block text-xs underline-offset-2 hover:underline" data-tip="{{ m.title }}">{{ m.source }}&nbsp;↗</a>
+        </div>
+        {% for f in m.fields if not (f.default is sameas true or f.default is sameas false) %}
+        {% call generate_row(f.label, f.tip) %}
+        {% if f.step < 1 %}{# as text: a number field shows the decimals of the browser's language, 0,1 in German #}<input name="{{ f.name }}" inputmode="decimal" value="{{ f.default }}" pattern="[0-9]*[.,]?[0-9]+" class="input w-28 py-1.5 tabular-nums">
+        {% else %}<input name="{{ f.name }}" type="number" value="{{ f.default }}" step="{{ f.step }}" min="{{ f.min }}" {% if f.max is not none %}max="{{ f.max }}"{% endif %} class="input w-28 py-1.5 tabular-nums">{% endif %}
+        {% endcall %}
+        {% endfor %}
+      </div>
+      {% endfor %}
+      {% call generate_row("Sizes", "Routers per network, separated by commas. One topology for each") %}<input name="sizes" value="16, 32, 64" class="input w-28 py-1.5 font-mono" required>{% endcall %}
+      {% call generate_row("Seed", "The same seed gives the same networks. Another one draws new ones") %}<input name="seed" type="number" value="1" min="0" class="input w-28 py-1.5 tabular-nums">{% endcall %}
+      {# Checkboxes last, below every field. #}
+      {% for key, m in models.items() %}{% for f in m.fields if f.default is sameas true or f.default is sameas false %}
+      <div data-for="{{ key }}" {% if key != (models | first) %}hidden{% endif %}>
+        {% call generate_row(f.label, f.tip) %}<input type="checkbox" name="{{ f.name }}" value="on" class="accent-uoft-700" {% if f.default %}checked{% endif %}>{% endcall %}
+      </div>
+      {% endfor %}{% endfor %}
+    </div>
+    <div class="flex items-center gap-2 border-t border-slate-900/5 px-5 py-4 dark:border-white/10">
+      <input name="name" class="input min-w-0 flex-1 py-1.5 font-mono" placeholder="name" aria-label="Name of the topologies" pattern="[a-z0-9]([a-z0-9-]*[a-z0-9])?"
+             data-tip="Empty: from the model. With several sizes, each gets its size appended, e.g. core-16, core-32">
+      <button class="btn btn-primary">Generate</button>
+    </div>
+  </form>
+</dialog>
+<script>
+  // The generate dialog shows and sends the fields of the chosen model only.
+  (() => {
+    const form = document.querySelector("[data-generate]");
+    const show = () => form.querySelectorAll("[data-for]").forEach((part) => {
+      part.hidden = part.dataset.for !== form.model.value;
+      part.querySelectorAll("input").forEach((input) => (input.disabled = part.hidden));
+    });
+    form.model.addEventListener("change", show);
+    show();
+  })();
+</script>
+
+<dialog id="import-caida" class="dialog max-w-md">
+  <form method="post" action="/topologies/caida" class="flex max-h-[80vh] flex-col">
+    <div class="flex items-center justify-between px-5 pt-4 pb-3">
+      <h2 class="font-semibold">Import from CAIDA</h2>
+      {{ icon_button("close", "Close", attrs="onclick=\"this.closest('dialog').close()\"", class="border-transparent shadow-none") }}
+    </div>
+    <div id="caida-form" class="flex-1 overflow-y-auto px-5" hx-get="/topologies/caida" hx-trigger="open once">
+      {{ loading("Loading the months of CAIDA") }}
+    </div>
+    <div class="flex items-center gap-2 border-t border-slate-900/5 px-5 py-4 dark:border-white/10">
+      <input name="name" id="caida-name" class="input ml-auto w-52 py-1.5 font-mono" placeholder="name" aria-label="Name of the topology" data-tip="Leave it empty for the name shown">
+      <button class="btn btn-primary">Import</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="topologies" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+  {% for t in topologies %}
+  <a href="/topologies/{{ t.name }}" data-search="{{ t.name }} {{ t.source or '' }}" class="card flex flex-col overflow-hidden transition hover:shadow-[var(--glow)]">
+    <svg class="thumb h-36 w-full bg-slate-50/60 dark:bg-slate-950/40" data-topology="{{ t.name }}" aria-hidden="true"></svg>
+    <div class="flex flex-1 flex-col gap-1.5 p-4">
+      <div class="flex items-center justify-between gap-2">
+        <span class="font-mono font-medium">{{ t.name }}</span>
+        {% if t.source %}<span class="tag">{{ t.source }}</span>{% endif %}
+      </div>
+      <p class="muted text-xs tabular-nums">{{ t.routers }} routers · {{ t.links }} links{% if t.preferences %} · {{ t.preferences }} preferences{% endif %}</p>
+      <p class="muted mt-auto pt-1 text-xs" data-tip="{{ t.used | join(', ') }}">Used by {{ t.used | listing(40) or "no experiment" }}</p>
+    </div>
+  </a>
+  {% else %}
+  <p class="muted col-span-full py-10 text-center text-sm">No topologies yet.</p>
+  {% endfor %}
+</div>
+<script type="application/json" id="thumbs">{{ thumbs | tojson }}</script>
+
+{% endblock %}

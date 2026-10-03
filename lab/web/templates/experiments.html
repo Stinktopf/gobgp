@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% from "macros.html" import delete_button, icon, list_header, problem %}
+{% block title %}Experiments · OBGP Lab{% endblock %}
+{% block content %}
+{% call list_header("Experiments", "#experiments") %}
+{% if run_all[0].count %}
+<button class="btn" onclick="document.getElementById('run-all').showModal()">{{ icon("play") }}Run all</button>
+{% endif %}
+<a href="/experiments/new" class="btn btn-primary">{{ icon("add") }}New experiment</a>
+{% endcall %}
+{{ problem(error) }}
+
+<dialog id="run-all" class="dialog max-w-md">
+  <form method="post" action="/experiments/run-all">
+    <div class="p-5">
+      <h2 class="font-semibold">Run all</h2>
+      <p class="muted mt-1 text-sm">The checks of the lab run first.</p>
+      <div class="mt-4 space-y-2">
+        {% for c in run_all %}
+        <button name="which" value="{{ c.which }}" class="btn w-full justify-between" {% if not c.count %}disabled{% endif %}>
+          <span>{{ c.label }}</span><span class="muted text-xs font-normal tabular-nums">{{ c.count }} experiment{{ "s" if c.count != 1 }} · about {{ c.s | duration }}</span>
+        </button>
+        {% endfor %}
+      </div>
+      {% if all_left %}
+      {% set whole, topologies = left_counts %}
+      {% set parts = ([whole ~ " experiment" ~ ("s" if whole != 1 else "")] if whole else []) + ([topologies ~ " topolog" ~ ("ies" if topologies != 1 else "y")] if topologies else []) %}
+      <p class="muted mt-3 text-xs">{{ parts | join(" and ") }} left out, the list of experiments says why.</p>
+      {% endif %}
+    </div>
+    <div class="flex justify-end border-t border-slate-900/5 p-4 dark:border-white/10">
+      <button type="button" class="btn" onclick="this.closest('dialog').close()" autofocus>Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<section hx-get="/partials/lab" hx-trigger="every 2s [document.visibilityState === 'visible']" hx-swap="innerHTML">
+  {% include "partials/lab.html" %}
+</section>
+
+<div class="card overflow-x-auto">
+  <table class="list" id="experiments">
+    <thead><tr>
+      <th>Experiment</th><th class="hidden md:table-cell">Topologies</th><th class="num hidden sm:table-cell">Scenarios</th>
+      <th class="hidden md:table-cell">Variants</th><th class="num">Runs</th><th class="num">Duration</th><th></th>
+    </tr></thead>
+    <tbody>
+      {% for x in experiments %}
+      <tr {% if not x.error %}onclick="if (!event.target.closest('form')) location.href = '/experiments/{{ x.name }}'"{% else %}class="broken"{% endif %} data-search="{{ x.name }} {{ x.experiment.description if x.experiment else '' }}">
+        {% if x.error %}
+        <td colspan="6"><span class="item-name">{{ x.name }}</span><span class="error block text-xs">{{ x.error }}</span></td>
+        <td class="w-0 text-right">{{ delete_button("/experiments/" ~ x.name ~ "/delete", x.name, text="The file does not load.") }}</td>
+        {% else %}
+        {% set e = x.experiment %}
+        <td class="max-w-72">
+          <a href="/experiments/{{ x.name }}" class="item-name">{{ e.name }}</a>
+          {% if e.description %}<span class="item-note">{{ e.description }}</span>{% endif %}
+          {% if x.too_large %}<span class="block text-xs text-amber-700 dark:text-amber-300" data-tip="Too large for this host: {{ x.limit }}{% for t, why in x.skips.items() %}&#10;{{ t }}: {{ why | join(", ") }}{% endfor %}">Too large for this host</span>
+          {% elif x.skips %}<span class="block text-xs text-amber-700 dark:text-amber-300" data-tip="Too large for this host: {{ x.limit }}{% for t, why in x.skips.items() %}&#10;{{ t }}: {{ why | join(", ") }}{% endfor %}">Skips {{ x.skips | first if x.skips | length == 1 else "%d topologies" % x.skips | length }} on this host</span>{% endif %}
+        </td>
+        <td class="muted hidden font-mono text-xs whitespace-nowrap md:table-cell" data-tip="{{ e.topologies | join(', ') }}">{{ e.topologies | listing }}</td>
+        <td class="num muted hidden sm:table-cell" data-tip="Scenarios&#10;{{ e.scenarios | join('\n') }}">{{ e.scenarios | length }}</td>
+        {% set names = e.variants | map(attribute="name") | list %}
+        <td class="muted hidden font-mono text-xs whitespace-nowrap md:table-cell" data-tip="{{ names | join(', ') }}">{{ names | listing }}</td>
+        <td class="num muted">{{ x.runs }}</td>
+        <td class="num muted whitespace-nowrap">{{ x.estimate_s | duration }}</td>
+        <td class="w-0 pr-5 text-right">
+          <form method="post" action="/experiments/{{ x.name }}/start">
+            {% if x.too_large %}
+            <span data-tip="Too large for this host, no topology fits" data-tip-align="end"><button class="btn btn-icon" disabled aria-label="Start {{ e.name }}">{{ icon("play") }}</button></span>
+            {% else %}
+            <button class="btn btn-icon" data-tip="Start" data-tip-align="end" aria-label="Start {{ e.name }}">{{ icon("play") }}</button>
+            {% endif %}
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% else %}
+      <tr class="empty"><td colspan="7">No experiments yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,16 @@
+{% if error %}<p class="px-1 py-1 text-sm text-rose-700 dark:text-rose-300">{{ error }}</p>
+{% elif hits is not none %}
+<ul class="max-h-60 overflow-y-auto rounded-lg border border-slate-200 py-1 dark:border-white/10" role="listbox">
+  {% for h in hits %}
+  <li><button type="button" role="option" data-asn="{{ h.asn }}" data-label="AS{{ h.asn }} {{ h.org or h.name }}"
+              class="flex w-full items-baseline gap-3 px-3 py-1.5 text-left text-sm hover:bg-slate-50 focus:bg-uoft-50 focus:outline-none dark:hover:bg-slate-800 dark:focus:bg-uoft-900/60">
+    <span class="w-20 shrink-0 font-mono text-xs text-slate-500">AS{{ h.asn }}</span>
+    <span class="min-w-0 flex-1 truncate">{{ h.org or h.name or "unknown" }}{% if h.country %} <span class="muted text-xs">{{ h.country }}</span>{% endif %}</span>
+    <span class="shrink-0 text-xs whitespace-nowrap tabular-nums {{ 'text-amber-700 dark:text-amber-300' if h.cone > max else 'muted' }}"
+          data-tip="{{ 'Routers of its whole customer cone, more than fit this host' if h.cone > max else 'Routers of its whole customer cone' }}">{{ "{:,}".format(h.cone) }} routers</span>
+  </button></li>
+  {% else %}
+  <li class="muted px-3 py-1.5 text-sm">No AS found.</li>
+  {% endfor %}
+</ul>
+{% endif %}

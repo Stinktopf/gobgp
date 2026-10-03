@@ -1,0 +1,6 @@
+{# While the result runs: a note once more runs are done, without moving the page. #}
+{% if status.state == "running" or queued %}
+<p hidden class="flex items-center gap-3 rounded-lg bg-uoft-50 px-3 py-2 text-sm text-uoft-900 dark:bg-uoft-900/60 dark:text-uoft-100"
+   data-live="/results/{{ result.name }}/progress" data-done="{{ status.done or 0 }}">
+  <span data-live-text></span><a href="" class="font-medium underline" onclick="location.reload(); return false">Refresh</a></p>
+{% endif %}

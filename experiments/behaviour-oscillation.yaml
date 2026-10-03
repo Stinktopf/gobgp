@@ -1,0 +1,10 @@
+name: behaviour-oscillation
+description: Whether routes oscillate or only explore paths slowly, with two minutes of rest.
+cluster: {cpus: 12, memory_mb: 13000}
+runs: 6
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp, mode: obgp}
+  - {name: obgp-np, mode: obgp-np}
+topologies: [bad-gadget, noble-eu, germany50]
+scenarios: [fill-30-rest-120]

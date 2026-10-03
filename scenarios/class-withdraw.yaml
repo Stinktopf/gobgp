@@ -1,0 +1,12 @@
+name: class-withdraw
+description: a loses its customer route and stops announcing to all its providers, as Gao-Rexford says. Nobody loses a valid route.
+steps:
+  - announce: {rate: 2, for: 10}
+  - until_stable: {timeout: 60}
+  - expect: {router: r}
+  - down: {link: a-o}
+  - until_stable: {timeout: 60}
+  - parallel:
+      - expect: {router: r, avoid: a}
+      - expect: {router: b}
+      - expect: {router: q}

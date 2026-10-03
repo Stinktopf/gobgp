@@ -1,0 +1,15 @@
+name: behaviour-failures
+description: How BGP and OBGP handle failures and policy changes on noble-eu.
+cluster: {cpus: 12, memory_mb: 13000}
+runs: 6
+bgp: {hold_time: 9, keepalive: 3}
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp, mode: obgp}
+  - {name: obgp-np, mode: obgp-np}
+topologies: [noble-eu]
+scenarios:
+  - link-flap
+  - regional-outage
+  - vortex
+  - hijack

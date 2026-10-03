@@ -24,7 +24,6 @@ import (
 	"net/netip"
 	"slices"
 	"sort"
-	"sync"
 
 	"github.com/osrg/gobgp/v4/pkg/config/oc"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
@@ -141,7 +140,7 @@ type Destination struct {
 	nlri          bgp.NLRI
 	knownPathList []*Path
 	localIdMap    *Bitmap
-	mu            sync.Mutex
+	opera         *operaState
 }
 
 func NewDestination(nlri bgp.NLRI, mapSize int, known ...*Path) *Destination {
@@ -188,46 +187,14 @@ func (dd *Destination) GetKnownPathList(id string, as uint32) []*Path {
 	return list
 }
 
-func (dd *Destination) ClearKnownPathList(needed func(*Path) bool) {
-	if dd == nil {
-		return
-	}
-	if dd.knownPathList == nil {
-		return
-	}
-	pruned := make([]*Path, 0, len(dd.knownPathList))
-	for _, p := range dd.knownPathList {
-		if needed(p) {
-			pruned = append(pruned, p)
-		}
-	}
-	dd.knownPathList = pruned
-}
-
 func getBestPath(id string, as uint32, pathList []*Path) *Path {
-	if IsOperaEnabled() {
-		var worst *Path
-		for _, p := range pathList {
-			if rsFilter(id, as, p) {
-				continue
-			}
-			if p == nil || p.IsWithdraw || p.IsNexthopInvalid {
-				continue
-			}
-			if worst == nil || IsWorseOperaPath(p, worst) {
-				worst = p
-			}
+	for _, p := range pathList {
+		if rsFilter(id, as, p) {
+			continue
 		}
-		return worst
-	} else {
-		for _, p := range pathList {
-			if rsFilter(id, as, p) {
-				continue
-			}
-			return p
-		}
-		return nil
+		return p
 	}
+	return nil
 }
 
 func (dd *Destination) GetBestPath(id string, as uint32) *Path {
@@ -247,18 +214,23 @@ func (dd *Destination) GetMultiBestPath(id string) []*Path {
 // Modifies destination's state related to stored paths. Removes withdrawn
 // paths from known paths. Also, adds new paths to known paths.
 func (dest *Destination) Calculate(logger *slog.Logger, newPath *Path) *Update {
-	if IsOperaEnabled() {
-		dest.mu.Lock()
-		defer dest.mu.Unlock()
-	}
-
 	oldKnownPathList := make([]*Path, len(dest.knownPathList))
 	copy(oldKnownPathList, dest.knownPathList)
+	obgp := isOperaFamily(newPath.GetFamily())
 
 	if newPath.IsWithdraw {
-		p := dest.explicitWithdraw(logger, newPath)
+		var p *Path
+		if s := dest.operaUnsuppress(newPath); s != nil {
+			p = s
+		} else {
+			p = dest.explicitWithdraw(logger, newPath)
+		}
 		if p != nil {
-			dest.PruneSupersets(p.GetAsList())
+			// A lost session says nothing about paths learned from other
+			// peers, even if they traverse the AS of the lost peer.
+			if obgp && isOperaPruning() && !newPath.IsSessionDropped() {
+				dest.operaPruneSupersets(p.GetAsList())
+			}
 
 			if newPath.IsDropped() {
 				if id := p.localID; id != 0 {
@@ -274,16 +246,28 @@ func (dest *Destination) Calculate(logger *slog.Logger, newPath *Path) *Update {
 				break
 			}
 		}
+		if s := dest.operaUnsuppress(newPath); s != nil {
+			oldAS = s.GetAsList()
+			newPath.localID = s.localID
+		}
 
 		dest.implicitWithdraw(logger, newPath)
 
-		if len(oldAS) > 0 {
-			dest.PruneSupersets(oldAS)
+		// An update with an unchanged AS path (e.g. only MED or communities
+		// changed) says nothing about paths through the old AS sequence.
+		if obgp && isOperaPruning() && len(oldAS) > 0 && !slices.Equal(oldAS, newPath.GetAsList()) {
+			dest.operaPruneSupersets(oldAS)
 		}
 
-		if OperaImportAccept(dest.knownPathList, newPath) {
+		if operaImportAccept(dest.knownPathList, newPath) {
 			dest.insertSort(newPath)
+		} else {
+			dest.operaSuppress(newPath)
 		}
+	}
+
+	if obgp {
+		dest.operaReadmit()
 	}
 
 	for _, path := range dest.knownPathList {
@@ -490,33 +474,23 @@ type Update struct {
 }
 
 func getMultiBestPath(id string, pathList []*Path) []*Path {
-	if IsOperaEnabled() {
-		// OPERA: In worst-path mode, we do not allow multipath propagation.
-		// We return only the single selected worst-path to maintain transparency.
-		wp := getBestPath(id, 0, pathList)
-		if wp == nil {
-			return []*Path{}
-		}
-		return []*Path{wp}
-	} else {
-		// The path list of destinations in the global RIB are sorted
-		// in descending order. One of the criteria for being a better
-		// path is that it has a reachable next hop. Technically, if the
-		// first path is unreachable, then it's assumed none of them
-		// are. Therefore, we return an empty slice.
-		if len(pathList) == 0 || (len(pathList) > 0 && pathList[0].IsNexthopInvalid) {
-			// No reachable next hop found, so we return an empty slice.
-			return []*Path{}
-		}
-		best := pathList[0]
-
-		// Attempt to find the first path that is both reachable and worse than the
-		// best path. Then return a slice paths from the best to that index.
-		index := sort.Search(len(pathList), func(i int) bool {
-			return pathList[i].IsNexthopInvalid || pathList[i].Compare(best) != 0
-		})
-		return pathList[:index]
+	// The path list of destinations in the global RIB are sorted
+	// in descending order. One of the criteria for being a better
+	// path is that it has a reachable next hop. Technically, if the
+	// first path is unreachable, then it's assumed none of them
+	// are. Therefore, we return an empty slice.
+	if len(pathList) == 0 || len(pathList) > 0 && pathList[0].IsNexthopInvalid {
+		// No reachable next hop found, so we return an empty slice.
+		return []*Path{}
 	}
+	best := pathList[0]
+
+	// Attempt to find the first path that is both reachable and worse than the
+	// best path. Then return a slice paths from the best to that index.
+	index := sort.Search(len(pathList), func(i int) bool {
+		return pathList[i].IsNexthopInvalid || pathList[i].Compare(best) != 0
+	})
+	return pathList[:index]
 }
 
 func (u *Update) GetWithdrawnPath() []*Path {
@@ -580,34 +554,24 @@ func (u *Update) GetChanges(id string, as uint32, peerDown bool) (*Path, *Path, 
 
 	var multi []*Path
 
-	if id == GLOBAL_RIB_NAME {
-		if IsOperaEnabled() {
-			// OPERA: Force single path propagation (the selected worst path)
-			// in the Global RIB to ensure only one path is advertised.
-			if best != nil {
-				multi = []*Path{best}
-			} else {
-				multi = []*Path{}
+	if id == GLOBAL_RIB_NAME && UseMultiplePaths.Enabled {
+		diff := func(lhs, rhs []*Path) bool {
+			if len(lhs) != len(rhs) {
+				return true
 			}
-		} else if UseMultiplePaths.Enabled {
-			diff := func(lhs, rhs []*Path) bool {
-				if len(lhs) != len(rhs) {
+			for idx, l := range lhs {
+				if !l.Equal(rhs[idx]) {
 					return true
 				}
-				for idx, l := range lhs {
-					if !l.Equal(rhs[idx]) {
-						return true
-					}
-				}
-				return false
 			}
-			oldM := getMultiBestPath(id, u.OldKnownPathList)
-			newM := getMultiBestPath(id, u.KnownPathList)
-			if diff(oldM, newM) {
-				multi = newM
-				if len(newM) == 0 {
-					multi = []*Path{best}
-				}
+			return false
+		}
+		oldM := getMultiBestPath(id, u.OldKnownPathList)
+		newM := getMultiBestPath(id, u.KnownPathList)
+		if diff(oldM, newM) {
+			multi = newM
+			if len(newM) == 0 {
+				multi = []*Path{best}
 			}
 		}
 	}

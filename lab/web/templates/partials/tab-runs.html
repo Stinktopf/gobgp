@@ -1,0 +1,49 @@
+{% from "macros.html" import run_dot, run_state %}
+<div class="mb-3 flex flex-wrap justify-end gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+  <span class="flex items-center gap-1.5">{{ run_dot("completed") }} done</span>
+  <span class="flex items-center gap-1.5">{{ run_dot("timeout") }} timeout</span>
+  <span class="flex items-center gap-1.5">{{ run_dot("failed") }} check failed</span>
+  <span class="flex items-center gap-1.5">{{ run_dot("error") }} error</span>
+  <span class="flex items-center gap-1.5">{{ run_dot("running") }} running</span>
+  <span class="flex items-center gap-1.5">{{ run_dot("pending") }} pending</span>
+</div>
+{# Variants as rows, so that any number of them fits; a run opens in the replay. #}
+{% for topo in experiment.topologies %}
+{% if experiment.topologies | length > 1 %}<h2 class="section-title mt-6 mb-2 font-mono">{{ topo }}</h2>{% endif %}
+<div class="card mb-4 overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead class="border-b border-slate-100 dark:border-white/5">
+      <tr class="text-left [&>th]:px-4 [&>th]:py-2.5 [&>th]:font-medium [&>th]:text-slate-500 dark:[&>th]:text-slate-400">
+        <th>Variant</th>
+        {% for s in experiment.cases() %}<th class="font-mono">{{ s }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100 dark:divide-white/5">
+      {% for v in experiment.variants %}
+      <tr class="[&>td]:px-4 [&>td]:py-2">
+        <td class="whitespace-nowrap"><span class="mr-2 inline-block h-3 w-1 rounded-full align-middle" style="background: var(--series-{{ loop.index0 % 8 + 1 }})"></span><span class="font-mono" data-tip="{{ v.summary() }}">{{ v.name }}</span></td>
+        {% for s in experiment.cases() %}
+        <td><span class="flex gap-1">
+          {% for r in grid[topo][v.name][s] %}
+          {% if r in ("completed", "timeout", "failed") %}<a href="?tab=replay&topology={{ topo }}&scenario={{ s }}&run={{ loop.index }}&variant={{ v.name }}" class="flex rounded-full hover:outline-2 hover:outline-offset-2 hover:outline-uoft-400" aria-label="Replay run {{ loop.index }}" data-tip="Run {{ loop.index }}: {{ run_state(r) }}&#10;Click to replay it">{{ run_dot(r) }}</a>
+          {% else %}{{ run_dot(r) }}{% endif %}
+          {% endfor %}
+        </span></td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endfor %}
+
+<h2 class="section-title mt-8 mb-3">Log</h2>
+{% if log %}
+<div class="card max-h-[55vh] overflow-auto py-2 font-mono text-xs leading-relaxed" data-keep-scroll="log" data-stick-bottom>
+  {% for time, level, message in log %}
+  <div class="flex gap-4 px-4 {{ 'bg-amber-50 text-amber-900 dark:bg-amber-950/50 dark:text-amber-200' if level in ('WARNING', 'ERROR') else 'text-slate-600 dark:text-slate-300' }}">
+    <span class="shrink-0 text-slate-400 tabular-nums">{{ time }}</span><span class="whitespace-pre-wrap">{{ message }}</span>
+  </div>
+  {% endfor %}
+</div>
+{% else %}<p class="muted text-sm">No log yet.</p>{% endif %}

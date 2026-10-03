@@ -1,0 +1,606 @@
+source: sndlib/germany50
+roles:
+  origins: [aachen]
+routers:
+  aachen:
+    asn: 65000
+    routerId: 10.0.0.1
+    location: {lat: 50.76, lon: 6.04}
+    neighbors:
+      - name: koeln
+        peerAs: 65029
+      - name: wesel
+        peerAs: 65048
+      - name: trier
+        peerAs: 65046
+  koeln:
+    asn: 65029
+    routerId: 10.0.0.30
+    location: {lat: 50.94, lon: 6.87}
+    neighbors:
+      - name: aachen
+        peerAs: 65000
+      - name: duesseldorf
+        peerAs: 65012
+      - name: koblenz
+        peerAs: 65028
+  wesel:
+    asn: 65048
+    routerId: 10.0.0.49
+    location: {lat: 51.39, lon: 6.37}
+    neighbors:
+      - name: aachen
+        peerAs: 65000
+      - name: essen
+        peerAs: 65014
+      - name: norden
+        peerAs: 65036
+      - name: oldenburg
+        peerAs: 65038
+  trier:
+    asn: 65046
+    routerId: 10.0.0.47
+    location: {lat: 49.75, lon: 6.68}
+    neighbors:
+      - name: aachen
+        peerAs: 65000
+      - name: koblenz
+        peerAs: 65028
+      - name: saarbruecken
+        peerAs: 65042
+  augsburg:
+    asn: 65001
+    routerId: 10.0.0.2
+    location: {lat: 48.33, lon: 10.9}
+    neighbors:
+      - name: ulm
+        peerAs: 65047
+      - name: muenchen
+        peerAs: 65034
+      - name: wuerzburg
+        peerAs: 65049
+  ulm:
+    asn: 65047
+    routerId: 10.0.0.48
+    location: {lat: 48.4, lon: 9.99}
+    neighbors:
+      - name: augsburg
+        peerAs: 65001
+      - name: stuttgart
+        peerAs: 65045
+  muenchen:
+    asn: 65034
+    routerId: 10.0.0.35
+    location: {lat: 48.15, lon: 11.57}
+    neighbors:
+      - name: augsburg
+        peerAs: 65001
+      - name: kempten
+        peerAs: 65026
+      - name: passau
+        peerAs: 65040
+      - name: nuernberg
+        peerAs: 65037
+      - name: regensburg
+        peerAs: 65041
+  wuerzburg:
+    asn: 65049
+    routerId: 10.0.0.50
+    location: {lat: 49.78, lon: 9.97}
+    neighbors:
+      - name: augsburg
+        peerAs: 65001
+      - name: erfurt
+        peerAs: 65013
+      - name: fulda
+        peerAs: 65018
+      - name: nuernberg
+        peerAs: 65037
+      - name: stuttgart
+        peerAs: 65045
+  bayreuth:
+    asn: 65002
+    routerId: 10.0.0.3
+    location: {lat: 49.93, lon: 11.59}
+    neighbors:
+      - name: leipzig
+        peerAs: 65031
+      - name: chemnitz
+        peerAs: 65008
+      - name: nuernberg
+        peerAs: 65037
+  leipzig:
+    asn: 65031
+    routerId: 10.0.0.32
+    location: {lat: 51.34, lon: 12.38}
+    neighbors:
+      - name: bayreuth
+        peerAs: 65002
+      - name: berlin
+        peerAs: 65003
+      - name: dresden
+        peerAs: 65011
+      - name: erfurt
+        peerAs: 65013
+      - name: magdeburg
+        peerAs: 65032
+  chemnitz:
+    asn: 65008
+    routerId: 10.0.0.9
+    location: {lat: 50.84, lon: 12.93}
+    neighbors:
+      - name: bayreuth
+        peerAs: 65002
+      - name: dresden
+        peerAs: 65011
+      - name: erfurt
+        peerAs: 65013
+  nuernberg:
+    asn: 65037
+    routerId: 10.0.0.38
+    location: {lat: 49.57, lon: 11.03}
+    neighbors:
+      - name: muenchen
+        peerAs: 65034
+      - name: wuerzburg
+        peerAs: 65049
+      - name: bayreuth
+        peerAs: 65002
+      - name: regensburg
+        peerAs: 65041
+  berlin:
+    asn: 65003
+    routerId: 10.0.0.4
+    location: {lat: 52.52, lon: 13.39}
+    neighbors:
+      - name: leipzig
+        peerAs: 65031
+      - name: dresden
+        peerAs: 65011
+      - name: schwerin
+        peerAs: 65043
+      - name: magdeburg
+        peerAs: 65032
+      - name: greifswald
+        peerAs: 65020
+  dresden:
+    asn: 65011
+    routerId: 10.0.0.12
+    location: {lat: 51.03, lon: 13.73}
+    neighbors:
+      - name: leipzig
+        peerAs: 65031
+      - name: chemnitz
+        peerAs: 65008
+      - name: berlin
+        peerAs: 65003
+      - name: erfurt
+        peerAs: 65013
+  schwerin:
+    asn: 65043
+    routerId: 10.0.0.44
+    location: {lat: 53.55, lon: 11.45}
+    neighbors:
+      - name: berlin
+        peerAs: 65003
+      - name: greifswald
+        peerAs: 65020
+      - name: hamburg
+        peerAs: 65021
+      - name: kiel
+        peerAs: 65027
+      - name: magdeburg
+        peerAs: 65032
+  magdeburg:
+    asn: 65032
+    routerId: 10.0.0.33
+    location: {lat: 52.14, lon: 11.64}
+    neighbors:
+      - name: leipzig
+        peerAs: 65031
+      - name: berlin
+        peerAs: 65003
+      - name: schwerin
+        peerAs: 65043
+      - name: braunschweig
+        peerAs: 65005
+  greifswald:
+    asn: 65020
+    routerId: 10.0.0.21
+    location: {lat: 54.09, lon: 13.4}
+    neighbors:
+      - name: berlin
+        peerAs: 65003
+      - name: schwerin
+        peerAs: 65043
+  bielefeld:
+    asn: 65004
+    routerId: 10.0.0.5
+    location: {lat: 52.04, lon: 8.5}
+    neighbors:
+      - name: muenster
+        peerAs: 65035
+      - name: siegen
+        peerAs: 65044
+      - name: hannover
+        peerAs: 65022
+      - name: braunschweig
+        peerAs: 65005
+  muenster:
+    asn: 65035
+    routerId: 10.0.0.36
+    location: {lat: 51.97, lon: 7.6}
+    neighbors:
+      - name: bielefeld
+        peerAs: 65004
+      - name: dortmund
+        peerAs: 65010
+      - name: osnabrueck
+        peerAs: 65039
+  siegen:
+    asn: 65044
+    routerId: 10.0.0.45
+    location: {lat: 50.91, lon: 8.03}
+    neighbors:
+      - name: bielefeld
+        peerAs: 65004
+      - name: dortmund
+        peerAs: 65010
+      - name: giessen
+        peerAs: 65019
+      - name: koblenz
+        peerAs: 65028
+  hannover:
+    asn: 65022
+    routerId: 10.0.0.23
+    location: {lat: 52.38, lon: 9.72}
+    neighbors:
+      - name: bielefeld
+        peerAs: 65004
+      - name: braunschweig
+        peerAs: 65005
+      - name: bremen
+        peerAs: 65006
+      - name: hamburg
+        peerAs: 65021
+      - name: osnabrueck
+        peerAs: 65039
+  braunschweig:
+    asn: 65005
+    routerId: 10.0.0.6
+    location: {lat: 52.28, lon: 10.55}
+    neighbors:
+      - name: magdeburg
+        peerAs: 65032
+      - name: bielefeld
+        peerAs: 65004
+      - name: hannover
+        peerAs: 65022
+      - name: hamburg
+        peerAs: 65021
+      - name: kassel
+        peerAs: 65025
+  hamburg:
+    asn: 65021
+    routerId: 10.0.0.22
+    location: {lat: 53.57, lon: 9.99}
+    neighbors:
+      - name: schwerin
+        peerAs: 65043
+      - name: hannover
+        peerAs: 65022
+      - name: braunschweig
+        peerAs: 65005
+      - name: kiel
+        peerAs: 65027
+  kassel:
+    asn: 65025
+    routerId: 10.0.0.26
+    location: {lat: 51.32, lon: 9.51}
+    neighbors:
+      - name: braunschweig
+        peerAs: 65005
+      - name: dortmund
+        peerAs: 65010
+      - name: erfurt
+        peerAs: 65013
+      - name: fulda
+        peerAs: 65018
+      - name: giessen
+        peerAs: 65019
+  bremen:
+    asn: 65006
+    routerId: 10.0.0.7
+    location: {lat: 53.11, lon: 8.85}
+    neighbors:
+      - name: hannover
+        peerAs: 65022
+      - name: oldenburg
+        peerAs: 65038
+      - name: bremerhaven
+        peerAs: 65007
+  oldenburg:
+    asn: 65038
+    routerId: 10.0.0.39
+    location: {lat: 53.11, lon: 8.21}
+    neighbors:
+      - name: wesel
+        peerAs: 65048
+      - name: bremen
+        peerAs: 65006
+      - name: norden
+        peerAs: 65036
+      - name: osnabrueck
+        peerAs: 65039
+  bremerhaven:
+    asn: 65007
+    routerId: 10.0.0.8
+    location: {lat: 53.54, lon: 8.58}
+    neighbors:
+      - name: bremen
+        peerAs: 65006
+      - name: flensburg
+        peerAs: 65015
+  flensburg:
+    asn: 65015
+    routerId: 10.0.0.16
+    location: {lat: 54.77, lon: 9.45}
+    neighbors:
+      - name: bremerhaven
+        peerAs: 65007
+      - name: kiel
+        peerAs: 65027
+  erfurt:
+    asn: 65013
+    routerId: 10.0.0.14
+    location: {lat: 50.98, lon: 11.04}
+    neighbors:
+      - name: wuerzburg
+        peerAs: 65049
+      - name: leipzig
+        peerAs: 65031
+      - name: chemnitz
+        peerAs: 65008
+      - name: dresden
+        peerAs: 65011
+      - name: kassel
+        peerAs: 65025
+  darmstadt:
+    asn: 65009
+    routerId: 10.0.0.10
+    location: {lat: 49.89, lon: 8.65}
+    neighbors:
+      - name: frankfurt
+        peerAs: 65016
+      - name: mannheim
+        peerAs: 65033
+      - name: kaiserslautern
+        peerAs: 65023
+  frankfurt:
+    asn: 65016
+    routerId: 10.0.0.17
+    location: {lat: 50.12, lon: 8.71}
+    neighbors:
+      - name: darmstadt
+        peerAs: 65009
+      - name: koblenz
+        peerAs: 65028
+      - name: giessen
+        peerAs: 65019
+      - name: fulda
+        peerAs: 65018
+  mannheim:
+    asn: 65033
+    routerId: 10.0.0.34
+    location: {lat: 49.49, lon: 8.49}
+    neighbors:
+      - name: darmstadt
+        peerAs: 65009
+      - name: karlsruhe
+        peerAs: 65024
+  kaiserslautern:
+    asn: 65023
+    routerId: 10.0.0.24
+    location: {lat: 49.43, lon: 7.75}
+    neighbors:
+      - name: darmstadt
+        peerAs: 65009
+      - name: koblenz
+        peerAs: 65028
+      - name: saarbruecken
+        peerAs: 65042
+      - name: karlsruhe
+        peerAs: 65024
+  dortmund:
+    asn: 65010
+    routerId: 10.0.0.11
+    location: {lat: 51.51, lon: 7.45}
+    neighbors:
+      - name: muenster
+        peerAs: 65035
+      - name: siegen
+        peerAs: 65044
+      - name: kassel
+        peerAs: 65025
+      - name: essen
+        peerAs: 65014
+  essen:
+    asn: 65014
+    routerId: 10.0.0.15
+    location: {lat: 51.46, lon: 7.02}
+    neighbors:
+      - name: wesel
+        peerAs: 65048
+      - name: dortmund
+        peerAs: 65010
+      - name: duesseldorf
+        peerAs: 65012
+  duesseldorf:
+    asn: 65012
+    routerId: 10.0.0.13
+    location: {lat: 51.25, lon: 6.77}
+    neighbors:
+      - name: koeln
+        peerAs: 65029
+      - name: essen
+        peerAs: 65014
+  kiel:
+    asn: 65027
+    routerId: 10.0.0.28
+    location: {lat: 54.34, lon: 10.12}
+    neighbors:
+      - name: schwerin
+        peerAs: 65043
+      - name: hamburg
+        peerAs: 65021
+      - name: flensburg
+        peerAs: 65015
+  koblenz:
+    asn: 65028
+    routerId: 10.0.0.29
+    location: {lat: 50.4, lon: 7.52}
+    neighbors:
+      - name: koeln
+        peerAs: 65029
+      - name: trier
+        peerAs: 65046
+      - name: siegen
+        peerAs: 65044
+      - name: frankfurt
+        peerAs: 65016
+      - name: kaiserslautern
+        peerAs: 65023
+  giessen:
+    asn: 65019
+    routerId: 10.0.0.20
+    location: {lat: 50.57, lon: 8.67}
+    neighbors:
+      - name: siegen
+        peerAs: 65044
+      - name: kassel
+        peerAs: 65025
+      - name: frankfurt
+        peerAs: 65016
+      - name: fulda
+        peerAs: 65018
+  fulda:
+    asn: 65018
+    routerId: 10.0.0.19
+    location: {lat: 50.56, lon: 9.69}
+    neighbors:
+      - name: wuerzburg
+        peerAs: 65049
+      - name: kassel
+        peerAs: 65025
+      - name: frankfurt
+        peerAs: 65016
+      - name: giessen
+        peerAs: 65019
+  freiburg:
+    asn: 65017
+    routerId: 10.0.0.18
+    location: {lat: 47.98, lon: 7.8}
+    neighbors:
+      - name: karlsruhe
+        peerAs: 65024
+      - name: konstanz
+        peerAs: 65030
+  karlsruhe:
+    asn: 65024
+    routerId: 10.0.0.25
+    location: {lat: 49.01, lon: 8.41}
+    neighbors:
+      - name: mannheim
+        peerAs: 65033
+      - name: kaiserslautern
+        peerAs: 65023
+      - name: freiburg
+        peerAs: 65017
+      - name: saarbruecken
+        peerAs: 65042
+      - name: stuttgart
+        peerAs: 65045
+  konstanz:
+    asn: 65030
+    routerId: 10.0.0.31
+    location: {lat: 47.66, lon: 9.18}
+    neighbors:
+      - name: freiburg
+        peerAs: 65017
+      - name: kempten
+        peerAs: 65026
+      - name: stuttgart
+        peerAs: 65045
+  osnabrueck:
+    asn: 65039
+    routerId: 10.0.0.40
+    location: {lat: 52.28, lon: 8.03}
+    neighbors:
+      - name: muenster
+        peerAs: 65035
+      - name: hannover
+        peerAs: 65022
+      - name: oldenburg
+        peerAs: 65038
+  saarbruecken:
+    asn: 65042
+    routerId: 10.0.0.43
+    location: {lat: 49.23, lon: 7.03}
+    neighbors:
+      - name: trier
+        peerAs: 65046
+      - name: kaiserslautern
+        peerAs: 65023
+      - name: karlsruhe
+        peerAs: 65024
+  stuttgart:
+    asn: 65045
+    routerId: 10.0.0.46
+    location: {lat: 48.74, lon: 9.1}
+    neighbors:
+      - name: ulm
+        peerAs: 65047
+      - name: wuerzburg
+        peerAs: 65049
+      - name: karlsruhe
+        peerAs: 65024
+      - name: konstanz
+        peerAs: 65030
+  kempten:
+    asn: 65026
+    routerId: 10.0.0.27
+    location: {lat: 47.72, lon: 10.32}
+    neighbors:
+      - name: muenchen
+        peerAs: 65034
+      - name: konstanz
+        peerAs: 65030
+  passau:
+    asn: 65040
+    routerId: 10.0.0.41
+    location: {lat: 48.57, lon: 13.46}
+    neighbors:
+      - name: muenchen
+        peerAs: 65034
+      - name: regensburg
+        peerAs: 65041
+  regensburg:
+    asn: 65041
+    routerId: 10.0.0.42
+    location: {lat: 49.0, lon: 12.09}
+    neighbors:
+      - name: muenchen
+        peerAs: 65034
+      - name: nuernberg
+        peerAs: 65037
+      - name: passau
+        peerAs: 65040
+  norden:
+    asn: 65036
+    routerId: 10.0.0.37
+    location: {lat: 53.6, lon: 7.21}
+    neighbors:
+      - name: wesel
+        peerAs: 65048
+      - name: oldenburg
+        peerAs: 65038

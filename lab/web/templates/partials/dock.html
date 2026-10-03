@@ -1,0 +1,109 @@
+{% from "macros.html" import icon, run_state %}
+{# The sub-jobs of a job: its runs by topology and scenario, a dot per run. #}
+{% macro subjobs(parts, name) -%}
+<ul class="dock-parts" data-keep-scroll="parts-{{ name }}">
+  {% for p in parts %}
+  <li class="flex items-center gap-3 py-0.5">
+    <span class="min-w-0 flex-1 truncate font-mono">{{ p.topology }} <span class="muted">·</span> {{ p.scenario }}</span>
+    <span class="flex flex-wrap justify-end gap-0.5">
+      {%- for r in p.runs %}<span class="dock-run dock-run-{{ r.state }}" role="img" aria-label="{{ r.variant }}, run {{ r.index }}: {{ run_state(r.state) }}" data-tip="{{ r.variant }}, run {{ r.index }}&#10;{{ run_state(r.state) }}"></span>{% endfor -%}
+    </span>
+    <span class="muted w-10 text-right tabular-nums">{{ p.done }}/{{ p.runs | length }}</span>
+  </li>
+  {% endfor %}
+</ul>
+{%- endmacro %}
+{% macro toggle(name) -%}
+<button type="button" class="dock-expand" aria-expanded="false" aria-label="Runs of {{ name }}" data-job-toggle>{{ icon("chevron-down") }}</button>
+{%- endmacro %}
+{% if active or queue %}
+<div class="dock-bar">
+  <div class="mx-auto flex h-12 max-w-6xl items-center gap-3 px-4 text-sm">
+    {% if active %}
+    {% set s = active.status %}
+    <span class="size-2 shrink-0 animate-pulse rounded-full bg-sky-500" role="img" aria-label="Running"></span>
+    <a href="/results/{{ active.name }}" class="min-w-0 truncate font-mono font-medium hover:underline">{{ active.name }}</a>
+    <span class="muted hidden shrink-0 tabular-nums sm:inline">{{ s.done }}/{{ s.total }}</span>
+    <div class="hidden h-1.5 w-32 shrink-0 overflow-hidden rounded-full bg-slate-200 md:block dark:bg-slate-800">
+      <div class="h-full rounded-full bg-uoft-700 dark:bg-uoft-400" style="width: {{ (100 * s.done / s.total) if s.total else 0 }}%"></div>
+    </div>
+    <span class="muted hidden min-w-0 truncate lg:inline">{{ s.phase or "" }}</span>
+    {% if left_s is not none %}
+    <span class="muted shrink-0 tabular-nums">{{ left_s | duration }} left<span class="hidden sm:inline"> · ends {{ active_ends | clock }}</span></span>
+    {% endif %}
+    {% elif paused %}
+    <span class="size-2 shrink-0 rounded-full bg-amber-500" role="img" aria-label="Paused"></span>
+    <span class="font-medium">Queue paused</span>
+    {% else %}
+    <span class="muted">Starting next…</span>
+    {% endif %}
+    <div class="ml-auto flex shrink-0 items-center gap-1">
+      {% if all_ends %}<span class="mr-2 hidden text-xs whitespace-nowrap tabular-nums sm:inline">All done {{ all_ends | clock }}</span>{% endif %}
+      <button type="button" class="btn" aria-controls="dock-queue" aria-expanded="false" data-dock-toggle data-tip="The runs of each result, and what waits" data-tip-align="end">
+        {{ icon("list") }}<span class="hidden sm:inline">Runs</span>
+        {% if queue %}<span class="ml-0.5 border-l border-slate-200 pl-2 font-normal text-slate-500 tabular-nums dark:border-white/10 dark:text-slate-400">{{ queue | length }} queued</span>{% endif %}
+      </button>
+      {% if paused and active %}
+      <span class="muted px-2 text-xs whitespace-nowrap" data-tip="The running result ends its phase, then the queue waits" data-tip-align="end">Pausing…</span>
+      {% elif paused %}
+      <form method="post" action="/queue/resume">
+        <button class="btn" data-tip="Go on in the same order" data-tip-align="end">{{ icon("play") }}<span class="hidden sm:inline">Resume</span></button>
+      </form>
+      {% endif %}
+      {# Pause and cancel in one menu, above the bar. #}
+      {% if active or queue %}
+      <details class="relative" data-dock-menu>
+        <summary class="btn cursor-pointer list-none [&::-webkit-details-marker]:hidden" aria-label="Stop">{{ icon("stop") }}<span class="hidden sm:inline">Stop</span>{{ icon("chevron-down") }}</summary>
+        <div class="absolute right-0 bottom-full z-30 mb-2 w-60 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg dark:border-slate-700 dark:bg-slate-900">
+          {% if active and not paused %}
+          <form method="post" action="/queue/pause"><button class="dock-menu-item" data-tip="It ends its phase and stays first. Nothing new starts" data-tip-align="end">{{ icon("pause") }}Pause the queue</button></form>
+          {% endif %}
+          {% if active %}
+          <form method="post" action="/results/{{ active.name }}/stop"><button class="dock-menu-item text-rose-700 dark:text-rose-300" aria-label="Cancel" data-confirm="Cancel {{ active.name }}?" data-confirm-text="The queue goes on. Its runs are kept, resume it on its page.">{{ icon("close") }}Cancel the running one</button></form>
+          {% endif %}
+          {% if queue %}
+          <form method="post" action="/queue/stop"><button class="dock-menu-item text-rose-700 dark:text-rose-300" aria-label="Cancel all" data-confirm="Cancel all?" data-confirm-text="Stops the running result and empties the queue. Their runs are kept.">{{ icon("close") }}Cancel all</button></form>
+          {% endif %}
+        </div>
+      </details>
+      {% endif %}
+    </div>
+  </div>
+  <div id="dock-queue" class="dock-queue" data-keep-scroll="dock-queue">
+    {% if active %}
+    <section class="dock-job" data-job="{{ active.name }}" data-open-default>
+      <div class="dock-job-head">
+        <span class="-ml-1 flex w-5 shrink-0 justify-center"><span class="size-1.5 rounded-full bg-sky-500"></span></span>
+        {{ toggle(active.name) }}
+        <a href="/results/{{ active.name }}" class="min-w-0 flex-1 truncate font-mono font-medium hover:underline">{{ active.name }}</a>
+        <span class="muted text-xs">running</span>
+      </div>
+      {{ subjobs(active_parts, active.name) }}
+    </section>
+    {% endif %}
+    {% if queue %}
+    <p class="muted px-4 pt-2 pb-1 text-xs">Waiting · {{ queue | length }}</p>
+    <ol data-queue>
+      {% for d in queue %}
+      <li class="dock-job" data-job="{{ d.name }}" data-name="{{ d.name }}">
+        <div class="dock-job-head">
+          <button type="button" class="drag-handle" aria-label="Move {{ d.name }}" data-tip="Drag to reorder, or press ↑ ↓">{{ icon("grip") }}</button>
+          {{ toggle(d.name) }}
+          <a href="/results/{{ d.name }}" class="min-w-0 flex-1 truncate font-mono hover:underline">{{ d.name }}</a>
+          {% if d.takes_s is not none %}
+          <span class="muted hidden text-xs tabular-nums sm:inline">{{ d.takes_s | duration }}</span>
+          <span class="text-xs whitespace-nowrap tabular-nums">ends {{ d.ends | clock }}</span>
+          {% endif %}
+          <form method="post" action="/results/{{ d.name }}/stop"><button class="btn btn-icon btn-danger" data-tip="Cancel" data-tip-align="end" aria-label="Cancel" data-confirm="Cancel {{ d.name }}?" data-confirm-text="It can be resumed later.">{{ icon("close") }}</button></form>
+        </div>
+        <ul class="dock-parts" hx-get="/partials/dock/parts/{{ d.name }}" hx-trigger="intersect once" hx-swap="outerHTML"><li class="muted py-0.5">…</li></ul>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="muted px-4 py-2 text-xs">Nothing else waits.</p>
+    {% endif %}
+    {% if all_ends %}<p class="muted px-4 pt-1 text-right text-xs tabular-nums">All done {{ all_ends | clock }}, in {{ all_s | duration }}</p>{% endif %}
+  </div>
+</div>
+{% endif %}

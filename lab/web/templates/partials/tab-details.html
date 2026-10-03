@@ -1,0 +1,62 @@
+{% set meta = result.meta %}{% set h = meta.host %}
+{% if meta.imported %}
+<div class="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-200">
+  <p class="font-medium">Imported from the former lab scripts</p>
+  <ul class="mt-1 list-disc pl-5">{% for n in meta.imported.notes %}<li>{{ n }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+<div class="grid gap-4 md:grid-cols-2">
+    <section class="card min-w-0 p-5">
+      <h2 class="section-title mb-3">Variants</h2>
+      <ul class="space-y-2 text-sm">
+        {% for v in experiment.variants %}
+        <li class="flex min-w-0 items-center gap-2">
+          <span class="h-3 w-1 shrink-0 rounded-full" style="background: var(--series-{{ loop.index0 % 8 + 1 }})"></span>
+          <span class="shrink-0 font-mono font-medium">{{ v.name }}</span>
+          <span class="tag block min-w-0 truncate {{ 'tag-accent' if v.obgp else '' }}" data-tip="{{ v.summary() }}">{{ v.summary() }}</span>
+          <span class="muted ml-auto shrink-0 font-mono text-xs whitespace-nowrap" data-tip="{{ result.commits[v.name] }}">{{ v.ref }} · {{ result.commits[v.name][:8] }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    <section class="card min-w-0 p-5">
+      <h2 class="section-title mb-3">Setup</h2>
+      <dl class="facts">
+        <div><dt>Topologies</dt><dd class="font-mono">{{ experiment.topologies | join(", ") }}</dd></div>
+        <div><dt>Scenarios</dt><dd class="font-mono" data-tip="{{ experiment.scenarios | join(', ') }}">{{ experiment.scenarios | length }}</dd></div>
+        {% for w in experiment.sweeps %}<div><dt>{{ "Sweeps" if loop.first }}</dt><dd><span class="font-mono">{{ w.scenario }} · {{ w.param }}</span> = {% for v in w.values %}{{ "%g" | format(v) }}{{ ", " if not loop.last }}{% endfor %}</dd></div>{% endfor %}
+        <div><dt>Runs</dt><dd>{{ experiment.runs }} per combination · seed {{ experiment.seed }}</dd></div>
+        <div><dt>BGP</dt><dd>hold {{ experiment.bgp.hold_time }} · keepalive {{ experiment.bgp.keepalive }} · retry {{ experiment.bgp.connect_retry }} s{% if experiment.bgp.graceful_restart %} · graceful restart{% endif %}</dd></div>
+        <div><dt>Sampling</dt><dd>{{ (1 / experiment.sampling.interval) | round(0) | int }} Hz · stable after {{ experiment.sampling.stable_s }} s</dd></div>
+        {% set sampling = integrity %}{% if sampling.low is not none %}<div><dt data-tip="How often the routers really sampled: the slowest router of any run to the median router of the best">Measured</dt><dd class="{{ 'text-amber-700 dark:text-amber-300' if sampling.slow else '' }}">{{ sampling.low }} to {{ sampling.high }} Hz</dd></div>{% endif %}
+      </dl>
+    </section>
+    <section class="card min-w-0 p-5">
+      <h2 class="section-title mb-3">Host</h2>
+      <dl class="facts">
+        {% if h.hostname %}<div><dt>Name</dt><dd class="font-mono">{{ h.hostname }}</dd></div>{% endif %}
+        {% if h.description %}<div><dt>Setup</dt><dd>{{ h.description }}</dd></div>{% endif %}
+        {% if h.cpu_model %}<div><dt>CPU</dt><dd data-tip="{{ h.cpu_model }}">{{ h.cpus }} × {{ h.cpu_model }}</dd></div>{% endif %}
+        {% if h.memory_mb %}<div><dt>Memory</dt><dd>{{ (h.memory_mb / 1024) | round(0) | int }} GB</dd></div>{% endif %}
+        {% set c = meta.cluster or experiment.cluster.model_dump() %}
+        <div><dt>Cluster</dt><dd>{{ c.cpus }} CPUs · {{ (c.memory_mb / 1024) | round(1) }} GB</dd></div>
+        {% if meta.versions %}<div><dt>Software</dt><dd class="font-mono text-xs">{% for k, v in meta.versions.items() %}{{ k }} {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</dd></div>{% endif %}
+        {% if h.kernel %}<div><dt>Kernel</dt><dd class="font-mono text-xs" data-tip="{{ h.kernel }}">{{ h.kernel }}</dd></div>{% endif %}
+      </dl>
+    </section>
+    <section class="card min-w-0 p-5">
+      <h2 class="section-title mb-3">Storage</h2>
+      <dl class="facts">
+        <div><dt>Created</dt><dd>{{ meta.created[:16].replace("T", " ") }}</dd></div>
+        <div><dt>Lab</dt><dd class="font-mono">{{ meta.lab.commit[:10] }}{% if meta.lab.dirty %} (modified){% endif %}</dd></div>
+        <div><dt>Location</dt><dd class="font-mono text-xs">results/{{ "public" if result.public else "private" }}/{{ result.name }}</dd></div>
+      </dl>
+    {% if not queued and status.state != "running" %}
+    <form method="post" action="/results/{{ result.name }}/visibility" class="mt-4 flex items-center justify-between gap-4 border-t border-slate-100 pt-4 dark:border-white/5">
+      <p class="muted text-xs">{{ "In results/public." if result.public else "Only on this host." }}</p>
+      <input type="hidden" name="public" value="{{ 'false' if result.public else 'true' }}">
+      <button class="btn">{{ "Make private" if result.public else "Publish" }}</button>
+    </form>
+    {% endif %}
+    </section>
+</div>

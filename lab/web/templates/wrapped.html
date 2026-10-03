@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% from "macros.html" import run_state %}
+{% block title %}Wrapped · OBGP Lab{% endblock %}
+{% block content %}
+{% set f = wrapped %}
+{% macro label(m) %}{{ f.labels[m] }}{% endmacro %}
+{# One dot per run, lit when it oscillated. #}
+{% macro dots(n, lit) %}
+{% set per = ((n / 160) | round(0, "ceil") | int) if n > 160 else 1 %}
+<div class="flex flex-wrap gap-1.5" role="img" aria-label="{{ lit }} of {{ n }} runs">
+  {% for i in range((n / per) | round(0, "ceil") | int) %}<span class="size-2.5 rounded-full {{ 'bg-amber-300' if i < (lit / per) | round(0, 'ceil') else 'bg-white/25' }}"></span>{% endfor %}
+</div>
+{% if per > 1 %}<p class="mt-1 text-xs text-white/60">One dot for {{ per }} runs</p>{% endif %}
+{% endmacro %}
+
+<div class="space-y-4">
+  <header class="pb-2">
+    <p class="text-sm font-medium tracking-wide text-uoft-700 uppercase dark:text-uoft-300">OBGP Lab</p>
+    <h1 class="text-6xl font-semibold tracking-tight">Wrapped</h1>
+  </header>
+
+  {% if not f.runs %}
+  <p class="card p-6 text-sm">Nothing to wrap yet. Lab experiments do not count.</p>
+  {% else %}
+  <div class="grid gap-4 lg:grid-cols-6">
+    {# What it all adds up to. #}
+    <section class="card p-6 lg:col-span-6" data-tip="{{ f.results | length }} results of the current lab, {{ f.since }}{% if f.until != f.since %} to {{ f.until }}{% endif %}, {{ f.daemons }} daemon version{{ 's' if f.daemons != 1 }}. Every mode stands apart, against BGP of the same results.">
+      <div class="grid grid-cols-2 gap-6 sm:grid-cols-5">
+        {% for value, what in [("{:,}".format(f.runs), "runs"), ("%.1f" | format(f.hours), "hours of routing"),
+                               ("{:,}".format(f.routers), "routers booted"), (f.topologies, "networks"), (f.scenarios, "scenarios")] %}
+        <div>
+          <div class="text-4xl font-semibold tracking-tight tabular-nums">{{ value }}</div>
+          <div class="muted text-sm">{{ what }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    {# The headline: how often each oscillated, a dot per run. #}
+    {% set o = f.oscillation %}
+    {% if o.obgp_runs %}
+    <section class="grid gap-8 rounded-2xl bg-uoft-700 p-8 text-white shadow-sm md:grid-cols-[auto_1fr] lg:col-span-6 dark:bg-uoft-800">
+      <div>
+        <div class="w-fit text-9xl leading-none font-semibold tracking-tight tabular-nums" data-tip="Routes still changing at the end of a run count as oscillating. They had {{ o.rest_s | round | int if o.rest_s else '–' }} s to come to rest, in the median run: slow path exploration counts as well.">{{ o.obgp }}</div>
+        <p class="mt-3 text-2xl font-medium">times OBGP oscillated.</p>
+        {% if o.example %}
+        <p class="mt-6 flex flex-wrap gap-2">
+          <a class="rounded-lg bg-white/15 px-3 py-1.5 text-sm font-medium hover:bg-white/25" href="{{ o.example.bgp }}">Watch BGP flap</a>
+          {% if o.example.obgp %}<a class="rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-uoft-800 hover:bg-white/90" href="{{ o.example.obgp }}">Watch OBGP settle</a>{% endif %}
+        </p>
+        {% endif %}
+      </div>
+      <div class="space-y-5 self-center">
+        <div>
+          <p class="mb-2 text-sm font-medium">OBGP <span class="text-white/60">· {{ o.obgp_runs }} runs</span></p>
+          {{ dots(o.obgp_runs, o.obgp) }}
+        </div>
+        {% set np = o.others | selectattr("mode", "equalto", "obgp-np") | first %}
+        {% if np %}
+        <div>
+          <p class="mb-2 text-sm font-medium">OBGP without pruning <span class="text-white/60">· {{ np.runs }} runs{% if np.oscillated %}, <span class="text-amber-300">{{ np.oscillated }} oscillated</span>{% endif %}</span></p>
+          {{ dots(np.runs, np.oscillated) }}
+        </div>
+        {% endif %}
+        {% if o.bgp_runs %}
+        <div>
+          <p class="mb-2 text-sm font-medium">BGP <span class="text-white/60">· {{ o.bgp_runs }} runs{% if o.bgp %}, <span class="text-amber-300">{{ o.bgp }} oscillated</span>{% endif %}</span></p>
+          {{ dots(o.bgp_runs, o.bgp) }}
+        </div>
+        {% endif %}
+        {% set rest_modes = o.others | rejectattr("mode", "equalto", "obgp-np") | list %}
+        {% if rest_modes %}<p class="w-fit text-xs text-white/70" data-tip="Runs that oscillated{% for m in rest_modes %}&#10;{{ m.label }}: {{ m.oscillated }} of {{ m.runs }}{% endfor %}">Hybrid and random: {{ rest_modes | sum(attribute="oscillated") }} of {{ rest_modes | sum(attribute="runs") }} runs oscillated</p>{% endif %}
+      </div>
+    </section>
+    {% endif %}
+
+    {# What OBGP costs, with the range over the scenarios. #}
+    {% set res = f.cost %}
+    {% if res %}
+    {% set changed = res | rejectattr("same") | list %}
+    {% set span = [10, (res | map(attribute="low") | map("abs") | max), (res | map(attribute="high") | map("abs") | max)] | max %}
+    {% set span = (span / 5) | round(0, "ceil") * 5 %}
+    <div class="card flex flex-col p-6 lg:col-span-3">
+      {% if changed %}{% set c = changed[0] %}
+      <div class="text-6xl font-semibold tracking-tight text-uoft-700 tabular-nums dark:text-uoft-300">{{ c.median | abs | round | int }} %</div>
+      <div class="mt-2 text-xl font-medium">{{ "less" if c.median < 0 else "more" }} {{ c.what | lower }} with OBGP</div>
+      {% else %}
+      <div class="w-fit text-6xl font-semibold tracking-tight text-uoft-700 dark:text-uoft-300" data-tip="Median and range over the scenarios, ±{{ span | int }} % around BGP. OBGP keeps the paths it does not admit.">Same</div>
+      <div class="mt-2 text-xl font-medium">resources for OBGP as for BGP</div>
+      {% endif %}
+      <div class="mt-5 space-y-2.5">
+        <div class="flex gap-3 text-xs"><span class="w-20 shrink-0"></span><span class="muted flex-1 text-center">BGP</span><span class="w-14 shrink-0"></span></div>
+        {% for r in res %}
+        <div class="flex items-center gap-3 text-sm" data-tip="{{ '%+.1f' | format(r.low) | replace('-', '−') }} to {{ '%+.1f' | format(r.high) | replace('-', '−') }} % over {{ r.n }} scenarios">
+          <span class="muted w-20 shrink-0">{{ r.what }}</span>
+          <span class="relative h-3 flex-1 rounded-full bg-slate-100 dark:bg-white/5">
+            <span class="absolute inset-y-0 rounded-full bg-uoft-200 dark:bg-uoft-600" style="left: {{ 50 + 50 * r.low / span }}%; right: {{ 50 - 50 * r.high / span }}%"></span>
+            {# BGP, the reference, above the band. #}
+            <span class="absolute -inset-y-1 left-1/2 w-0.5 -translate-x-1/2 rounded-full bg-slate-500 dark:bg-slate-300"></span>
+            <span class="absolute top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-uoft-700 dark:bg-uoft-300" style="left: {{ 50 + 50 * r.median / span }}%"></span>
+          </span>
+          <span class="w-14 shrink-0 text-right font-medium tabular-nums">{{ "%+.1f" | format(r.median) | replace("-", "−") }} %</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {# The checks, as a ring, and how the runs of every mode ended. #}
+    {% set k = f.checks %}
+    {% if k.runs %}
+    {% set failed = k.runs - k.passed %}
+    <div class="card flex flex-col gap-5 p-6 lg:col-span-3">
+      <div class="flex items-center gap-6">
+        <svg viewBox="0 0 100 100" class="size-28 shrink-0 -rotate-90" aria-hidden="true">
+          <circle cx="50" cy="50" r="42" fill="none" stroke-width="12" class="stroke-slate-100 dark:stroke-white/5"/>
+          <circle cx="50" cy="50" r="42" fill="none" stroke-width="12" stroke-linecap="round" class="stroke-uoft-700 dark:stroke-uoft-400"
+                  stroke-dasharray="{{ 263.9 * k.passed / k.runs }} 263.9"/>
+        </svg>
+        <div>
+          <div class="text-6xl font-semibold tracking-tight tabular-nums">{{ k.passed }}<span class="text-3xl text-slate-400"> of {{ k.runs }}</span></div>
+          <div class="mt-2 text-xl font-medium">runs by the book</div>
+          {% if failed and failed == k.outside %}<p class="muted mt-1 text-sm">The other {{ failed }} broke the rules on purpose.</p>
+          {% elif failed %}<p class="mt-1 text-sm text-rose-700 dark:text-rose-300">{{ failed }} failed a check{% if k.outside %}, {{ k.outside }} of them on purpose{% endif %}.</p>{% endif %}
+        </div>
+      </div>
+      {# Each bar as long as its runs, against the mode with the most. #}
+      {% set most = f.outcomes | map(attribute="runs") | max %}
+      <div class="mt-auto space-y-1.5 text-xs">
+        {% for r in f.outcomes %}
+        <div class="flex items-center gap-3" data-tip="{{ r.completed }} done{% if r.timeout %}, {{ r.timeout }} did not settle in time{% endif %}{% if r.failed %}, {{ r.failed }} failed a check{% endif %}{% if r.error %}, {{ r.error }} broke off{% endif %}">
+          <span class="muted w-36 shrink-0 truncate">{{ label(r.mode) }}</span>
+          <span class="flex h-2 flex-1">
+            <span class="flex h-2 overflow-hidden rounded-full" style="width: {{ 100 * r.runs / most }}%">
+              {% for s, color in (("completed", "bg-emerald-500"), ("timeout", "bg-amber-400"), ("failed", "bg-rose-500"), ("error", "bg-rose-800 dark:bg-rose-300")) %}{% if r[s] %}<span class="{{ color }}" style="width: {{ 100 * r[s] / r.runs }}%"></span>{% endif %}{% endfor %}
+            </span>
+          </span>
+          <span class="muted w-8 shrink-0 text-right tabular-nums">{{ r.runs }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {# Convergence, per topology and scenario. #}
+    {% set c = f.convergence %}
+    {% if c.rows %}
+    <section class="card overflow-x-auto lg:col-span-6">
+      <div class="px-6 pt-6 pb-3">
+        <h2 class="w-fit text-2xl font-semibold tracking-tight" data-tip="Median over the runs, until every router holds the expected prefixes">How fast it converged</h2>
+      </div>
+      <table class="w-full text-sm">
+        <thead><tr class="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-white/5 dark:text-slate-400 [&>th]:px-3 [&>th]:py-2 [&>th]:font-medium [&>th:first-child]:pl-6 [&>th:last-child]:pr-6">
+          <th>Topology · scenario</th>{% for m in c.columns %}<th class="text-right align-bottom">{{ label(m) }}</th>{% endfor %}</tr></thead>
+        <tbody class="divide-y divide-slate-100 dark:divide-white/5">
+          {% for row in c.rows %}
+          {# The fastest and the slowest of a row; below the resolution counts as tied and fastest, and a mode that did not always converge is never the fastest. #}
+          {% set ns = namespace(ranks={}) %}
+          {% for m, x in row.cells.items() if x.median is not none %}{% set _ = ns.ranks.update({m: 0 if x.median < x.resolution else x.median}) %}{% endfor %}
+          {% set values = ns.ranks.values() | list %}
+          {% set best = (values | min) if values and (values | unique | list | length) > 1 else none %}
+          {% set worst = (values | max) if best is not none else none %}
+          <tr class="[&>td]:px-3 [&>td]:py-2.5 [&>td:first-child]:pl-6 [&>td:last-child]:pr-6"><td class="font-mono text-xs whitespace-nowrap" data-tip="{{ row.result }}">{{ row.topology }} · {{ row.scenario }}</td>
+            {% for m in c.columns %}{% set x = row.cells.get(m) %}
+            <td class="text-right whitespace-nowrap tabular-nums">
+              {% if not x %}<span class="text-slate-300 dark:text-slate-600">–</span>
+              {% elif x.median is none %}<span class="text-amber-700 dark:text-amber-300" data-tip="No run converged">0/{{ x.runs }}</span>
+              {% else %}{% set rank = ns.ranks[m] %}
+                {% set badge = "rounded px-1.5 py-0.5 font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" if rank == best and x.n == x.runs
+                   else "rounded px-1.5 py-0.5 font-medium bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300" if rank == worst else "" %}
+                <span class="{{ badge }}" data-tip="{{ 'Fastest of this row. ' if rank == best and x.n == x.runs else 'Slowest of this row. ' if rank == worst else '' }}{{ 'Faster than two samples: below what the sampling resolves' if x.median < x.resolution else '' }}">{% if x.median < x.resolution %}&lt; {{ x.resolution }} s{% else %}{{ "%.1f" | format(x.median) }} s{% endif %}</span>
+                {% if x.n < x.runs %}<span class="ml-1 text-xs text-amber-700 dark:text-amber-300" data-tip="Only {{ x.n }} of {{ x.runs }} runs converged; the median is of those">{{ x.n }}/{{ x.runs }}</span>{% endif %}{% endif %}
+            </td>{% endfor %}</tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

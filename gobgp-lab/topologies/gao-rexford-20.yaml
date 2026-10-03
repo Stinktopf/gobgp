@@ -1,0 +1,321 @@
+roles:
+  origins: [s-a, s-f]
+  tier1: [t1-a, t1-b, t1-c]
+  stubs: [s-a, s-b, s-c, s-d, s-e, s-f, s-g, s-h, s-i, s-j, s-k]
+routers:
+  t1-a:
+    asn: 64600
+    routerId: 10.0.0.1
+    obgp: true
+    position: {x: -90, y: 0}
+    neighbors:
+      - name: t1-b
+        peerAs: 64601
+        relation: peer
+      - name: t1-c
+        peerAs: 64602
+        relation: peer
+      - name: t2-a
+        peerAs: 64603
+        relation: customer
+      - name: t2-c
+        peerAs: 64605
+        relation: customer
+      - name: t2-d
+        peerAs: 64606
+        relation: customer
+  t1-b:
+    asn: 64601
+    routerId: 10.0.0.2
+    obgp: true
+    position: {x: 0, y: 0}
+    neighbors:
+      - name: t1-a
+        peerAs: 64600
+        relation: peer
+      - name: t1-c
+        peerAs: 64602
+        relation: peer
+      - name: t2-a
+        peerAs: 64603
+        relation: customer
+      - name: t2-b
+        peerAs: 64604
+        relation: customer
+      - name: t2-e
+        peerAs: 64607
+        relation: customer
+  t1-c:
+    asn: 64602
+    routerId: 10.0.0.3
+    obgp: true
+    position: {x: 90, y: 0}
+    neighbors:
+      - name: t1-a
+        peerAs: 64600
+        relation: peer
+      - name: t1-b
+        peerAs: 64601
+        relation: peer
+      - name: t2-c
+        peerAs: 64605
+        relation: customer
+      - name: t2-e
+        peerAs: 64607
+        relation: customer
+      - name: t2-f
+        peerAs: 64608
+        relation: customer
+  t2-a:
+    asn: 64603
+    routerId: 10.0.0.4
+    obgp: true
+    position: {x: -225, y: 170}
+    neighbors:
+      - name: t1-a
+        peerAs: 64600
+        relation: provider
+      - name: t1-b
+        peerAs: 64601
+        relation: provider
+      - name: t2-b
+        peerAs: 64604
+        relation: peer
+      - name: s-a
+        peerAs: 64609
+        relation: customer
+      - name: s-e
+        peerAs: 64613
+        relation: customer
+      - name: s-g
+        peerAs: 64615
+        relation: customer
+      - name: s-k
+        peerAs: 64619
+        relation: customer
+  t2-b:
+    asn: 64604
+    routerId: 10.0.0.5
+    position: {x: -135, y: 170}
+    neighbors:
+      - name: t1-b
+        peerAs: 64601
+        relation: provider
+      - name: t2-a
+        peerAs: 64603
+        relation: peer
+      - name: t2-c
+        peerAs: 64605
+        relation: peer
+      - name: s-b
+        peerAs: 64610
+        relation: customer
+      - name: s-h
+        peerAs: 64616
+        relation: customer
+  t2-c:
+    asn: 64605
+    routerId: 10.0.0.6
+    obgp: true
+    position: {x: -45, y: 170}
+    neighbors:
+      - name: t1-c
+        peerAs: 64602
+        relation: provider
+      - name: t1-a
+        peerAs: 64600
+        relation: provider
+      - name: t2-d
+        peerAs: 64606
+        relation: peer
+      - name: t2-b
+        peerAs: 64604
+        relation: peer
+      - name: s-a
+        peerAs: 64609
+        relation: customer
+      - name: s-c
+        peerAs: 64611
+        relation: customer
+      - name: s-g
+        peerAs: 64615
+        relation: customer
+      - name: s-i
+        peerAs: 64617
+        relation: customer
+  t2-d:
+    asn: 64606
+    routerId: 10.0.0.7
+    position: {x: 45, y: 170}
+    neighbors:
+      - name: t1-a
+        peerAs: 64600
+        relation: provider
+      - name: t2-c
+        peerAs: 64605
+        relation: peer
+      - name: s-b
+        peerAs: 64610
+        relation: customer
+      - name: s-d
+        peerAs: 64612
+        relation: customer
+      - name: s-h
+        peerAs: 64616
+        relation: customer
+      - name: s-j
+        peerAs: 64618
+        relation: customer
+  t2-e:
+    asn: 64607
+    routerId: 10.0.0.8
+    obgp: true
+    position: {x: 135, y: 170}
+    neighbors:
+      - name: t1-b
+        peerAs: 64601
+        relation: provider
+      - name: t1-c
+        peerAs: 64602
+        relation: provider
+      - name: t2-f
+        peerAs: 64608
+        relation: peer
+      - name: s-e
+        peerAs: 64613
+        relation: customer
+      - name: s-k
+        peerAs: 64619
+        relation: customer
+  t2-f:
+    asn: 64608
+    routerId: 10.0.0.9
+    position: {x: 225, y: 170}
+    neighbors:
+      - name: t1-c
+        peerAs: 64602
+        relation: provider
+      - name: t2-e
+        peerAs: 64607
+        relation: peer
+      - name: s-d
+        peerAs: 64612
+        relation: customer
+      - name: s-f
+        peerAs: 64614
+        relation: customer
+      - name: s-j
+        peerAs: 64618
+        relation: customer
+  s-a:
+    asn: 64609
+    routerId: 10.0.0.10
+    position: {x: -450, y: 340}
+    neighbors:
+      - name: t2-a
+        peerAs: 64603
+        relation: provider
+      - name: t2-c
+        peerAs: 64605
+        relation: provider
+  s-b:
+    asn: 64610
+    routerId: 10.0.0.11
+    position: {x: -360, y: 340}
+    neighbors:
+      - name: t2-b
+        peerAs: 64604
+        relation: provider
+      - name: t2-d
+        peerAs: 64606
+        relation: provider
+  s-c:
+    asn: 64611
+    routerId: 10.0.0.12
+    position: {x: -270, y: 340}
+    neighbors:
+      - name: t2-c
+        peerAs: 64605
+        relation: provider
+  s-d:
+    asn: 64612
+    routerId: 10.0.0.13
+    position: {x: -180, y: 340}
+    neighbors:
+      - name: t2-d
+        peerAs: 64606
+        relation: provider
+      - name: t2-f
+        peerAs: 64608
+        relation: provider
+  s-e:
+    asn: 64613
+    routerId: 10.0.0.14
+    position: {x: -90, y: 340}
+    neighbors:
+      - name: t2-e
+        peerAs: 64607
+        relation: provider
+      - name: t2-a
+        peerAs: 64603
+        relation: provider
+  s-f:
+    asn: 64614
+    routerId: 10.0.0.15
+    position: {x: 0, y: 340}
+    neighbors:
+      - name: t2-f
+        peerAs: 64608
+        relation: provider
+  s-g:
+    asn: 64615
+    routerId: 10.0.0.16
+    position: {x: 90, y: 340}
+    neighbors:
+      - name: t2-a
+        peerAs: 64603
+        relation: provider
+      - name: t2-c
+        peerAs: 64605
+        relation: provider
+  s-h:
+    asn: 64616
+    routerId: 10.0.0.17
+    position: {x: 180, y: 340}
+    neighbors:
+      - name: t2-b
+        peerAs: 64604
+        relation: provider
+      - name: t2-d
+        peerAs: 64606
+        relation: provider
+  s-i:
+    asn: 64617
+    routerId: 10.0.0.18
+    position: {x: 270, y: 340}
+    neighbors:
+      - name: t2-c
+        peerAs: 64605
+        relation: provider
+  s-j:
+    asn: 64618
+    routerId: 10.0.0.19
+    position: {x: 360, y: 340}
+    neighbors:
+      - name: t2-d
+        peerAs: 64606
+        relation: provider
+      - name: t2-f
+        peerAs: 64608
+        relation: provider
+  s-k:
+    asn: 64619
+    routerId: 10.0.0.20
+    position: {x: 450, y: 340}
+    neighbors:
+      - name: t2-e
+        peerAs: 64607
+        relation: provider
+      - name: t2-a
+        peerAs: 64603
+        relation: provider

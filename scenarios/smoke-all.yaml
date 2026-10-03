@@ -1,0 +1,34 @@
+name: smoke-all
+description: Every building block once, its rate offered for sweeps.
+params: {rate: 1}
+steps:
+  - announce: {rate: $rate, for: 8}
+  - wait: 3
+  - originate: {router: random, count: 2}
+  - until_stable: {timeout: 20}
+  - set_preference: {router: random, value: 300}
+  - prepend: {router: frankfurt, times: 2}
+  - set_export: {router: random}
+  - until_stable: {timeout: 20}
+  - soft_reset: {router: random}
+  - degrade: {link: random, delay_ms: 50, jitter_ms: 5, loss_pct: 1}
+  - wait: 3
+  - parallel:
+      - down: {link: toronto-fulda, mode: oneway}
+      - restart: {router: frankfurt}
+  - until_stable: {timeout: 30}
+  - down: {router: toronto}
+  - until_stable: {timeout: 30}
+  - up: {}
+  - until_stable: {timeout: 30}
+  - repeat:
+      times: 2
+      every: 6
+      steps:
+        - down: {link: random, mode: cut}
+        - wait: 3
+        - up: {}
+  - until_stable: {timeout: 30}
+  - withdraw: {router: all}
+  - until_stable: {timeout: 30}
+  - expect: {router: random, prefixes: none}

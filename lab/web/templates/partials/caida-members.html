@@ -1,0 +1,12 @@
+{# A page of the ASes of a CAIDA part; the last one loads the next page when it scrolls into view. #}
+{% for a in found %}
+<li class="flex items-center gap-3 px-3 py-1 text-sm {{ 'bg-uoft-50 dark:bg-uoft-900/50' if a.root else '' }}"
+    {% if loop.last and offset + found | length < total %}hx-get="/topologies/caida/members?{{ next }}" hx-trigger="revealed" hx-swap="afterend" hx-target="this"{% endif %}>
+  <span class="w-16 shrink-0 font-mono text-xs text-slate-500">AS{{ a.asn }}</span>
+  <span class="min-w-0 flex-1 truncate {{ 'font-medium' if a.root else '' }}" data-tip="{{ a.org or a.name }}">{{ a.org or a.name or "unknown" }}{% if a.country %} <span class="muted text-xs">{{ a.country }}</span>{% endif %}</span>
+  <span class="tag shrink-0 {{ 'tag-accent' if a.role != 'Stub' else '' }}" data-tip="{{ {'Tier-1': 'One of the networks at the top of the Internet, without providers', 'Transit': 'Has customers in the part', 'Stub': 'Has no customers in the part'}[a.role] }}">{{ a.role }}</span>
+  <span class="muted shrink-0 text-right text-xs whitespace-nowrap tabular-nums" data-tip="Sessions in the part" data-tip-align="end">{{ a.sessions }} session{{ "s" if a.sessions != 1 }}</span>
+</li>
+{% else %}
+{% if offset == 0 %}<li class="muted px-3 py-1 text-xs">No AS matches.</li>{% endif %}
+{% endfor %}

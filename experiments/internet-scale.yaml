@@ -1,0 +1,12 @@
+name: internet-scale
+description: How BGP and OBGP scale with the routers, on the core of the Internet, the 32, 64, 128 and 256 largest networks by AS Rank, with their real prefixes.
+# The largest networks of core-256 hold close to 200 sessions each.
+cluster: {cpus: 128, memory_mb: 524288, router_limit_mb: 4096}
+runs: 6
+sampling: {interval: 1.0, stable_s: 5}
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp, mode: obgp}
+  - {name: obgp-np, mode: obgp-np}
+topologies: [core-32, core-64, core-128, core-256]
+scenarios: [real-fill-20]

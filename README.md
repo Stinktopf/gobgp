@@ -1,72 +1,177 @@
-# GoBGP: BGP implementation in Go
+<p align="center">
+  <picture>
+    <source srcset="assets/logo-router-dark.png" media="(prefers-color-scheme: dark)">
+    <img src="assets/logo-router-light.png" alt="OBGP Router" width="336">
+  </picture>
+</p>
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/osrg/gobgp)](https://goreportcard.com/report/github.com/osrg/gobgp)
-[![Tests](https://github.com/osrg/gobgp/actions/workflows/ci.yml/badge.svg)](https://github.com/osrg/gobgp/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/osrg/gobgp/v4.svg)](https://pkg.go.dev/github.com/osrg/gobgp/v4)
-[![Releases](https://img.shields.io/github/release/osrg/gobgp/all.svg?style=flat-square)](https://github.com/osrg/gobgp/releases)
-[![LICENSE](https://img.shields.io/github/license/osrg/gobgp.svg?style=flat-square)](https://github.com/osrg/gobgp/blob/master/LICENSE)
+<p align="center"><b>An oscillation-free BGP router based on <a href="https://github.com/osrg/gobgp">GoBGP</a>,<br>
+and the lab that measures it.</b></p>
 
-GoBGP is an open source Border Gateway Protocol (BGP) implementation designed from scratch for
-modern environment and implemented in a modern programming language,
-[the Go Programming Language](http://golang.org/).
+<p align="center">
+<a href="https://doi.org/10.23919/IFIPNetworking70592.2026.11578986">IFIP Networking 2026</a> ·
+<a href="https://opendl.ifip-tc6.org/db/conf/networking/networking2026/1571247489.pdf">Paper</a> ·
+<a href="vis">Figures</a> ·
+<a href="results/public/ifip-networking-2026">Data</a>
+</p>
 
-----
+Preference cycles make BGP oscillate. OBGP ([LCN 2022](https://doi.org/10.1109/LCN53696.2022.9843706),
+[ICC 2022](https://doi.org/10.1109/ICC45855.2022.9839159)) orders route import and export
+strictly, so it cannot. BGP messages are unchanged, so OBGP interoperates at the protocol level
+with any BGP speaker.
 
-## Install
+## How it works
 
-Try [a binary release](https://github.com/osrg/gobgp/releases/latest).
+Paths are ordered by AS path length, ties broken by ASN.
 
-## Documentation
+- **Import:** a path is admitted only if it is better than the worst admitted one.
+- **Re-admission:** rejected paths come back once no valid path is left.
+- **Export:** peers get the worst admitted path, so a better one never changes what they see.
+- **Pruning:** a withdrawn or changed path removes the paths containing its old AS sequence.
+- **Forwarding:** the FIB gets GoBGP's usual best path, loop-free since the export path length
+  decreases along every hop.
 
-### Using GoBGP
+## Results
 
-- [Getting Started](docs/sources/getting-started.md)
-- CLI
-  - [Typical operation examples](docs/sources/cli-operations.md)
-  - [Complete syntax](docs/sources/cli-command-syntax.md)
-- [Route Server](docs/sources/route-server.md)
-- [Route Reflector](docs/sources/route-reflector.md)
-- [Policy](docs/sources/policy.md)
-- Zebra Integration
-  - [FIB manipulation](docs/sources/zebra.md)
-  - [Equal Cost Multipath Routing](docs/sources/zebra-multipath.md)
-- [MRT](docs/sources/mrt.md)
-- [BMP](docs/sources/bmp.md)
-- [EVPN](docs/sources/evpn.md)
-- [Flowspec](docs/sources/flowspec.md)
-- [RPKI](docs/sources/rpki.md)
-- [Metrics](docs/sources/metrics.md)
-- [Managing GoBGP with your favorite language with gRPC](docs/sources/grpc-client.md)
-- Go Native BGP Library
-  - [Basics](docs/sources/lib.md)
-  - [BGP-LS](docs/sources/bgp-ls.md)
-  - [SR Policy](docs/sources/lib-srpolicy.md)
-- [Graceful Restart](docs/sources/graceful-restart.md)
-- [Additional Paths](docs/sources/add-paths.md)
-- [Peer Group](docs/sources/peer-group.md)
-- [Dynamic Neighbor](docs/sources/dynamic-neighbor.md)
-- [eBGP Multihop](docs/sources/ebgp-multihop.md)
-- [TTL Security](docs/sources/ttl-security.md)
-- [Confederation](docs/sources/bgp-confederation.md)
-- Data Center Networking
-  - [Unnumbered BGP](docs/sources/unnumbered-bgp.md)
-- [Sentry](docs/sources/sentry.md)
+Compared with GoBGP on `germany50`, `BAD GADGET` and `noble-eu`, BGP oscillated indefinitely in both
+cyclic topologies and OBGP converged. OBGP admitted 27–51 % fewer paths on average, and `noble-eu`
+drained in about 3 s instead of 29–42 s.
 
-### Externals
+## Usage
 
-- [Tutorial: Using GoBGP as an IXP connecting router](http://www.slideshare.net/shusugimoto1986/tutorial-using-gobgp-as-an-ixp-connecting-router)
-- [GoBGP.nix: A NixOS module for GoBGP. Containing a working FRR implementation and a rich set of Options](https://github.com/wavelens/gobgp.nix)
+```bash
+go build -o . ./cmd/gobgpd ./cmd/gobgp
+GOBGP_OPERA_ENABLED=true ./gobgpd -f gobgpd.conf
+```
 
-## Community, discussion and support
+Without the variable, the daemon is plain GoBGP. `GOBGP_OPERA_PRUNING=false` turns pruning off. The code is in [`opera.go`](internal/pkg/table/opera.go),
+configuration and CLI are [GoBGP's](docs/sources/getting-started.md).
 
-We have the [Slack](https://join.slack.com/t/gobgp/shared_invite/zt-g9il5j8i-3gZwnXArK0O9Mnn4Yu~IrQ) for questions, discussion, suggestions, etc.
+## Lab
 
-You have code or documentation for GoBGP? Awesome! Send a pull
-request. No CLA, board members, governance, or other mess. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for info on
-code contributing.
+<p align="center">
+  <picture>
+    <source srcset="assets/readme/process-dark.svg" media="(prefers-color-scheme: dark)">
+    <img src="assets/readme/process-light.svg" alt="Topologies, scenarios, experiments, results, wrapped" width="980">
+  </picture>
+</p>
 
-## Licensing
+Emulates topologies on minikube, one pod per router, drawn in its editor, from [SNDlib](https://sndlib.put.poznan.pl),
+[CAIDA](https://www.caida.org/catalog/datasets/as-relationships/) and [RIPE RIS](https://ris.ripe.net) or from
+five generators, and compares BGP, OBGP and OBGP without pruning in runs paired by seed, also over sweeps of a
+parameter.
 
-GoBGP is licensed under the Apache License, Version 2.0. See
-[LICENSE](https://github.com/osrg/gobgp/blob/master/LICENSE) for the full
-license text.
+| Question | Experiment |
+|---|---|
+| Does OBGP converge where BGP oscillates? | [`behaviour-oscillation`](experiments/behaviour-oscillation.yaml) |
+| Does it admit fewer paths and drain faster? | [`ifip-networking-2026`](experiments/ifip-networking-2026.yaml) |
+| Do Gao-Rexford policies hold, also in partial deployment? | [`semantics-gao-rexford`](experiments/semantics-gao-rexford.yaml) |
+| Where do the guarantees end? | [`semantics-adversarial`](experiments/semantics-adversarial.yaml) |
+| Does it stay stable under failures? | [`behaviour-failures`](experiments/behaviour-failures.yaml) |
+| Does it scale to 256 networks of the Internet's core? | [`internet-scale`](experiments/internet-scale.yaml) |
+| Does it scale to full Internet tables? | [`internet-dfz`](experiments/internet-dfz.yaml) |
+| Does the lab measure right? | [`lab-calibration`](experiments/lab-calibration.yaml), [`lab-sampling-1hz`](experiments/lab-sampling-1hz.yaml), [`-10hz`](experiments/lab-sampling-10hz.yaml) |
+
+### Running it
+
+| Host | Needs |
+|---|---|
+| Laptop | Docker, 4 CPUs, 6 GB |
+| Own server | Ubuntu or Debian, root |
+| Shared server | Docker, and once from an admin `scripts/allow-user.sh` |
+
+The full evaluation needs 128 CPUs and 512 GB. Smaller hosts skip what does not fit.
+
+**Set up.** First, on every host:
+
+```bash
+git clone https://github.com/Stinktopf/gobgp.git && cd gobgp
+```
+
+Laptop, interface on <http://localhost:8443>:
+
+```bash
+scripts/setup-user.sh --install
+```
+
+Own server, `https://<ip>:8443` with a self-signed certificate and an initial password:
+
+```bash
+sudo scripts/setup-host.sh
+```
+
+Shared server, an admin allows the user once, then the user sets up without sudo:
+
+```bash
+sudo scripts/allow-user.sh <user>
+LAB_CPUS=128 LAB_MEMORY_GB=512 scripts/setup-user.sh --install
+```
+
+The interface is at `https://<host>:8443`, or through `ssh -L 8443:localhost:8443 <host>`. If 8443 is taken,
+it takes the next free port and says which.
+
+Once it runs, the settings update the lab from GitHub.
+
+**Tear down.** Both keep the results, `--purge` deletes them too. Laptop and shared server:
+
+```bash
+scripts/teardown-user.sh
+```
+
+Own server:
+
+```bash
+sudo scripts/teardown-host.sh
+```
+
+On a shared server, the admin may then take the permission back:
+
+```bash
+sudo scripts/allow-user.sh <user> --undo
+```
+
+## Changes since the paper
+
+BGP messages are unchanged.
+
+- Rejected paths are re-admitted when no valid path is left.
+- Pruning skips attribute-only updates and lost sessions, and can be turned off.
+- The FIB gets the local best path instead of the export path.
+- OBGP applies to IPv4 and IPv6 unicast only.
+- Two GoBGP fixes: soft reset out withdraws newly rejected routes, the API marks the best path again.
+
+## Limitations
+
+- **Model:** one export path per destination for all neighbors, export eligibility by Gao-Rexford class
+  only. A neighbor whose class may not get that path gets none. Filters per neighbor are outside the
+  model, and with pruning they can remove paths still valid via another peer.
+- **Behaviour:** admission depends on the order paths arrive in. Local Preference chooses only among
+  admitted paths.
+- **Not supported:** `AS_SET`, confederations, Add-Path export, route server mode. iBGP is not evaluated.
+- **Tests:** four GoBGP server tests fail by design with OBGP, since they count candidate paths.
+- **Measurements:** all routers share one host, and busy routers sample less often. Results warn
+  where that matters and name topologies too large for the host. Claims at 5 % need six paired runs.
+  CAIDA infers who is customer, provider or peer from BGP paths, and some relations it gets wrong.
+
+## Citation
+
+```bibtex
+@inproceedings{nickel2026obgp,
+  author    = {Nickel, Lucas Immanuel and Rieger, Sebastian and Moghaddassian, Morteza and Garcia-Luna-Aceves, J. J.},
+  title     = {Making {BGP-4} More Efficient and Oscillation-Free},
+  booktitle = {2026 IFIP Networking Conference (IFIP Networking)},
+  year      = {2026},
+  pages     = {1--9},
+  doi       = {10.23919/IFIPNetworking70592.2026.11578986}
+}
+```
+
+## Acknowledgments
+
+This work was supported by a fellowship of the German Academic Exchange Service (DAAD) and by
+the Canada Excellence Research Chair in Intelligent Digital Infrastructures at the University
+of Toronto, funded by the Tri-agency Institutional Programs Secretariat.
+
+## License
+
+[Apache License 2.0](LICENSE), like GoBGP. Logos and icons are in [`assets/`](assets).

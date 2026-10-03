@@ -1,0 +1,14 @@
+name: link-flap
+description: A random link flaps five times.
+steps:
+  - announce: {rate: 1, for: 30}
+  - wait: 10
+  - repeat:
+      times: 5
+      every: 10
+      steps:
+        - down: {link: random}
+        - wait: 5
+        - up: {}
+  - until_stable: {timeout: 60}
+  - wait: 30

@@ -1,0 +1,10 @@
+name: regional-outage
+description: Routers within 300 km of frankfurt fail and return.
+steps:
+  - announce: {rate: 1, for: 30}
+  - wait: 10
+  - down: {region: {around: frankfurt, radius_km: 300}}
+  - until_stable: {timeout: 60}
+  - up: {}
+  - until_stable: {timeout: 60}
+  - wait: 30

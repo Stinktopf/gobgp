@@ -1,0 +1,268 @@
+{% extends "base.html" %}
+{% from "macros.html" import save_state, icon, icon_button, copy_button, page_header, delete_button, save_dialog, search, problem %}
+{% block title %}{{ values.name or "New experiment" }} · Experiments · OBGP Lab{% endblock %}
+{# Decimals as text: a number field shows them in the browser's language, 0,1 in German. #}
+{% macro number(name, label, step=1, min=1) -%}
+<label class="block"><span class="label">{{ label }}</span>
+  {% if step == "any" %}<input inputmode="decimal" pattern="[0-9]*[.,]?[0-9]+" name="{{ name }}" value="{{ values[name] }}" class="input mt-1 py-1.5 tabular-nums">
+  {% else %}<input type="number" name="{{ name }}" value="{{ values[name] }}" step="{{ step }}" min="{{ min }}" class="input mt-1 py-1.5 tabular-nums">{% endif %}</label>
+{%- endmacro %}
+{% block head %}<script src="{{ static('cytoscape.min.js') }}" defer></script>
+<script src="{{ static('graph.js') }}" defer></script>{% endblock %}
+{% block content %}
+<form id="builder" novalidate onsubmit="event.preventDefault()"
+      hx-post="/experiments/estimate" hx-trigger="load, change, input delay:400ms" hx-target="#estimate" hx-swap="innerHTML">
+  {% call page_header("/experiments", "Experiments") %}
+    <input id="name" name="name" value="{{ values.name }}" placeholder="untitled" aria-label="Name" class="input-title" spellcheck="false">
+    {{ save_state() }}
+    <div class="ml-auto flex flex-wrap items-center justify-end gap-2">
+      {% if not new %}{{ copy_button("/experiments/new?like=" ~ values.original) }}{{ delete_button("/experiments/" ~ values.original ~ "/delete", values.original) }}{% endif %}
+      <button type="button" id="save" class="btn" data-tip="Save · Ctrl+S">Save</button>
+      <button type="button" id="start" class="btn btn-primary">{{ icon("play") }}Save and start</button>
+    </div>
+  {% endcall %}
+  <div class="flex flex-wrap items-baseline gap-x-4">
+    <input name="description" value="{{ values.description }}" placeholder="Add a description" aria-label="Description" class="input-note min-w-0 flex-1">
+    <span id="estimate" class="muted -mt-3 mb-6 ml-auto text-sm whitespace-nowrap tabular-nums"></span>
+  </div>
+  {% if made %}<p class="muted -mt-4 mb-6 text-sm">{{ made | length }} result{{ "s" if made | length != 1 }} ·
+    latest <a href="/results/{{ made[0].name }}" class="font-mono hover:underline">{{ made[0].name }}</a></p>{% endif %}
+  {{ problem(values.error) }}
+  <ul id="host-notes" class="hidden"></ul>
+
+  <div class="grid gap-4 lg:grid-cols-2">
+    <section class="card flex flex-col overflow-hidden">
+      <div class="flex items-center gap-3 border-b border-slate-100 px-5 py-2 dark:border-white/5">
+        <h2 class="section-title mr-auto">Topologies</h2>
+        {{ search("#pick-topologies", class="w-40") }}
+        <span class="muted w-14 text-right text-xs" data-count="topologies"></span>
+      </div>
+      <div id="pick-topologies" class="max-h-80 flex-1 divide-y divide-slate-100 overflow-y-auto dark:divide-white/5">
+        {% for t in topologies %}
+        <label data-search="{{ t.name }}" class="flex cursor-pointer items-center gap-3 px-5 py-2 hover:bg-slate-50 has-checked:bg-uoft-50/60 dark:hover:bg-slate-800/40 dark:has-checked:bg-uoft-900/40">
+          <input type="checkbox" name="topologies" value="{{ t.name }}" {% if t.name in values.topologies %}checked{% endif %}>
+          <svg class="thumb h-10 w-16 shrink-0 rounded bg-slate-50 dark:bg-slate-950/60" data-topology="{{ t.name }}" aria-hidden="true"></svg>
+          <span class="flex-1 font-mono text-sm">{{ t.name }}</span>
+          <span class="muted text-xs tabular-nums">{{ t.routers }} routers · {{ t.links }} links</span>
+        </label>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="card flex flex-col overflow-hidden">
+      <div class="flex items-center gap-3 border-b border-slate-100 px-5 py-2 dark:border-white/5">
+        <h2 class="section-title mr-auto">Scenarios</h2>
+        {{ search("#pick-scenarios", class="w-40") }}
+        <span class="muted w-14 text-right text-xs" data-count="scenarios"></span>
+      </div>
+      <div id="pick-scenarios" class="max-h-80 flex-1 divide-y divide-slate-100 overflow-y-auto dark:divide-white/5">
+        {% for s in scenarios %}
+        <label class="flex cursor-pointer items-center gap-3 px-5 py-2 hover:bg-slate-50 has-checked:bg-uoft-50/60 dark:hover:bg-slate-800/40 dark:has-checked:bg-uoft-900/40" data-search="{{ s.name }} {{ s.description }}">
+          <input type="checkbox" name="scenarios" value="{{ s.name }}" {% if s.name in values.scenarios %}checked{% endif %}>
+          <span class="min-w-0 flex-1">
+            <span class="item-name font-normal">{{ s.name }}</span>
+            {% if s.description %}<span class="item-note">{{ s.description }}</span>{% endif %}
+          </span>
+          <span class="hidden items-center gap-1 text-slate-400 sm:flex">{% for k in s.kinds %}{{ icon(k, "size-3.5") }}{% endfor %}</span>
+          <span class="muted w-20 text-right text-xs whitespace-nowrap tabular-nums">{{ s.duration_s | duration }}</span>
+        </label>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="card overflow-hidden lg:col-span-2">
+      <div class="border-b border-slate-100 px-5 py-3 dark:border-white/5"><h2 class="section-title">Variants</h2></div>
+      <table class="variants w-full text-sm">
+        <thead><tr class="label text-left">
+          <th class="px-5 pt-3 pb-1 font-medium">Name</th><th class="px-2 pt-3 pb-1 font-medium">Git ref</th><th class="px-2 pt-3 pb-1 font-medium">Mode</th>
+          <th class="px-2 pt-3 pb-1 font-medium"><span data-tip="Random modes: the share of the routers that run OBGP, drawn for every run">Share</span></th><th></th>
+        </tr></thead>
+        <tbody id="variants">
+          {% for v in values.variants %}
+          <tr class="variant">
+            <td class="py-1.5 pr-2 pl-5"><input name="v{{ loop.index0 }}_name" value="{{ v.name }}" class="input py-1.5 font-mono" placeholder="name" aria-label="Name"></td>
+            <td class="px-2 py-1.5"><input name="v{{ loop.index0 }}_ref" value="{{ v.ref }}" list="refs" class="input py-1.5 font-mono" placeholder="HEAD" aria-label="Git ref"></td>
+            <td class="px-2 py-1.5">
+              <select name="v{{ loop.index0 }}_mode" class="input py-1.5" aria-label="Mode" data-mode>
+                {% for m in modes %}<option value="{{ m.name }}" data-tip="{{ m.description }}" data-random="{{ 'yes' if m.pick == 'random' else '' }}" {% if v.mode == m.name %}selected{% endif %}>{{ m.label }}</option>{% endfor %}
+              </select>
+            </td>
+            <td class="w-24 px-2 py-1.5"><label class="flex items-center gap-1"><input name="v{{ loop.index0 }}_share" type="number" min="1" max="100" step="1" value="{{ (v.share * 100) | round | int if v.share else 50 }}" class="input py-1.5 text-right tabular-nums" aria-label="Share" data-share><span class="muted text-xs">%</span></label></td>
+            <td class="w-0 py-1.5 pr-5 pl-2">{{ icon_button("close", "Remove", attrs="onclick=\"removeVariant(this)\"", class="border-transparent shadow-none text-slate-400") }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <ul id="variant-notes" class="muted space-y-0.5 px-5 pb-3 text-xs"></ul>
+      <div class="px-5 pt-2 pb-4"><button type="button" id="add-variant" class="btn">{{ icon("add") }}Variant</button></div>
+      <datalist id="refs">{% for r in refs %}<option value="{{ r }}">{% endfor %}</datalist>
+    </section>
+
+    {# One parameter of one scenario at a time, the others as the scenario gives them. #}
+    {% macro sweep_row(i, w) -%}
+    <tr class="sweep">
+      <td class="py-1.5 pr-2 pl-5"><select name="s{{ i }}_scenario" class="input py-1.5 font-mono" aria-label="Scenario" data-value="{{ w.scenario }}"></select></td>
+      <td class="px-2 py-1.5"><select name="s{{ i }}_param" class="input py-1.5 font-mono" aria-label="Parameter" data-value="{{ w.param }}"></select></td>
+      <td class="px-2 py-1.5"><input name="s{{ i }}_values" value="{{ w["values"] }}" class="input py-1.5 font-mono" placeholder="1, 2, 5, 10" aria-label="Values"></td>
+      <td class="w-0 py-1.5 pr-5 pl-2">{{ icon_button("close", "Remove", attrs="onclick=\"this.closest('.sweep').remove(); htmx.trigger('#builder', 'change')\"", class="border-transparent shadow-none text-slate-400") }}</td>
+    </tr>
+    {%- endmacro %}
+    <section class="card overflow-hidden lg:col-span-2" data-sweeps='{{ params | tojson }}'>
+      <div class="border-b border-slate-100 px-5 py-3 dark:border-white/5"><h2 class="section-title" data-tip="Each sweep runs its scenario once for every value, one parameter at a time, paired by seed. The Charts tab shows the metrics over the values">Sweeps</h2></div>
+      <table class="w-full text-sm" data-sweep-table {% if not values.sweeps %}hidden{% endif %}>
+        <thead><tr class="label text-left">
+          <th class="px-5 pt-3 pb-1 font-medium">Scenario</th>
+          <th class="px-2 pt-3 pb-1 font-medium"><span data-tip="Numbers the scenario offers for sweeps, marked in the scenario editor">Parameter</span></th>
+          <th class="px-2 pt-3 pb-1 font-medium"><span data-tip="Separated by commas, e.g. 1, 2, 5, 10. The scenario runs once for each">Values</span></th><th></th>
+        </tr></thead>
+        <tbody id="sweeps">{% for w in values.sweeps %}{{ sweep_row(loop.index0, w) }}{% endfor %}</tbody>
+      </table>
+      <template id="sweep-row">{{ sweep_row("__i__", {"scenario": "", "param": "", "values": ""}) }}</template>
+      <p class="muted px-5 pt-3 text-xs" data-sweep-none>None of the chosen scenarios offers a number for sweeps. Mark one in the scenario editor.</p>
+      <div class="px-5 pt-2 pb-4"><button type="button" id="add-sweep" class="btn">{{ icon("add") }}Sweep</button></div>
+    </section>
+
+    <section class="card grid gap-x-8 gap-y-6 p-5 sm:grid-cols-2 lg:col-span-2 lg:grid-cols-4">
+      <div class="space-y-3">
+        <h2 class="section-title">Runs</h2>
+        {{ number("runs", "Per combination") }}
+        {{ number("seed", "Seed", min=0) }}
+      </div>
+      <div class="space-y-3">
+        <h2 class="section-title">BGP</h2>
+        {{ number("hold_time", "Hold time, s", min=3) }}
+        {{ number("keepalive", "Keepalive, s") }}
+        {{ number("connect_retry", "Connect retry, s") }}
+        <label class="flex items-center gap-2 text-sm" data-tip="Peers keep the routes of a router that restarts gracefully">
+          <input type="checkbox" name="graceful_restart" value="on" class="accent-uoft-700" {% if values.graceful_restart %}checked{% endif %}>Graceful restart</label>
+      </div>
+      <div class="space-y-3">
+        <h2 class="section-title">Sampling</h2>
+        <label class="block"><span class="label">Rate</span>
+          <select name="interval" class="input mt-1 py-1.5" aria-label="Rate">
+            {% for i in intervals %}<option value="{{ i }}" {% if values.interval | float == i %}selected{% endif %}>{{ (1 / i) | round(0) | int }} Hz</option>{% endfor %}
+          </select></label>
+        {{ number("stable_s", "Stable after, s", step="any", min=0.1) }}
+      </div>
+      <div class="space-y-3">
+        <h2 class="section-title">Cluster</h2>
+        {{ number("cpus", "CPUs") }}
+        {{ number("memory_mb", "Memory, MB", min=1024) }}
+      </div>
+    </section>
+  </div>
+
+</form>
+{{ save_dialog() }}
+
+<script type="application/json" id="thumbs">{{ thumbs | tojson }}</script>
+<script>
+  // How many are chosen
+  const count = () => ["topologies", "scenarios"].forEach((name) => {
+    const boxes = document.querySelectorAll(`input[name=${name}]`);
+    document.querySelector(`[data-count=${name}]`).textContent = `${[...boxes].filter((b) => b.checked).length} of ${boxes.length}`;
+  });
+  document.addEventListener("change", count);
+  addEventListener("DOMContentLoaded", count);
+  // The share applies to random modes only.
+  const shares = () => document.querySelectorAll(".variant").forEach((row) => {
+    const random = row.querySelector("[data-mode]").selectedOptions[0]?.dataset.random === "yes";
+    row.querySelector("[data-share]").disabled = !random;
+    row.querySelector("[data-share]").closest("label").classList.toggle("opacity-40", !random);
+  });
+  document.addEventListener("change", (e) => { if (e.target.matches("[data-mode]")) shares(); });
+  shares();  // before the editor keeps its first state: a field switched off is not sent
+  function removeVariant(button) {
+    if (document.querySelectorAll(".variant").length > 1) { button.closest(".variant").remove(); htmx.trigger("#builder", "change"); }
+  }
+  document.getElementById("add-variant").onclick = () => {
+    const rows = document.getElementById("variants");
+    const last = rows.querySelector(".variant:last-child");
+    const i = Math.max(-1, ...[...rows.querySelectorAll("input[name$=_name]")].map((e) => +e.name.slice(1).split("_")[0])) + 1;
+    const row = last.cloneNode(true);
+    row.querySelectorAll("input, select").forEach((input) => {
+      // The clone is enhanced as a new field, with the suggestions of the refs.
+      if (input.name.endsWith("_ref")) { input.setAttribute("list", "refs"); delete input.dataset.custom; }
+      input.name = input.name.replace(/^v\d+_/, `v${i}_`);
+      if (input.tagName === "SELECT") input.selectedIndex = 0;
+      else input.value = input.name.endsWith("_ref") ? "HEAD" : input.name.endsWith("_share") ? 50 : "";
+    });
+    rows.append(row);
+    shares();
+    row.querySelector("input").focus();
+    htmx.trigger("#builder", "change");
+  };
+  // Sweeps: a row each, its scenario among the chosen ones that offer
+  // parameters, its parameter among those the scenario offers.
+  (() => {
+    const box = document.querySelector("[data-sweeps]"), offered = JSON.parse(box.dataset.sweeps);
+    const rows = document.getElementById("sweeps"), table = box.querySelector("[data-sweep-table]");
+    const chosen = () => [...document.querySelectorAll("input[name=scenarios]:checked")].map((b) => b.value).filter((s) => offered[s]);
+    const fill = (select, items, keep) => {
+      select.replaceChildren(...items.map(([value, label]) => new Option(label, value, false, value === keep)));
+      select.dataset.value = "";
+    };
+    function sync() {
+      const scenarios = chosen();
+      rows.querySelectorAll(".sweep").forEach((row) => {
+        const scenario = row.querySelector("[name$=_scenario]"), param = row.querySelector("[name$=_param]");
+        fill(scenario, scenarios.map((s) => [s, s]), scenario.value || scenario.dataset.value);
+        const params = offered[scenario.value] || {};
+        fill(param, Object.keys(params).map((p) => [p, p]), param.value || param.dataset.value);
+        // The value the scenario gives the parameter, as a hint in the values.
+        const values = row.querySelector("[name$=_values]");
+        values.placeholder = param.value in params ? `default ${params[param.value]}` : "1, 2, 5, 10";
+      });
+      table.hidden = !rows.children.length;
+      box.querySelector("[data-sweep-none]").hidden = scenarios.length > 0;
+      document.getElementById("add-sweep").hidden = !scenarios.length;
+    }
+    document.getElementById("add-sweep").onclick = () => {
+      const i = Math.max(-1, ...[...rows.querySelectorAll("[name$=_scenario]")].map((e) => +e.name.slice(1).split("_")[0])) + 1;
+      rows.insertAdjacentHTML("beforeend", document.getElementById("sweep-row").innerHTML.replaceAll("__i__", i));
+      sync();
+      htmx.trigger("#builder", "change");
+    };
+    document.addEventListener("change", (e) => { if (e.target.name === "scenarios" || e.target.closest?.(".sweep")) sync(); });
+    window.syncSweeps = sync;
+    sync();
+  })();
+  // Saving as in every editor; Save and start saves, queues a result and shows it.
+  const form = document.getElementById("builder");
+  const editor = UI.editor({
+    kind: "experiments", original: {{ values.original | tojson }}, state: () => new URLSearchParams(new FormData(form)).toString(),
+    body: () => new FormData(form),
+    saved: (data) => { if (data.result) { editor.leave(); location.href = `/results/${data.result}`; return true; } },
+    // A state of the undo: the rows of the variants and every field as they were.
+    restore: (text) => {
+      const values = new URLSearchParams(text);
+      // The rows of variants (v0_…) and sweeps (s0_…) as they were, then every field.
+      for (const [prefix, row, add, first] of [["v", ".variant", "add-variant", "input"], ["s", ".sweep", "add-sweep", "select"]]) {
+        const index = (name) => name.match(new RegExp(`^${prefix}(\\d+)_`))?.[1];
+        const wanted = new Set([...values.keys()].map(index).filter(Boolean));
+        const have = () => new Set([...document.querySelectorAll(`${row} ${first}`)].map((e) => index(e.name)));
+        for (const i of wanted) {
+          if (have().has(i)) continue;
+          document.getElementById(add).click();
+          document.querySelector(`${row}:last-child`).querySelectorAll("input, select").forEach((input) => (input.name = input.name.replace(new RegExp(`^${prefix}\\d+_`), `${prefix}${i}_`)));
+        }
+        document.querySelectorAll(row).forEach((r) => { if (!wanted.has(index(r.querySelector(first).name))) r.remove(); });
+      }
+      for (const input of form.elements) {
+        if (!input.name) continue;
+        const all = values.getAll(input.name);
+        if (input.closest(".sweep") && input.tagName === "SELECT") { input.replaceChildren(); input.dataset.value = all[0] || ""; continue; }  // its options follow
+        if (input.type === "checkbox" || input.type === "radio") input.checked = all.includes(input.value);
+        else if (all.length) input.value = all[0];
+        if (input.tagName === "SELECT") input.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      shares();
+      window.syncSweeps();
+      htmx.trigger(form, "change");
+    },
+  });
+  form.addEventListener("input", editor.mark);
+  form.addEventListener("change", editor.mark);
+  document.getElementById("start").onclick = () => editor.save({ action: "start" });
+</script>
+{% endblock %}

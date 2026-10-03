@@ -38,7 +38,7 @@ MODES = {
         Mode("obgp", "OBGP", "The original design, with superset pruning",
              {"GOBGP_OPERA_ENABLED": "true", "GOBGP_OPERA_PRUNING": "true"}, obgp=True),
         Mode("obgp-np", "OBGP without pruning", "OBGP without superset pruning, a derivative of the original design",
-             {"GOBGP_OPERA_ENABLED": "true", "GOBGP_OPERA_PRUNING": "false"}, since="cc5d129c", obgp=True),
+             {"GOBGP_OPERA_ENABLED": "true", "GOBGP_OPERA_PRUNING": "false"}, since="684dd3d5", obgp=True),
         Mode("hybrid", "Hybrid", "OBGP on the routers the topology marks, BGP on the others",
              obgp=True, inner="obgp", pick="topology"),
         Mode("hybrid-np", "Hybrid without pruning", "OBGP without pruning on the routers the topology marks, BGP on the others",

@@ -8,7 +8,8 @@ def test_only_results_of_the_current_lab_count(lab_files):
 
 def test_the_page_says_when_there_is_nothing(client):
     page = client.get("/wrapped").text
-    assert "Wrapped" in page and "Nothing to wrap yet" in page
+    assert "Your experiments, at a glance" in page
+    assert 'href="/experiments"' in page and "Explore experiments" in page
 
 
 def test_modes_stand_apart():

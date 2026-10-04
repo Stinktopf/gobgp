@@ -39,6 +39,7 @@ def test_new_commits_on_the_branch_are_seen_and_taken(repos):
     commit = update.update(root=lab, sync=False)
     assert (lab / "a.txt").read_text() == "2\n" and update.status(root=lab)["behind"] == 0
     assert commit == update.git("rev-parse", "--short", "HEAD", root=lab)
+    assert update.update(root=lab, sync=False, allow_current=True) == commit
     with pytest.raises(update.UpdateError, match="up to date"):
         update.update(root=lab, sync=False)
 
@@ -72,3 +73,11 @@ def test_the_settings_show_the_version_and_update_only_while_nothing_runs(client
     monkeypatch.setattr(web.jobs, "active", lambda: type("D", (), {"name": "t-running"})())
     r = client.post("/settings/update", follow_redirects=False)
     assert "t-running+runs" in r.headers["location"]
+
+
+def test_web_restart_retains_module_launch(monkeypatch):
+    calls = []
+    monkeypatch.setattr(update.sys, "argv", ["/checkout/lab/cli.py", "serve", "--http", "--port", "8450"])
+    monkeypatch.setattr(update.os, "execv", lambda executable, args: calls.append(args))
+    update.restart()
+    assert calls == [[update.sys.executable, "-m", "lab.cli", "serve", "--http", "--port", "8450"]]

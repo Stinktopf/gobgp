@@ -14,7 +14,6 @@ of CAIDA (publicdata.caida.org/datasets/as-organizations).
 
 import bz2
 import gzip
-import heapq
 import os
 import re
 import threading

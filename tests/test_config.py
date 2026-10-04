@@ -193,7 +193,7 @@ def test_the_settings_set_what_the_host_keeps_free_and_the_routers_per_thread(cl
     assert "Host+saved" in r.headers["location"]
     assert config.host_settings() == {"keep_cpus": 6, "keep_mb": 5120, "routers_per_cpu": 2}  # all threads count as no cap
     assert cluster.limits()["memory_mb"] == 16000 - 5120 and cluster.max_routers() == 8 * 2
-    for data, problem in (({"keep_cpus": "20"}, "Keep+fewer+threads"), ({"keep_cpus": "2"}, "at+least+4+threads"), ({"keep_gb": "2"}, "at+least+4+GB")):
+    for data, problem in (({"keep_cpus": "20"}, "Keep+fewer+threads"), ({"keep_cpus": "-1"}, "cannot+be+negative"), ({"keep_gb": "-1"}, "cannot+be+negative")):
         assert problem in client.post("/settings/host", data=data, follow_redirects=False).headers["location"]
     page = client.get("/settings").text
-    assert "Threads kept free" in page and "enough for 16 routers" in page
+    assert 'aria-label="CPU host reserve"' in page and "Up to 16 routers" in page

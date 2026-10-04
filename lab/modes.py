@@ -4,8 +4,8 @@ A pure mode is a set of environment variables of gobgpd that every router
 gets. A mixed mode runs a pure mode on some routers and BGP on the others,
 for partial deployment: hybrids on the routers the topology marks with
 obgp: true, random ones on a share of the routers, drawn anew for every
-run. A new mode of the daemon is one entry here. since is the first
-commit whose daemon knows a mode; an older one would ignore its variables
+run. A new mode of the daemon is one entry here. requires names capability
+variables a daemon must read; an older daemon would silently ignore them
 and run another mode.
 """
 
@@ -19,7 +19,7 @@ class Mode:
     label: str
     description: str
     env: dict[str, str] = field(default_factory=dict)
-    since: str | None = None
+    requires: tuple[str, ...] = ()
     obgp: bool = False
     # Mixed modes: the pure mode of the chosen routers, and how they are chosen.
     inner: str | None = None
@@ -38,7 +38,7 @@ MODES = {
         Mode("obgp", "OBGP", "The original design, with superset pruning",
              {"GOBGP_OPERA_ENABLED": "true", "GOBGP_OPERA_PRUNING": "true"}, obgp=True),
         Mode("obgp-np", "OBGP without pruning", "OBGP without superset pruning, a derivative of the original design",
-             {"GOBGP_OPERA_ENABLED": "true", "GOBGP_OPERA_PRUNING": "false"}, since="684dd3d5", obgp=True),
+             {"GOBGP_OPERA_ENABLED": "true", "GOBGP_OPERA_PRUNING": "false"}, requires=("GOBGP_OPERA_PRUNING",), obgp=True),
         Mode("hybrid", "Hybrid", "OBGP on the routers the topology marks, BGP on the others",
              obgp=True, inner="obgp", pick="topology"),
         Mode("hybrid-np", "Hybrid without pruning", "OBGP without pruning on the routers the topology marks, BGP on the others",

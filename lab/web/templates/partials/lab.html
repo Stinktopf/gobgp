@@ -1,3 +1,4 @@
+{% from "macros.html" import cluster_badge %}
 {% if active %}
 {% set s = active.status %}
 {% set live = s.live or [] %}
@@ -74,6 +75,7 @@
   <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
     <h2 class="font-medium">Host</h2>
     <span class="muted text-xs" data-tip="What the lab takes of the host{% if limits %}&#10;{{ limits.cpus }} threads, {{ limits.headroom }} kept free for Docker, Kubernetes and the system&#10;{{ (limits.memory_mb / 1024) | round(1) }} GB, {{ (limits.keep_mb / 1024) | round(1) }} GB kept free&#10;{{ limits.cpus * limits.per_cpu }} routers keep sampling, {{ limits.per_cpu }} per thread&#10;{{ limits.by_memory }} routers fit the memory&#10;Change it in the settings{% endif %}">{{ m.threads }} threads · {{ (m.total_mb / 1024) | round | int }} GB{% if limits %}, {{ (limits.memory_mb / 1024) | round | int }} GB for the lab{% endif %}{% if max_routers %} · up to {{ max_routers }} routers{% endif %}</span>
+    <span class="ml-auto" aria-label="Cluster status">{{ cluster_badge(cluster_state) }}</span>
     {% for g in m.gpus %}
     <span class="ml-auto text-xs" data-tip="{{ g.name }}&#10;{{ (g.memory_mb / 1024) | round(1) }} of {{ (g.total_mb / 1024) | round | int }} GB memory"><span class="muted">GPU</span> <span class="tabular-nums font-medium">{{ g.util | round | int }} %</span></span>
     {% endfor %}

@@ -10,5 +10,5 @@ if [ ! -x "$bin" ]; then
   curl -fsSL -o "$bin" "https://github.com/tailwindlabs/tailwindcss/releases/download/$version/tailwindcss-linux-x64"
   chmod +x "$bin"
 fi
-cd "$(dirname "$0")/../lab/web"
+cd "$(dirname "$0")/../../lab/web"
 "$bin" -i styles.css -o static/app.css --minify "$@"

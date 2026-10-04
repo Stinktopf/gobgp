@@ -1,34 +1,108 @@
 {% extends "base.html" %}
 {% block title %}Settings · OBGP Lab{% endblock %}
 {% block content %}
-<h1 class="mb-6 text-2xl font-semibold tracking-tight">Settings</h1>
-{% if saved %}<p class="mb-4 text-sm text-emerald-700 dark:text-emerald-400">{{ saved }}</p>{% endif %}
-{% if error %}<p class="error mb-4">{{ error }}</p>{% endif %}
+<div class="mx-auto {{ 'max-w-xl' if initial else 'max-w-2xl' }}">
+<h1 class="mb-5 text-2xl font-semibold tracking-tight">Settings</h1>
+{% if saved %}<p class="mb-4 text-sm text-emerald-700 dark:text-emerald-400" role="status">{{ saved }}</p>{% endif %}
+{% if error %}<p class="error mb-4" role="alert">{{ error }}</p>{% endif %}
 
-<div class="grid gap-4 lg:grid-cols-2">
+<div class="space-y-4">
   {% if not initial %}
-  <form method="post" action="/settings/notify" class="card space-y-4 p-5">
-    <div>
-      <h2 class="section-title">Notifications</h2>
-      <p class="muted mt-1 text-sm">A message in Discord when a result finishes, fails or is stopped.</p>
-    </div>
-    <label class="block"><span class="label">Discord webhook</span>
-      <input name="discord" type="password" autocomplete="off" spellcheck="false" class="input mt-1 font-mono"
-             placeholder="{{ webhook or 'https://discord.com/api/webhooks/…' }}"></label>
-    {% if webhook %}<p class="muted -mt-2 text-xs">Set. Leave empty to keep it.</p>{% endif %}
-    {# Save first, so that Enter saves. It is shown last. #}
-    <div class="flex flex-row-reverse gap-2">
-      <button name="action" value="save" class="btn btn-primary">Save</button>
-      <button name="action" value="test" class="btn">Send a test</button>
-      {% if webhook %}<button name="action" value="off" class="btn mr-auto">Turn off</button>{% endif %}
-    </div>
-  </form>
+    {% include "partials/cluster.html" %}
+    {% set hs, mh = host_settings, machine_host %}
+    <form method="post" action="/settings/host" class="card space-y-4 p-5">
+      <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 class="section-title">Resource budget</h2>
+        <span class="muted text-xs">Host: {{ mh.cpus }} threads, {{ (mh.memory_mb / 1024) | round(1) }} GB</span>
+      </div>
+      <table class="w-full table-fixed text-sm">
+        <thead>
+          <tr class="muted text-left text-xs">
+            <th class="w-1/3 pb-2 font-normal"></th>
+            <th scope="col" class="px-1 pb-2 font-normal">CPU threads</th>
+            <th scope="col" class="pl-1 pb-2 font-normal">RAM, GB</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row" class="py-1 pr-2 text-left font-normal" data-tip="Total allowance before subtracting the host reserve. Empty means the whole host">Budget</th>
+            <td class="p-1"><input name="cpus" aria-label="CPU budget" inputmode="numeric" value="{{ hs.cpus or '' }}" placeholder="all {{ mh.cpus }}" class="input min-w-0 tabular-nums"></td>
+            <td class="py-1 pl-1"><input name="memory_gb" aria-label="RAM budget in GB" inputmode="decimal" value="{{ ((hs.memory_mb / 1024) | round(1)) if hs.memory_mb else '' }}" placeholder="all {{ (mh.memory_mb / 1024) | round(1) }}" class="input min-w-0 tabular-nums"></td>
+          </tr>
+          <tr>
+            <th scope="row" class="py-1 pr-2 text-left font-normal" data-tip="Resources kept free for the host">Host reserve</th>
+            <td class="p-1"><input name="keep_cpus" aria-label="CPU host reserve" type="number" min="0" value="{{ hs.keep_cpus }}" class="input min-w-0 tabular-nums"></td>
+            <td class="py-1 pl-1"><input name="keep_gb" aria-label="RAM host reserve in GB" inputmode="decimal" pattern="[0-9]+([.,][0-9]+)?" value="{{ (hs.keep_mb / 1024) | round(1) }}" class="input min-w-0 tabular-nums"></td>
+          </tr>
+          <tr class="muted tabular-nums">
+            <th scope="row" class="pt-2 pr-2 text-left font-normal" data-tip="Saved budget after subtracting the host reserve">For cluster</th>
+            <td class="px-4 pt-2">{{ limits.cpus }}</td>
+            <td class="px-4 pt-2">{{ (limits.memory_mb / 1024) | round(1) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="flex flex-wrap items-center justify-between gap-2 text-sm">
+        <label class="flex items-center gap-3"><span data-tip="More routers per thread can make sampling less precise">Routers per thread</span>
+          <input name="routers_per_cpu" inputmode="numeric" value="{{ hs.routers_per_cpu }}" class="input w-16 tabular-nums"></label>
+        <span class="muted text-xs">Up to {{ max_routers }} routers</span>
+      </div>
+      <div class="flex justify-end border-t border-slate-200/70 pt-4 dark:border-slate-800">
+        <div class="flex gap-2">
+          <button name="action" value="save" class="btn" {% if running %}disabled{% endif %}>Save for later</button>
+          <button name="action" value="apply" class="btn btn-primary" {% if running %}disabled{% endif %}>Save and apply</button>
+        </div>
+      </div>
+    </form>
 
   {% endif %}
-  {% if not initial %}
+
+
+    {% if not initial %}
+    <form method="post" action="/settings/notify" class="card space-y-3 p-5">
+      <h2 class="section-title">Notifications</h2>
+      <label class="block"><span class="label">Discord webhook</span>
+        <input name="discord" type="password" autocomplete="off" spellcheck="false" class="input mt-1 font-mono" placeholder="{{ webhook or 'https://discord.com/api/webhooks/…' }}"></label>
+      {% if webhook %}<p class="muted text-xs">Empty keeps the current webhook.</p>{% endif %}
+      <div class="flex flex-row-reverse gap-2">
+        <button name="action" value="save" class="btn btn-primary">Save</button>
+        <button name="action" value="test" class="btn">Send a test</button>
+        {% if webhook %}<button name="action" value="off" class="btn mr-auto">Turn off</button>{% endif %}
+      </div>
+    </form>
+    {% endif %}
+    <section class="card overflow-hidden {{ 'glow-live' if initial }}" aria-label="Password">
+      <form method="post" action="/settings/password" class="space-y-3 p-5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="section-title">Password</h2>
+        </div>
+        {% if initial %}<p class="muted text-sm">Replace the initial password with one of your own.</p>{% endif %}
+        <label class="block"><span class="label">Current password</span>
+          <input name="current" type="password" autocomplete="current-password" class="input mt-1"></label>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block"><span class="label">New password</span>
+            <input name="new" type="password" autocomplete="new-password" class="input mt-1"></label>
+          <label class="block"><span class="label">Repeat new password</span>
+            <input name="repeat" type="password" autocomplete="new-password" class="input mt-1"></label>
+        </div>
+        <div class="flex justify-end pt-1"><button class="btn btn-primary">Change password</button></div>
+      </form>
+    </section>
+    <section class="card space-y-3 p-5" aria-label="Display">
+      <h2 class="section-title">Display</h2>
+      <label class="flex cursor-pointer items-center justify-between gap-4 text-sm">
+        <span>Show intro each session</span>
+        <span class="relative inline-flex shrink-0">
+          <input type="checkbox" role="switch" class="peer sr-only" data-intro-setting>
+          <span class="h-6 w-11 rounded-full bg-slate-300 transition-colors peer-checked:bg-uoft-700 peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-uoft-500 dark:bg-slate-700 dark:peer-checked:bg-uoft-400" aria-hidden="true"></span>
+          <span class="pointer-events-none absolute left-1 top-1 size-4 rounded-full bg-white shadow-sm transition-transform peer-checked:translate-x-5" aria-hidden="true"></span>
+        </span>
+      </label>
+    </section>
+
+    {% if not initial %}
   {# The commit the lab runs, and new ones of its branch on GitHub. #}
   {% set v = version %}
-  <section id="version" class="card space-y-4 p-5">
+  <section id="version" class="card space-y-3 p-5">
     <div>
       <h2 class="section-title">Lab version</h2>
       <p class="muted mt-1 text-sm">{% if v.branch %}<span class="font-mono">{{ v.branch }}</span> at <span class="font-mono">{{ v.commit }}</span> of {{ v.date }}{% else %}<span class="font-mono">{{ v.commit }}</span>{% endif %}.
@@ -38,59 +112,21 @@
         {% else %}Not checked yet.{% endif %}</p>
     </div>
     {% if v.new %}<ul class="space-y-1 text-sm">{% for line in v.new %}{% set hash, _, title = line.partition(" ") %}<li class="flex gap-2"><span class="muted font-mono text-xs leading-5">{{ hash }}</span><span class="min-w-0 truncate" data-tip="{{ title }}">{{ title }}</span></li>{% endfor %}</ul>{% endif %}
-    {% if v.ahead or v.dirty %}<p class="text-sm text-amber-800 dark:text-amber-300">{% if v.dirty %}The lab has local changes, an update would stop.{% else %}The lab has {{ v.ahead }} commits GitHub does not have.{% endif %}</p>{% endif %}
+    {% if v.ahead or v.dirty %}<p class="text-sm text-amber-800 dark:text-amber-300">{% if v.dirty %}Local changes block updates.{% else %}{{ v.ahead }} unpublished commits.{% endif %}</p>{% endif %}
     <div class="flex flex-row-reverse gap-2">
       {% if v.behind %}
       <form method="post" action="/settings/update">
         {% if running %}<span data-tip="{{ running.name }} runs. Pause the queue or wait until it ends" data-tip-align="end"><button class="btn btn-primary" disabled>Update and restart</button></span>
-        {% else %}<button class="btn btn-primary" data-confirm="Update the lab?" data-confirm-text="It takes the {{ v.behind }} new commits and starts again. Results keep the commit they ran." aria-label="Update">Update and restart</button>{% endif %}
+        {% else %}<button class="btn btn-primary" data-confirm="Update the lab?" data-confirm-text="Install the {{ v.behind }} new commits and restart the web interface. Results are kept." aria-label="Update">Update and restart</button>{% endif %}
       </form>
       {% endif %}
       <form method="post" action="/settings/update/check"><button class="btn">Check now</button></form>
     </div>
   </section>
 
-  {% set hs, mh = host_settings, machine_host %}
-  <form method="post" action="/settings/host" class="card space-y-4 p-5">
-    <div>
-      <h2 class="section-title">Host</h2>
-      <p class="muted mt-1 text-sm text-pretty">The lab gets {{ limits.cpus }} of {{ mh.cpus }} threads and {{ (limits.memory_mb / 1024) | round | int }} of {{ (mh.memory_mb / 1024) | round | int }} GB, enough for {{ max_routers }} routers.</p>
-    </div>
-    <div class="grid gap-3 sm:grid-cols-2">
-      <label class="block"><span class="label" data-tip="On a shared host, what the lab may take at most. Empty: all of it">Threads for the lab</span>
-        <input name="cpus" inputmode="numeric" value="{{ hs.cpus or '' }}" placeholder="all {{ mh.cpus }}" class="input mt-1 tabular-nums"></label>
-      <label class="block"><span class="label" data-tip="On a shared host, what the lab may take at most. Empty: all of it">Memory for the lab, GB</span>
-        <input name="memory_gb" inputmode="decimal" value="{{ ((hs.memory_mb / 1024) | round(1)) if hs.memory_mb else '' }}" placeholder="all {{ (mh.memory_mb / 1024) | round | int }}" class="input mt-1 tabular-nums"></label>
-      <label class="block"><span class="label" data-tip="Threads left to Docker, Kubernetes and the system, so that they keep up while routers run. At least 4">Threads kept free</span>
-        <input name="keep_cpus" type="number" min="4" value="{{ hs.keep_cpus }}" class="input mt-1 tabular-nums"></label>
-      <label class="block"><span class="label" data-tip="Memory left to Docker, Kubernetes and the system, so that the host does not run out. At least 4 GB">Memory kept free, GB</span>
-        <input name="keep_gb" inputmode="decimal" pattern="([4-9]|[1-9][0-9]+)([.,][0-9]+)?" value="{{ (hs.keep_mb / 1024) | round(1) }}" class="input mt-1 tabular-nums"></label>
-      <label class="block"><span class="label" data-tip="Routers one thread keeps sampling. With more, routers sample too seldom and times get inexact">Routers per thread</span>
-        <input name="routers_per_cpu" inputmode="numeric" value="{{ hs.routers_per_cpu }}" class="input mt-1 tabular-nums"></label>
-    </div>
-    <div class="flex justify-end"><button class="btn btn-primary">Save</button></div>
-  </form>
-  {% endif %}
-
-  <form method="post" action="/settings/password" class="card space-y-4 p-5 {{ 'glow-live' if initial }}">
-    <h2 class="section-title">Password</h2>
-    {% if initial %}<p class="muted -mt-2 text-sm">Replace the initial password with one of your own.</p>{% endif %}
-    <label class="block"><span class="label">Current</span>
-      <input name="current" type="password" autocomplete="current-password" class="input mt-1"></label>
-    <div class="grid gap-3 sm:grid-cols-2">
-      <label class="block"><span class="label">New</span>
-        <input name="new" type="password" autocomplete="new-password" class="input mt-1"></label>
-      <label class="block"><span class="label">Again</span>
-        <input name="repeat" type="password" autocomplete="new-password" class="input mt-1"></label>
-    </div>
-    <div class="flex justify-end"><button class="btn btn-primary">Change</button></div>
-  </form>
-
-  {# Per browser, a matter of taste: kept by the browser, not the lab. #}
-  <section class="card space-y-3 p-5">
-    <h2 class="section-title">Display</h2>
-    <label class="flex items-center gap-2 text-sm"><input type="checkbox" class="accent-uoft-700 dark:accent-uoft-400" data-intro-setting>Intro on the first page of a session</label>
-  </section>
+    {% endif %}
+</div>
+</div>
   <script>
     (() => {
       const box = document.querySelector("[data-intro-setting]");
@@ -98,6 +134,4 @@
       box.onchange = () => { try { box.checked ? localStorage.removeItem("intro") : localStorage.setItem("intro", "off"); } catch {} };
     })();
   </script>
-
-</div>
 {% endblock %}

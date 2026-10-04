@@ -1,0 +1,40 @@
+{% from "macros.html" import cluster_badge %}
+{% set cs = cluster_state %}
+{% set asleep = cs.status == "Stopped" and not cs.manual_off %}
+<section id="cluster" class="card overflow-hidden" hx-get="/partials/cluster" hx-trigger="every 5s" hx-swap="outerHTML" aria-label="Cluster controls">
+  <div class="flex flex-wrap items-center justify-between gap-4 p-5">
+    <div class="min-w-0 space-y-2">
+      <div class="flex flex-wrap items-center gap-3">
+        <h2 class="section-title">Experiment cluster</h2>
+        {{ cluster_badge(cs) }}
+      </div>
+      <div class="muted flex flex-wrap items-center gap-x-4 gap-y-1 text-sm tabular-nums">
+        {% if cs.cpus is not none %}<span class="inline-flex flex-wrap items-center gap-x-3"><span>{{ cs.cpus }} CPU threads</span><span class="border-l border-slate-300 pl-3 dark:border-slate-700">{{ (cs.memory_mb / 1024) | round(1) }} GB RAM</span></span>{% endif %}
+        {% if cs.idle_seconds is not none %}<span class="border-l border-slate-300 pl-3 dark:border-slate-700">Idle for {{ cs.idle_seconds | duration }}</span>{% if cs.stop_in_seconds is not none %}<span class="border-l border-slate-300 pl-3 dark:border-slate-700">Auto-stop in {{ cs.stop_in_seconds | duration }}</span>{% endif %}{% endif %}
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      {% if cs.status != "Running" or cs.manual_off %}
+      <form method="post" action="/settings/cluster"><button name="action" value="start" class="btn btn-primary" {% if cs.busy or running %}disabled{% endif %}>Start</button></form>
+      {% endif %}
+      {% if cs.status == "Running" %}
+      <form method="post" action="/settings/cluster"><button name="action" value="idle" class="btn" data-tip="Release CPU and RAM now. New queued jobs wake the cluster. Available when no experiments are running or queued." {% if cs.busy or running or queue %}disabled{% endif %}>Idle</button></form>
+      <form method="post" action="/settings/cluster"><button name="action" value="stop" class="btn" data-tip="Switch off until you explicitly start the cluster again." {% if cs.busy or running %}disabled{% endif %}>Stop</button></form>
+      {% endif %}
+    </div>
+  </div>
+  {% if cs.error %}<p class="error px-5 pb-4" role="alert">{{ cs.error }}</p>{% endif %}
+  {% if cs.busy %}<p class="muted px-5 pb-4 text-sm">This may take a few minutes. The web interface stays online.</p>
+  {% elif running %}<p class="muted px-5 pb-4 text-sm">Pause the active experiment before changing the cluster.</p>
+  {% elif cs.manual_off %}<p class="muted px-5 pb-4 text-sm">Auto-start disabled.</p>
+  {% elif asleep %}<p class="muted px-5 pb-4 text-sm">New jobs wake the cluster.</p>{% endif %}
+  <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/70 bg-slate-50/60 px-5 py-3 dark:border-slate-800 dark:bg-slate-950/30">
+    <form method="post" action="/settings/cluster/idle" class="flex flex-wrap items-center gap-2" hx-preserve id="cluster-idle-form">
+      <label for="cluster-idle-minutes" class="text-sm" data-tip="Stops when no experiments are running or queued. New jobs wake the cluster automatically. Use 0 to disable">Auto-stop after</label>
+      <input id="cluster-idle-minutes" name="minutes" type="number" min="0" max="10080" required value="{{ cs.idle_minutes }}" class="input w-20 tabular-nums">
+      <span class="muted text-sm">min</span>
+      <button class="btn">Save</button>
+    </form>
+    <span class="muted text-xs">0 = off</span>
+  </div>
+</section>

@@ -42,6 +42,7 @@ from ..config import ROOT, Experiment, Variant
 from ..modes import MODES
 from ..results import Dataset, RunKey, folder_size, storage
 from . import auth
+from .cluster_control import ClusterControl, save_idle
 from .jobs import Jobs
 
 HERE = Path(__file__).parent
@@ -74,7 +75,10 @@ jobs = Jobs()
 
 
 def create_app() -> FastAPI:
+    cluster_control = ClusterControl(jobs)
+    jobs.cluster_control = cluster_control
     app = FastAPI(title="OBGP Lab", docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.cluster_control = cluster_control
     app.add_middleware(GZipMiddleware)
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     app.mount("/assets", StaticFiles(directory=ROOT / "assets"), name="assets")  # one copy of logos and icons
@@ -143,7 +147,30 @@ def create_app() -> FastAPI:
         return render(request, "settings.html", nav="settings", webhook=notify.masked(notify.load().get("discord")),
                       initial=auth.must_change(auth.load()), saved=saved, error=error,
                       host_settings=config.host_settings(), machine_host=cluster.host(), limits=cluster.limits(), max_routers=cluster.max_routers(),
-                      version=UPDATES or update.status(fetch=False), running=jobs.active())
+                      version=UPDATES or update.status(fetch=False), running=jobs.active(), cluster_state=cluster_control.snapshot())
+
+    @app.get("/partials/cluster", response_class=HTMLResponse)
+    def cluster_partial(request: Request):
+        return render(request, "partials/cluster.html", cluster_state=cluster_control.snapshot(), running=jobs.active())
+
+    @app.post("/settings/cluster")
+    def settings_cluster(action: str = Form()):
+        if action not in ("start", "stop", "idle", "apply"):
+            raise HTTPException(400, "Unknown cluster action")
+        try:
+            cluster_control.request("idle-stop" if action == "idle" else action)
+        except (cluster.Busy, ValueError, OSError) as e:
+            return RedirectResponse(f"/settings?{urlencode({'error': str(e)})}#cluster", 303)
+        return RedirectResponse("/settings#cluster", 303)
+
+    @app.post("/settings/cluster/idle")
+    def settings_cluster_idle(minutes: int = Form()):
+        try:
+            save_idle(minutes)
+            cluster_control.idle_since = time.monotonic()
+        except ValueError as e:
+            return RedirectResponse(f"/settings?{urlencode({'error': str(e)})}#cluster", 303)
+        return RedirectResponse(f"/settings?{urlencode({'saved': 'Idle timeout saved.'})}#cluster", 303)
 
     @app.post("/settings/update/check")
     def settings_update_check():
@@ -156,8 +183,9 @@ def create_app() -> FastAPI:
         if active := jobs.active():
             return RedirectResponse(f"/settings?{urlencode({'error': f'{active.name} runs. Pause the queue or wait until it ends, then update.'})}#version", 303)
         try:
-            commit = update.update()
-        except update.UpdateError as e:
+            with cluster.claim("__maintenance__"):
+                commit = update.update()
+        except (update.UpdateError, cluster.Busy) as e:
             return RedirectResponse(f"/settings?{urlencode({'error': str(e)})}#version", 303)
         threading.Timer(1.0, update.restart).start()  # after this answer is sent
         return RedirectResponse(f"/settings?{urlencode({'saved': f'Updated to {commit}. The lab starts again, reload in a few seconds.'})}#version", 303)
@@ -177,17 +205,24 @@ def create_app() -> FastAPI:
         keep_cpus, keep_mb = values.get("keep_cpus", config.HOST_DEFAULTS["keep_cpus"]), values.get("keep_mb", config.HOST_DEFAULTS["keep_mb"])
         problem = ("Threads for the lab: from 1 to the " + str(machine["cpus"]) + " of the host." if not 1 <= cpus <= machine["cpus"]
                    else f"Memory for the lab: at most the {machine['memory_mb'] / 1024:.0f} GB of the host." if not 1024 <= memory <= machine["memory_mb"]
-                   else "Keep at least 4 threads free for the host." if keep_cpus < config.HOST_KEEP_AT_LEAST["keep_cpus"]
-                   else "Keep at least 4 GB free for the host." if keep_mb < config.HOST_KEEP_AT_LEAST["keep_mb"]
-                   else "Keep fewer threads free than the lab may take." if keep_cpus >= cpus
-                   else "Keep less memory free than the lab may take." if keep_mb >= memory
+                   else "Host CPU headroom cannot be negative." if keep_cpus < config.HOST_KEEP_AT_LEAST["keep_cpus"]
+                   else "Host memory headroom cannot be negative." if keep_mb < config.HOST_KEEP_AT_LEAST["keep_mb"]
+                   else "Keep fewer threads free: leave at least 2 for minikube." if keep_cpus > cpus - 2
+                   else "Keep less memory free: leave at least 2 GB for minikube." if keep_mb > memory - 2048
                    else "Routers per thread: from 1 to 32." if not 1 <= values.get("routers_per_cpu", 4) <= 32 else None)
         if problem:
             return RedirectResponse(f"/settings?{urlencode({'error': problem})}", 303)
         # All of a resource counts as no cap: the lab follows the host if it grows.
         values = {k: v for k, v in values.items() if not (k == "cpus" and v == machine["cpus"]) and not (k == "memory_mb" and v == machine["memory_mb"])}
-        config.save_host(values)
-        return RedirectResponse(f"/settings?{urlencode({'saved': f'Host saved. The lab now runs up to {cluster.max_routers()} routers.'})}", 303)
+        action = str(form.get("action") or "save")
+        if action not in ("save", "apply"):
+            raise HTTPException(400, "Unknown settings action")
+        try:
+            cluster_control.request(action, values)
+        except (cluster.Busy, ValueError, OSError) as e:
+            return RedirectResponse(f"/settings?{urlencode({'error': str(e)})}#cluster", 303)
+        message = "Host saved. Applying the new allocation in the background." if action == "apply" else "Host saved. Apply changes to update the cluster allocation."
+        return RedirectResponse(f"/settings?{urlencode({'saved': message})}#cluster", 303)
 
     @app.post("/settings/notify")
     def settings_notify(request: Request, discord: str = Form(""), action: str = Form("save")):
@@ -234,13 +269,13 @@ def create_app() -> FastAPI:
 
     @app.get("/partials/lab", response_class=HTMLResponse)
     def lab_partial(request: Request):
-        return render(request, "partials/lab.html", max_routers=cluster.max_routers(), limits=cluster.limits())
+        return render(request, "partials/lab.html", cluster_state=cluster_control.snapshot(), max_routers=cluster.max_routers(), limits=cluster.limits())
 
     @app.get("/experiments", response_class=HTMLResponse)
     def experiments_page(request: Request, error: str = ""):
         listed = experiments()
         choices = {which: run_all(listed, which) for which in RUN_ALL}
-        return render(request, "experiments.html", nav="experiments", experiments=listed, error=error,
+        return render(request, "experiments.html", cluster_state=cluster_control.snapshot(), nav="experiments", experiments=listed, error=error,
                       run_all=[{"which": w, "label": RUN_ALL[w], "count": len(c), "s": sum(x["estimate_s"] or 0 for x in c)} for w, (c, _) in choices.items()],
                       all_left=choices["all"][1], left_counts=(sum(" / " not in n for n, _ in choices["all"][1]), sum(" / " in n for n, _ in choices["all"][1])), max_routers=cluster.max_routers(), limits=cluster.limits())
 
@@ -337,6 +372,8 @@ def create_app() -> FastAPI:
 
     @app.post("/queue/resume")
     def queue_resume(request: Request):
+        if cluster.manually_stopped():
+            return RedirectResponse(f"/settings?{urlencode({'error': 'The cluster is switched off. Start it before resuming jobs.'})}#cluster", 303)
         jobs.resume_queue()
         return RedirectResponse(back(request, "/results"), 303)
 
@@ -1402,7 +1439,7 @@ def metrics_of(dataset: Dataset) -> dict:
 
 
 def render(request: Request, template: str, **context) -> HTMLResponse:
-    return templates.TemplateResponse(request, template, {"host": platform.node(), "machine": hostload.now(), "update_ready": UPDATES.get("behind", 0) > 0,
+    return templates.TemplateResponse(request, template, {"host": platform.node(), "machine": hostload.now(), "cluster_off": cluster.manually_stopped(), "update_ready": UPDATES.get("behind", 0) > 0,
                                                           **overview(), **context})
 
 

@@ -66,7 +66,7 @@ def _remote(branch: str, root: Path) -> str:
         return "origin"  # no upstream set: the clone's origin
 
 
-def update(root: Path = ROOT, sync: bool = True) -> str:
+def update(root: Path = ROOT, sync: bool = True, allow_current: bool = False) -> str:
     """Takes the new commits of the branch and the dependencies they need;
     returns the commit the lab is at then. UpdateError says why not."""
     s = status(fetch=True, root=root)
@@ -76,7 +76,7 @@ def update(root: Path = ROOT, sync: bool = True) -> str:
         raise UpdateError(f"The lab has local changes, in {', '.join(line.split(maxsplit=1)[-1] for line in s['dirty'][:3])}. Commit or discard them on the server first.")
     if s["ahead"]:
         raise UpdateError(f"The lab has {s['ahead']} commits GitHub does not have. Push them, or reset the server to GitHub.")
-    if not s["behind"]:
+    if not s["behind"] and not allow_current:
         raise UpdateError("The lab is up to date.")
     git("merge", "--ff-only", f"{_remote(s['branch'], root)}/{s['branch']}", root=root)
     if sync and shutil.which("uv"):
@@ -89,4 +89,4 @@ def update(root: Path = ROOT, sync: bool = True) -> str:
 def restart() -> None:
     """Starts the web server again, as it was started, in this process: it
     reads the new code. Workers of results run on in their own sessions."""
-    os.execv(sys.executable, [sys.executable, *sys.argv])
+    os.execv(sys.executable, [sys.executable, "-m", "lab.cli", *sys.argv[1:]])

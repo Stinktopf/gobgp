@@ -26,6 +26,7 @@ class Jobs:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.worker: subprocess.Popen | None = None
+        self.cluster_control = None
 
     def queue(self) -> list[str]:
         return queued()  # a damaged file counts as empty
@@ -61,6 +62,8 @@ class Jobs:
             pause_file().parent.mkdir(parents=True, exist_ok=True)
             pause_file().touch()
             if running := cluster.holding():
+                if running[0] == "__maintenance__":
+                    return
                 if running[0] not in (queue := self.queue()):  # started on the command line
                     self._save([running[0]] + queue)
                 os.kill(running[1], signal.SIGTERM)  # the runner stops and writes "stopped"
@@ -117,6 +120,8 @@ class Jobs:
             try:
                 with self.lock:
                     self._step()
+                if self.cluster_control:
+                    self.cluster_control.idle()
             except Exception:  # the queue must go on; the next step may succeed
                 log.exception("supervising the queue")
             time.sleep(2)
@@ -125,6 +130,8 @@ class Jobs:
         if self.active() or cluster.holder():
             return
         self._ended()
+        if cluster.manually_stopped():
+            return
         if self.paused() and not self.queue():  # nothing left to hold back
             pause_file().unlink(missing_ok=True)
         if self.paused():

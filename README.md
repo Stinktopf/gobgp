@@ -56,10 +56,19 @@ configuration and CLI are [GoBGP's](docs/sources/getting-started.md).
   </picture>
 </p>
 
-Emulates topologies on minikube, one pod per router, drawn in its editor, from [SNDlib](https://sndlib.put.poznan.pl),
-[CAIDA](https://www.caida.org/catalog/datasets/as-relationships/) and [RIPE RIS](https://ris.ripe.net) or from
-five generators, and compares BGP, OBGP and OBGP without pruning in runs paired by seed, also over sweeps of a
-parameter.
+Build a network in the editor, import one from [SNDlib](https://sndlib.put.poznan.pl) or
+[CAIDA](https://www.caida.org/catalog/datasets/as-relationships/), or generate one with
+Erdős–Rényi, Watts–Strogatz, Barabási–Albert, Waxman or Elmokashfi. The lab runs BGP and
+OBGP on it in minikube, with one pod per router. To work with real Internet routing data, it can load
+full IPv4 routing tables from the Default-Free Zone (DFZ) and replay prefix announcements
+and withdrawals from [RIPE RIS](https://ris.ripe.net) MRT dumps.
+
+Each comparison uses the same random seeds and varies which protocol runs first.
+Wilcoxon signed-rank tests and Hodges–Lehmann estimates show how consistent the differences
+are and how large they are, with confidence intervals. Turn pruning off or vary a parameter
+across runs to see what changes. Separate experiments check the measurements against known
+values and test whether sampling itself affects the results. Each result keeps its inputs,
+seeds and software versions for later inspection.
 
 | Question | Experiment |
 |---|---|
@@ -69,66 +78,49 @@ parameter.
 | Where do the guarantees end? | [`semantics-adversarial`](experiments/semantics-adversarial.yaml) |
 | Does it stay stable under failures? | [`behaviour-failures`](experiments/behaviour-failures.yaml) |
 | Does it scale to 256 networks of the Internet's core? | [`internet-scale`](experiments/internet-scale.yaml) |
-| Does it scale to full Internet tables? | [`internet-dfz`](experiments/internet-dfz.yaml) |
+| Does it scale to full IPv4 DFZ tables? | [`internet-dfz`](experiments/internet-dfz.yaml) |
+| Does the lab work? | [`lab-smoke`](experiments/lab-smoke.yaml) |
 | Does the lab measure right? | [`lab-calibration`](experiments/lab-calibration.yaml), [`lab-sampling-1hz`](experiments/lab-sampling-1hz.yaml), [`-10hz`](experiments/lab-sampling-10hz.yaml) |
 
 ### Running it
 
-| Host | Needs |
+On a Linux laptop or server:
+
+```bash
+git clone https://github.com/Stinktopf/gobgp.git && cd gobgp/scripts && ./setup.sh
+```
+
+Setup asks for resources, HTTPS and a password. Open the printed URL and try **lab-smoke**.
+
+| Action | Command |
 |---|---|
-| Laptop | Docker, 4 CPUs, 6 GB |
-| Own server | Ubuntu or Debian, root |
-| Shared server | Docker, and once from an admin `scripts/allow-user.sh` |
+| Repair installation | `./setup.sh` |
+| Reconfigure or reset password | `./reconfigure.sh` |
+| Update and restart the web UI | `./update.sh` |
+| Start | `./start.sh` |
+| Stop cluster and web UI | `./stop.sh` |
+| Remove runtime, keep results | `./teardown.sh` |
+| Remove recorded installation changes | `./uninstall.sh` |
 
-The full evaluation needs 128 CPUs and 512 GB. Smaller hosts skip what does not fit.
+Teardown keeps settings. Uninstall also removes recorded tools and settings, preserving
+pre-existing or subsequently changed resources. Add `--purge` to either to delete private results.
 
-**Set up.** First, on every host:
+<details>
+<summary>Remote access</summary>
 
-```bash
-git clone https://github.com/Stinktopf/gobgp.git && cd gobgp
-```
+HTTPS: use the server's hostname or IP and the printed port. The self-signed
+certificate encrypts traffic but triggers a browser warning.
 
-Laptop, interface on <http://localhost:8443>:
-
-```bash
-scripts/setup-user.sh --install
-```
-
-Own server, `https://<ip>:8443` with a self-signed certificate and an initial password:
-
-```bash
-sudo scripts/setup-host.sh
-```
-
-Shared server, an admin allows the user once, then the user sets up without sudo:
+HTTP: run this on your computer and keep it open:
 
 ```bash
-sudo scripts/allow-user.sh <user>
-LAB_CPUS=128 LAB_MEMORY_GB=512 scripts/setup-user.sh --install
+ssh -N -L 8443:127.0.0.1:8443 USER@SERVER
 ```
 
-The interface is at `https://<host>:8443`, or through `ssh -L 8443:localhost:8443 <host>`. If 8443 is taken,
-it takes the next free port and says which.
+Use your SSH login for `USER@SERVER`, then open <http://localhost:8443>.
+If the server uses another port, change the second `8443`.
 
-Once it runs, the settings update the lab from GitHub.
-
-**Tear down.** Both keep the results, `--purge` deletes them too. Laptop and shared server:
-
-```bash
-scripts/teardown-user.sh
-```
-
-Own server:
-
-```bash
-sudo scripts/teardown-host.sh
-```
-
-On a shared server, the admin may then take the permission back:
-
-```bash
-sudo scripts/allow-user.sh <user> --undo
-```
+</details>
 
 ## Changes since the paper
 

@@ -21,9 +21,9 @@ jobs:
       - name: Lint
         run: |
           uvx ruff check lab controller tests scripts
-          shellcheck scripts/*.sh
+          shellcheck scripts/*.sh scripts/internal/*.sh scripts/dev/*.sh
       - name: Run the tests
         run: uv run --group dev pytest -q
       - name: Check that the stylesheet is built from the current templates
-        run: scripts/build-css.sh && git diff --exit-code lab/web/static/app.css
+        run: scripts/dev/build-css.sh && git diff --exit-code lab/web/static/app.css
 

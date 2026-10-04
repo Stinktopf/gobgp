@@ -29,10 +29,16 @@
       system.addEventListener("change", () => { if (!choice) apply(); });
       apply();
     })();
-    // The intro, once per browser session, not on the login page, not for reduced motion.
+    // Once per session, or replayed by the logo. Respect Display and reduced motion.
     (() => {
+      const url = new URL(location.href);
+      const replay = url.pathname === "/experiments" && url.searchParams.get("intro") === "1";
+      if (replay) {
+        url.searchParams.delete("intro");
+        history.replaceState(history.state, "", url.pathname + url.search + url.hash);
+      }
       let seen = true;
-      try { seen = sessionStorage.getItem("intro") === "seen" || localStorage.getItem("intro") === "off"; } catch {}
+      try { seen = (!replay && sessionStorage.getItem("intro") === "seen") || localStorage.getItem("intro") === "off"; } catch {}
       if (!seen && location.pathname !== "/login" && !matchMedia("(prefers-reduced-motion: reduce)").matches) document.documentElement.classList.add("intro");
     })();
   </script>
@@ -52,7 +58,7 @@
   <header class="sticky top-0 z-10 border-b border-slate-200 bg-white/85 backdrop-blur dark:border-slate-800 dark:bg-slate-900/85">
     {# Below a wide window the stages get a row of their own, so that all five fit. #}
     <div class="mx-auto flex max-w-6xl flex-wrap items-center gap-x-3 px-4 lg:h-14 lg:flex-nowrap lg:gap-6">
-      <a href="/" class="flex h-12 shrink-0 items-center gap-2 font-semibold tracking-tight lg:h-auto">
+      <a href="/experiments?intro=1" aria-label="OBGP Lab" class="flex h-12 shrink-0 items-center gap-2 font-semibold tracking-tight lg:h-auto">
         <img src="/assets/mark.svg" alt="" class="size-7 dark:hidden"><img src="/assets/mark-dark.svg" alt="" class="hidden size-7 dark:block">
         <span class="hidden sm:inline">OBGP <span class="font-medium text-uoft-500 dark:text-uoft-300">Lab</span></span>
       </a>

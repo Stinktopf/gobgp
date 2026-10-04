@@ -27,11 +27,11 @@ def load_yaml(text: str):
 
 
 # What the host keeps for Docker, Kubernetes and the system besides the lab,
-# at least 4 threads and 4 GB, and how many routers a thread keeps sampling:
+# by default 4 threads and 4 GB, and how many routers a thread keeps sampling:
 # beyond about four, routers sample too seldom to measure (50 routers on 12
 # threads did on 2026-10-02).
 HOST_DEFAULTS = {"keep_cpus": 4, "keep_mb": 4096, "routers_per_cpu": 4}
-HOST_KEEP_AT_LEAST = {"keep_cpus": 4, "keep_mb": 4096}
+HOST_KEEP_AT_LEAST = {"keep_cpus": 0, "keep_mb": 0}
 _host: tuple | None = None
 
 

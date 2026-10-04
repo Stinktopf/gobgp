@@ -13,7 +13,6 @@ from collections import defaultdict
 from datetime import datetime
 from statistics import median
 
-from . import scenario
 from .results import Dataset, RunKey
 
 STARTUP_S = 30  # starting the cluster and checking the images, once per result

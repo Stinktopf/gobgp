@@ -31,6 +31,8 @@
     {% if left_s is not none %}
     <span class="muted shrink-0 tabular-nums">{{ left_s | duration }} left<span class="hidden sm:inline"> · ends {{ active_ends | clock }}</span></span>
     {% endif %}
+    {% elif cluster_off %}
+    <a href="/settings#cluster" class="font-medium hover:underline">Cluster switched off · start in Settings</a>
     {% elif paused %}
     <span class="size-2 shrink-0 rounded-full bg-amber-500" role="img" aria-label="Paused"></span>
     <span class="font-medium">Queue paused</span>
@@ -45,7 +47,7 @@
       </button>
       {% if paused and active %}
       <span class="muted px-2 text-xs whitespace-nowrap" data-tip="The running result ends its phase, then the queue waits" data-tip-align="end">Pausing…</span>
-      {% elif paused %}
+      {% elif paused and not cluster_off %}
       <form method="post" action="/queue/resume">
         <button class="btn" data-tip="Go on in the same order" data-tip-align="end">{{ icon("play") }}<span class="hidden sm:inline">Resume</span></button>
       </form>

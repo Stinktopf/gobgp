@@ -127,7 +127,9 @@ def run(dataset: Dataset, stop: threading.Event) -> None:
     routers = None
     try:
         status.update(phase="starting cluster")
-        dataset.update(cluster=cluster.start())
+        from .lifecycle import ensure_cluster
+
+        dataset.update(cluster=ensure_cluster(cluster))
         tags = {}
         for v in experiment.variants:
             status.update(phase=f"building {v.name} ({dataset.commits[v.name][:12]})")

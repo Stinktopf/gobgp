@@ -32,6 +32,10 @@ DAEMON_SOURCES = ["go.mod", "go.sum", "api", "cmd", "internal", "pkg", "proto"]
 IMAGE_SOURCES = ["Dockerfile", "pyproject.toml", "uv.lock", "controller/app.py"]
 
 
+class Incompatible(RuntimeError):
+    """An existing profile must be recreated before it can serve this request."""
+
+
 class LabError(RuntimeError):
     """An infrastructure failure. The affected run can be retried."""
 
@@ -43,6 +47,20 @@ class LabError(RuntimeError):
 def lock_file() -> Path:
     home = Path(os.environ["MINIKUBE_HOME"]) if os.environ.get("MINIKUBE_HOME") else Path.home() / ".minikube"
     return home / f"{PROFILE}.lab.lock"
+
+
+def manually_stopped() -> bool:
+    return lock_file().with_suffix(".off").exists()
+
+
+def set_manually_stopped(stopped: bool) -> None:
+    """Called under the cluster claim. Survives web restarts and is shared by checkouts."""
+    file = lock_file().with_suffix(".off")
+    if stopped:
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.touch()
+    else:
+        file.unlink(missing_ok=True)
 
 
 class Busy(RuntimeError):
@@ -60,7 +78,9 @@ def claim(result: str):
         fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         f.close()
-        raise Busy(f"the cluster runs {holder() or 'another result'}") from None
+        running = holder()
+        raise Busy("Another cluster operation is running." if running == "__maintenance__"
+                   else f"the cluster runs {running or 'another result'}") from None
     f.truncate(0)
     f.write(f"{result} {os.getpid()}")
     f.flush()
@@ -141,7 +161,9 @@ def size_for(experiments: list[config.Experiment], host: dict) -> config.Cluster
     cpus = max((e.cluster.cpus for e in experiments), default=config.Cluster().cpus)
     memory = max((e.cluster.memory_mb for e in experiments), default=config.Cluster().memory_mb)
     keep_cpus, keep_mb = keep()
-    return config.Cluster(cpus=max(1, min(cpus, host["cpus"] - keep_cpus)),
+    if host["cpus"] - keep_cpus < 2 or host["memory_mb"] - keep_mb < 2048:
+        raise ValueError("Host headroom must leave at least 2 CPUs and 2048 MB for minikube; run scripts/setup.sh.")
+    return config.Cluster(cpus=max(2, min(cpus, host["cpus"] - keep_cpus)),
                           memory_mb=max(2048, min(memory, host["memory_mb"] - keep_mb)))
 
 
@@ -156,11 +178,15 @@ def check_modes(experiment: config.Experiment) -> None:
             commit = resolve(v.ref)
         except LabError as problem:
             raise ValueError(f"{v.name}: {problem}") from None
-        for m in [v.mode, *modes.get(v.mode).pure]:
-            since = modes.get(m).since
-            if since and subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", since, commit]).returncode != 0:
-                raise ValueError(f"{v.name}: the daemon at {v.ref} does not know {modes.get(m).label} yet. "
-                                 f"Choose a git ref from {since} on.")
+        for m in modes.get(v.mode).pure:
+            mode = modes.get(m)
+            # Inspect the actual tree, so rebases, shallow clones and cherry-picks
+            # work. An ancestry hash does not establish a daemon's capabilities.
+            for variable in mode.requires:
+                source = git("show", f"{commit}:internal/pkg/table/opera.go")
+                if not re.search(r'os\.Getenv\(\s*"' + re.escape(variable) + r'"\s*\)', source):
+                    raise ValueError(f"{v.name}: the daemon at {v.ref} does not know {mode.label} yet. "
+                                     f"It must read {variable}.")
 
 
 DEFAULT_PODS, SYSTEM_PODS = 110, 30
@@ -182,16 +208,16 @@ class Cluster:
             runtime = cfg["KubernetesConfig"]["ContainerRuntime"]
             pods = next((int(o["Value"]) for o in cfg["KubernetesConfig"].get("ExtraOptions") or []
                          if o.get("Component") == "kubelet" and o.get("Key") == "max-pods"), DEFAULT_PODS)
-            if have["cpus"] < self.resources.cpus or have["memory_mb"] < self.resources.memory_mb or runtime != "docker":
-                raise RuntimeError(
+            if have["cpus"] < self.resources.cpus or have["memory_mb"] < self.resources.memory_mb or runtime != "docker" or cfg.get("Driver", "docker") != "docker":
+                raise Incompatible(
                     f"minikube profile {PROFILE} has {have['cpus']} CPUs, {have['memory_mb']} MB and the {runtime} runtime, "
                     f"the experiment needs {self.resources.cpus} CPUs, {self.resources.memory_mb} MB and docker. "
                     f"Recreate it with: minikube delete -p {PROFILE}"
                 )
             if pods < self.max_pods():
-                raise RuntimeError(f"minikube profile {PROFILE} holds {pods} pods, the experiment may need {self.max_pods()}. "
+                raise Incompatible(f"minikube profile {PROFILE} holds {pods} pods, the experiment may need {self.max_pods()}. "
                                    f"Recreate it with: minikube delete -p {PROFILE}")
-            if profile.get("Status") == "Running":
+            if profile.get("Status") in ("Running", "OK"):
                 return have
         else:
             have = {"cpus": self.resources.cpus, "memory_mb": self.resources.memory_mb}
@@ -212,11 +238,20 @@ class Cluster:
         sh("minikube", "delete", "-p", PROFILE, timeout=5 * 60)
 
     def _profile(self) -> dict | None:
+        result = subprocess.run(["minikube", "profile", "list", "-o", "json"], capture_output=True, text=True, timeout=30)
         try:
-            profiles = json.loads(sh("minikube", "profile", "list", "-o", "json"))
-        except LabError:
-            return None
-        return next((p for p in profiles.get("valid") or [] if p["Name"] == PROFILE), None)
+            profiles = json.loads(result.stdout)
+        except ValueError:
+            raise LabError(f"Cannot inspect minikube profiles: {result.stderr or result.stdout}") from None
+        # minikube returns nonzero even for an empty profile list. Invalid or
+        # unreadable profiles are not permission to delete a container.
+        for p in profiles.get("invalid") or []:
+            if p.get("Name") == PROFILE:
+                raise LabError(f"minikube profile {PROFILE} is invalid; repair its metadata before proceeding")
+        valid = next((p for p in profiles.get("valid") or [] if p["Name"] == PROFILE), None)
+        if result.returncode and not valid and "valid" not in profiles:
+            raise LabError(f"Cannot inspect minikube profiles: {result.stderr or result.stdout}")
+        return valid
 
     def _docker_env(self) -> dict:
         env = dict(os.environ)
@@ -432,7 +467,9 @@ DFZ_PREFIXES = 1_000_000  # a full IPv4 table of the Internet, about, in 2026
 def fitted(want: config.Cluster) -> config.Cluster:
     """The cluster an experiment gets here: what it asks for, as far as the host has it."""
     have, (keep_cpus, keep_mb) = capacity(), keep()
-    return want.model_copy(update={"cpus": max(1, min(want.cpus, have["cpus"] - keep_cpus)),
+    if have["cpus"] - keep_cpus < 2 or have["memory_mb"] - keep_mb < 2048:
+        raise ValueError("Saved headroom leaves too little capacity for minikube; run scripts/setup.sh.")
+    return want.model_copy(update={"cpus": max(2, min(want.cpus, have["cpus"] - keep_cpus)),
                                    "memory_mb": max(2048, min(want.memory_mb, have["memory_mb"] - keep_mb))})
 
 

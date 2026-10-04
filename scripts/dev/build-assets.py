@@ -1,6 +1,6 @@
 """Makes the logos and pictures of assets/.
 
-    uv run --with fonttools --with playwright python scripts/build-assets.py
+    uv run --with fonttools --with playwright python scripts/dev/build-assets.py
 
 Needs Chromium for Playwright once: uv run --with playwright playwright install chromium
 
@@ -31,7 +31,7 @@ from fontTools.pens.transformPen import TransformPen
 from fontTools.ttLib import TTFont
 from playwright.sync_api import sync_playwright
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 ASSETS = ROOT / "assets"
 INTER = "https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip"
 INTER_SHA256 = "9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e"

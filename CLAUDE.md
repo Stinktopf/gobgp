@@ -8,6 +8,9 @@ GoBGP fork with OBGP (oscillation-free BGP) and a lab that measures it.
   `GOBGP_OPERA_PRUNING=false`.
 - `lab/`: the lab in Python, `uv run lab …`.
   - `cli.py` commands, `runner.py` runs, `cluster.py` minikube, Helm and what fits the host, `host.py` host load
+  - `lifecycle.py` shared setup/configuration and runtime operations, `service.py` web process ownership, `terminal.py` terminal output
+  - `uninstall.py` ownership inventory and rollback of recorded installation changes
+  - `web/cluster_control.py` cluster controls and idle shutdown, `web/jobs.py` queue, `web/auth.py` passwords
   - `scenario.py` steps, `topology.py`, `modes.py`
   - `analysis.py` metrics (bump `VERSION` when they change), `results.py`, `estimate.py`, `calibration.py`
   - `caida.py`, `prefixes.py`, `mrt.py`, `rib.py`, `sndlib.py`: Internet data
@@ -19,9 +22,24 @@ GoBGP fork with OBGP (oscillation-free BGP) and a lab that measures it.
 
 ## Commands
 
+Paths below are relative to the repository root. The README starts inside `scripts/` and uses `./…sh`.
+
+- Install/repair: `scripts/setup.sh`. Change saved choices or reset a forgotten password: `scripts/reconfigure.sh`.
+- Runtime: `scripts/start.sh`, `scripts/stop.sh`, `scripts/update.sh`, `scripts/teardown.sh`, `scripts/uninstall.sh`.
 - Tests: `uv run --group dev pytest -q`, `go test ./internal/pkg/table/`
-- CSS after template changes: `scripts/build-css.sh`
-- Web: `uv run lab serve --http`. Templates reload, Python changes need a restart.
+- CSS after template changes: `scripts/dev/build-css.sh`
+- Development web only: `uv run lab serve --http`. Normal startup uses the scripts. Templates reload, Python changes need a restart.
+
+## Lifecycle
+
+- Reuse `lifecycle.py` and the existing cluster claim. Never recreate an active experiment's cluster or kill an unrelated process.
+- Setup persists resource budgets, host reserves and web access. Reconfigure prompts with saved defaults and can reset the password without the old one. Non-interactive runs never prompt.
+- HTTPS uses a self-signed certificate. HTTP binds to localhost. Print a usable browser URL, never the wildcard listen address.
+- UI cluster controls leave the web server online. Idle stops allow automatic wake on queued work. Explicit Stop disables wake until Start. Default idle timeout is 30 minutes, saved timeouts take precedence.
+- Script and UI updates restart only the web server and preserve cluster state. Local changes or divergent history block updates.
+- Setup/start/update preserve results and configuration. Teardown removes runtime, `--purge` additionally removes private results. Public results and settings remain.
+- Uninstall uses `~/obgp-lab/installed.txt` to undo recorded changes. Never remove unowned or changed tools, unrelated containers, shared caches or packages that APT needs for other software. Keep results unless `--purge` is explicit. Old installations have incomplete host provenance.
+- Helpers are in `scripts/internal/`, asset tools in `scripts/dev/`. Keep wrappers thin.
 
 ## Rules
 

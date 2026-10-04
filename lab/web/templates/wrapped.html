@@ -14,13 +14,28 @@
 {% endmacro %}
 
 <div class="space-y-4">
+  {% if f.runs %}
   <header class="pb-2">
     <p class="text-sm font-medium tracking-wide text-uoft-700 uppercase dark:text-uoft-300">OBGP Lab</p>
     <h1 class="text-6xl font-semibold tracking-tight">Wrapped</h1>
   </header>
+  {% endif %}
 
   {% if not f.runs %}
-  <p class="card p-6 text-sm">Nothing to wrap yet. Lab experiments do not count.</p>
+  <section class="card overflow-hidden" aria-labelledby="wrapped-title">
+    <div class="flex flex-col items-center px-6 py-12 text-center sm:py-16">
+      <div class="mb-6 flex size-20 items-center justify-center rounded-2xl bg-uoft-50 text-uoft-600 dark:bg-uoft-950 dark:text-uoft-300" aria-hidden="true">
+        <svg viewBox="0 0 24 24" class="size-12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/>
+        </svg>
+      </div>
+      <p class="mb-2 text-xs font-semibold tracking-widest text-uoft-700 uppercase dark:text-uoft-300">Wrapped</p>
+      <h1 id="wrapped-title" class="text-2xl font-semibold tracking-tight sm:text-3xl">Your experiments, at a glance</h1>
+      <p class="muted mt-3 max-w-md text-sm leading-relaxed">Run a routing experiment to compare BGP and OBGP.</p>
+      <a href="/experiments" class="btn btn-primary mt-6">Explore experiments <span aria-hidden="true">→</span></a>
+      <p class="muted mt-4 text-xs">Current lab results only, excluding lab checks.</p>
+    </div>
+  </section>
   {% else %}
   <div class="grid gap-4 lg:grid-cols-6">
     {# What it all adds up to. #}
@@ -52,19 +67,19 @@
       </div>
       <div class="space-y-5 self-center">
         <div>
-          <p class="mb-2 text-sm font-medium">OBGP <span class="text-white/60">· {{ o.obgp_runs }} runs</span></p>
+          <p class="mb-2 text-sm font-medium">OBGP <span class="ml-2 text-white/60">{{ o.obgp_runs }} runs</span></p>
           {{ dots(o.obgp_runs, o.obgp) }}
         </div>
         {% set np = o.others | selectattr("mode", "equalto", "obgp-np") | first %}
         {% if np %}
         <div>
-          <p class="mb-2 text-sm font-medium">OBGP without pruning <span class="text-white/60">· {{ np.runs }} runs{% if np.oscillated %}, <span class="text-amber-300">{{ np.oscillated }} oscillated</span>{% endif %}</span></p>
+          <p class="mb-2 text-sm font-medium">OBGP without pruning <span class="ml-2 text-white/60">{{ np.runs }} runs{% if np.oscillated %}, <span class="text-amber-300">{{ np.oscillated }} oscillated</span>{% endif %}</span></p>
           {{ dots(np.runs, np.oscillated) }}
         </div>
         {% endif %}
         {% if o.bgp_runs %}
         <div>
-          <p class="mb-2 text-sm font-medium">BGP <span class="text-white/60">· {{ o.bgp_runs }} runs{% if o.bgp %}, <span class="text-amber-300">{{ o.bgp }} oscillated</span>{% endif %}</span></p>
+          <p class="mb-2 text-sm font-medium">BGP <span class="ml-2 text-white/60">{{ o.bgp_runs }} runs{% if o.bgp %}, <span class="text-amber-300">{{ o.bgp }} oscillated</span>{% endif %}</span></p>
           {{ dots(o.bgp_runs, o.bgp) }}
         </div>
         {% endif %}
@@ -151,7 +166,7 @@
       </div>
       <table class="w-full text-sm">
         <thead><tr class="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-white/5 dark:text-slate-400 [&>th]:px-3 [&>th]:py-2 [&>th]:font-medium [&>th:first-child]:pl-6 [&>th:last-child]:pr-6">
-          <th>Topology · scenario</th>{% for m in c.columns %}<th class="text-right align-bottom">{{ label(m) }}</th>{% endfor %}</tr></thead>
+          <th>Topology / scenario</th>{% for m in c.columns %}<th class="text-right align-bottom">{{ label(m) }}</th>{% endfor %}</tr></thead>
         <tbody class="divide-y divide-slate-100 dark:divide-white/5">
           {% for row in c.rows %}
           {# The fastest and the slowest of a row; below the resolution counts as tied and fastest, and a mode that did not always converge is never the fastest. #}
@@ -160,7 +175,7 @@
           {% set values = ns.ranks.values() | list %}
           {% set best = (values | min) if values and (values | unique | list | length) > 1 else none %}
           {% set worst = (values | max) if best is not none else none %}
-          <tr class="[&>td]:px-3 [&>td]:py-2.5 [&>td:first-child]:pl-6 [&>td:last-child]:pr-6"><td class="font-mono text-xs whitespace-nowrap" data-tip="{{ row.result }}">{{ row.topology }} · {{ row.scenario }}</td>
+          <tr class="[&>td]:px-3 [&>td]:py-2.5 [&>td:first-child]:pl-6 [&>td:last-child]:pr-6"><td class="font-mono text-xs whitespace-nowrap" data-tip="{{ row.result }}">{{ row.topology }}<span class="muted block">{{ row.scenario }}</span></td>
             {% for m in c.columns %}{% set x = row.cells.get(m) %}
             <td class="text-right whitespace-nowrap tabular-nums">
               {% if not x %}<span class="text-slate-300 dark:text-slate-600">–</span>

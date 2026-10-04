@@ -151,3 +151,13 @@
   <label data-tip="{{ 'Smallest to largest router' if routers else 'One value per network' }}" class="{{ 'opacity-40' if not routers }}"><input type="radio" name="band-{{ where }}" value="routers" data-band {% if not routers %}disabled{% endif %}>Router spread</label>
 </span>
 {%- endmacro %}
+
+{% macro cluster_badge(cs) %}
+{% set asleep = cs.status == "Stopped" and not cs.manual_off %}
+{% set badge = "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300" if cs.busy else "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" if cs.status == "Running" else "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300" if cs.status == "Stopped" else "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300" %}
+{% if asleep %}{% set badge = "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300" %}{% endif %}
+        <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium {{ badge }}" role="status" aria-live="polite">
+          <span class="size-1.5 rounded-full bg-current {% if cs.busy %}animate-pulse{% endif %}" aria-hidden="true"></span>
+          {% if cs.busy %}{{ {"start": "Starting…", "apply": "Applying changes…", "stop": "Stopping…", "idle-stop": "Going idle…"}.get(cs.action, "Working…") }}{% else %}{{ "Idle" if asleep else cs.status }}{% endif %}
+        </span>
+{% endmacro %}

@@ -157,6 +157,10 @@ def _run(dataset: Dataset) -> int:
     except cluster.Busy as e:
         print(f"not started: {e}", file=sys.stderr)
         return cluster.BUSY
+    if cluster.manually_stopped():
+        claim.close()
+        print("The cluster is switched off. Start it in Settings or with scripts/start.sh.", file=sys.stderr)
+        return cluster.BUSY
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
@@ -349,6 +353,13 @@ def cmd_caida(args) -> int:
 
 
 def cmd_serve(args) -> int:
+    from . import service
+
+    with service.register(args):
+        return _serve(args)
+
+
+def _serve(args) -> int:
     import uvicorn
 
     from .web.app import create_app
@@ -418,17 +429,17 @@ def cmd_cluster(args) -> int:
         if e.cluster.cpus > size.cpus or e.cluster.memory_mb > size.memory_mb:
             print(f"{e.name} needs {e.cluster.cpus} CPUs and {e.cluster.memory_mb} MB, more than this host has", file=sys.stderr)
     c = cluster.Cluster(size)
-    if (held := cluster.holder()) and args.replace:
-        print(f"not replaced: the cluster runs {held}", file=sys.stderr)
-        return cluster.BUSY
     try:
-        have = c.start()
-    except RuntimeError as problem:
-        if not args.replace:
-            print(f"{problem}. Or use lab cluster --replace.", file=sys.stderr)
-            return 1
-        c.delete()
-        have = c.start()
+        with cluster.claim("__maintenance__"):
+            if args.replace:
+                from .lifecycle import ensure_cluster
+                have = ensure_cluster(c)
+            else:
+                have = c.start()
+                cluster.set_manually_stopped(False)
+    except (RuntimeError, cluster.Busy) as problem:
+        print(f"{problem}. Run scripts/setup.sh to repair/configure the lab.", file=sys.stderr)
+        return cluster.BUSY if isinstance(problem, cluster.Busy) else 1
     print(f"cluster {cluster.PROFILE}: {have['cpus']} CPUs, {have['memory_mb']} MB")
     return 0
 
@@ -441,7 +452,7 @@ def cmd_rib(args) -> int:
     print(f"reading the tables of {args.collector}, the first time downloads some 500 MB")
     when, files = rib.tables(args.collector, args.at, set(asn))
     counts = json.loads((next(iter(files.values())).parent / "peers.json").read_text()) if files else {}
-    for a, path in files.items():
+    for a in files:
         print(f"{asn[a]:16} {counts[str(a)]:>9,} routes")
     if not files:
         print(f"none of the {len(asn)} ASes peers with {args.collector} at {when:%Y-%m-%d %H:%M}: try another collector")

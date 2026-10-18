@@ -1,0 +1,6 @@
+name: sim-route-leak-obgp-rp-leaked
+description: 'The simulator''s smallest leaked of obgp-rp in route-leak, seed 1: these routers use a path that is not valley-free'
+steps:
+  - announce: {rate: 1, for: 1, lifetime: 86400, jitter: 0, max_active: 1}
+  - until_stable: {timeout: 120}
+  - expect: {router: r2, avoid: r1}

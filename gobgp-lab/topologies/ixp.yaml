@@ -1,0 +1,48 @@
+roles:
+  origins: [o]
+  clients: [a, b, c]
+routers:
+  o:
+    asn: 65001
+    routerId: 10.0.0.1
+    neighbors:
+      - name: a
+        peerAs: 65002
+      - name: b
+        peerAs: 65003
+  a:
+    asn: 65002
+    routerId: 10.0.0.2
+    neighbors:
+      - name: o
+        peerAs: 65001
+      - name: rs
+        peerAs: 65100
+  b:
+    asn: 65003
+    routerId: 10.0.0.3
+    neighbors:
+      - name: o
+        peerAs: 65001
+      - name: rs
+        peerAs: 65100
+  rs:
+    asn: 65100
+    routerId: 10.0.0.100
+    neighbors:
+      - name: a
+        peerAs: 65002
+        rsClient: true
+      - name: b
+        peerAs: 65003
+        rsClient: true
+      - name: c
+        peerAs: 65004
+        rsClient: true
+        denyVia: 65003
+  c:
+    asn: 65004
+    routerId: 10.0.0.4
+    neighbors:
+      - name: rs
+        peerAs: 65100

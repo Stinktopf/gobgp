@@ -1,0 +1,19 @@
+name: outside-model-withdraw
+description: Outside the model, a stops announcing to its provider r only. b still announces the route it learned from a.
+steps:
+  - parallel:
+      - down: {link: r-c}
+      - down: {link: r-p1}
+  - announce: {rate: 2, for: 10}
+  - until_stable: {timeout: 60}
+  - parallel:
+      - expect: {router: r}
+      - expect: {router: q}
+  - set_export: {router: a, neighbor: r}
+  - until_stable: {timeout: 60}
+  - parallel:
+      - expect: {router: r, via: b}
+      - expect: {router: q}
+  - set_export: {router: a, neighbor: r, allow: true}
+  - until_stable: {timeout: 60}
+  - expect: {router: r}

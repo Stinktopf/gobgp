@@ -1,0 +1,6 @@
+name: sim-tagging-obgp-rp-unreachable
+description: 'The simulator''s smallest unreachable of obgp-rp in tagging, seed 1: BGP has a path, this mode none'
+steps:
+  - announce: {rate: 1, for: 1, lifetime: 86400, jitter: 0, max_active: 1}
+  - until_stable: {timeout: 120}
+  - expect: {router: r3}

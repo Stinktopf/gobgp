@@ -1,0 +1,28 @@
+source: obgp-sim
+roles:
+  origins: [r0]
+routers:
+  r0:
+    asn: 65001
+    routerId: 10.0.0.1
+    neighbors:
+      - name: r1
+        peerAs: 65002
+      - name: r2
+        peerAs: 65003
+  r1:
+    asn: 65002
+    routerId: 10.0.0.2
+    neighbors:
+      - name: r0
+        peerAs: 65001
+      - name: r2
+        peerAs: 65003
+  r2:
+    asn: 65003
+    routerId: 10.0.0.3
+    neighbors:
+      - name: r0
+        peerAs: 65001
+      - name: r1
+        peerAs: 65002

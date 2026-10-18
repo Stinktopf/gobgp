@@ -1,0 +1,19 @@
+name: lab-smoke
+description: Whether the lab runs on this host, once per mode, once with a refresh delay, and a sweep of two values.
+cluster: {cpus: 2, memory_mb: 4096}
+runs: 1
+bgp: {hold_time: 6, keepalive: 2}
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp-rp, mode: obgp-rp}
+  - {name: obgp-rp-delay, mode: obgp-rp, refresh_delay: 1}
+  - {name: obgp-sp, mode: obgp-sp}
+  - {name: obgp-hp, mode: obgp-hp}
+  - {name: obgp-np, mode: obgp-np}
+  - {name: obgp-paper, mode: obgp-paper}
+topologies: [bad-gadget]
+scenarios:
+  - smoke-drain
+  - smoke-all
+sweeps:
+  - {scenario: smoke-all, param: rate, values: [1, 2]}

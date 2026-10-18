@@ -347,7 +347,7 @@ func (t *Table) update(newPath *Path) *Update {
 	dst := t.getOrCreateDest(newPath.GetNlri(), 64)
 	u := dst.Calculate(t.logger, newPath)
 
-	if len(dst.knownPathList) == 0 {
+	if len(dst.knownPathList) == 0 && len(dst.operaSuppressed()) == 0 {
 		t.deleteDest(dst)
 		return u
 	}
@@ -832,6 +832,8 @@ type TableInfo struct {
 	NumPath        int
 	NumAccepted    int
 	NumCollision   int
+	// NumSuppressed counts the paths that OBGP keeps but does not admit.
+	NumSuppressed int
 }
 
 type TableInfoOptions struct {
@@ -841,7 +843,7 @@ type TableInfoOptions struct {
 }
 
 func (t *Table) Info(option ...TableInfoOptions) *TableInfo {
-	var numD, numP, numC int
+	var numD, numP, numC, numS int
 
 	id := GLOBAL_RIB_NAME
 	var vrf *Vrf
@@ -862,6 +864,7 @@ func (t *Table) Info(option ...TableInfoOptions) *TableInfo {
 			numC += len(dests) - 1
 		}
 		for _, d := range dests {
+			numS += len(d.operaSuppressed())
 			paths := d.GetKnownPathList(id, as)
 			n := len(paths)
 
@@ -884,6 +887,7 @@ func (t *Table) Info(option ...TableInfoOptions) *TableInfo {
 		NumDestination: numD,
 		NumPath:        numP,
 		NumCollision:   numC,
+		NumSuppressed:  numS,
 	}
 }
 

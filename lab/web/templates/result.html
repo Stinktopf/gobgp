@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% from "macros.html" import problem, icon %}
+{% block title %}{{ result.name }} · Results · OBGP Lab{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{{ static('uPlot.min.css') }}">
+<script src="{{ static('uPlot.min.js') }}" defer></script>
+<script src="{{ static('charts.js') }}" defer></script>
+{% if tab == "replay" %}<script src="{{ static('cytoscape.min.js') }}" defer></script>
+<script src="{{ static('graph.js') }}" defer></script>
+<script src="{{ static('clock.js') }}" defer></script>
+<script src="{{ static('replay.js') }}" defer></script>{% endif %}
+{% endblock %}
+{% block content %}
+{% set live = status.state == "running" or queued %}
+<div {% if live %}hx-get="/results/{{ result.name }}/partials/header" hx-trigger="every 3s [document.visibilityState === 'visible']" hx-swap="innerHTML"{% endif %}>
+  {% include "partials/result-header.html" %}
+</div>
+{{ problem(error) }}
+
+<nav class="tabs">
+  {% for key, label in tabs.items() %}
+  <a href="?tab={{ key }}&topology={{ topology }}{% if scenario %}&scenario={{ scenario }}{% endif %}{% if metric %}&metric={{ metric }}{% endif %}" {% if tab == key %}aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>
+
+<section {% if live and tab == "runs" %}hx-get="/results/{{ result.name }}/partials/{{ tab }}" hx-trigger="every 3s [document.visibilityState === 'visible']" hx-swap="innerHTML"{% endif %}>
+  {% include "partials/tab-" ~ tab ~ ".html" %}
+</section>
+{% endblock %}

@@ -1,0 +1,36 @@
+name: lab-features
+description: 'Every building block of the lab on real routers once: iBGP behind a route reflector with IGP costs, a confederation, a leak, Gao-Rexford with siblings, a MED, an aggregate, a community, a poisoned AS, a tag, the own import filter, an export filter, prepending towards all and towards one, a preference, a link failing and returning, a withdrawal. Each step is checked as the simulator checks it.'
+steps:
+  - announce: {rate: 1, for: 1, lifetime: 86400, jitter: 0, max_active: 1, as_set: [64601, 64600], poison: [65099], communities: [0:65099]}
+  - until_stable: {timeout: 120}
+  - expect: {router: all, forwarding: true, consistent: true}
+  - set_import: {router: r2, neighbor: o}
+  - until_stable: {timeout: 120}
+  - expect: {router: all, forwarding: true, consistent: true, may_fail: [obgp-hp, obgp-paper]}
+  - set_import: {router: r2, neighbor: o, allow: true}
+  - until_stable: {timeout: 120}
+  - expect: {router: all, forwarding: true, consistent: true}
+  - set_export: {router: r3, neighbor: x}
+  - until_stable: {timeout: 120}
+  - expect: {router: all, forwarding: true, consistent: true}
+  - prepend: {router: c2, times: 2}
+  - until_stable: {timeout: 120}
+  - expect: {router: all, forwarding: true, consistent: true}
+  - prepend: {router: c2, times: 3, neighbor: x}
+  - until_stable: {timeout: 120}
+  - expect: {router: all, forwarding: true, consistent: true}
+  - set_export: {router: r3, neighbor: x, allow: true}
+  - until_stable: {timeout: 120}
+  - expect: {router: all, forwarding: true, consistent: true}
+  - set_preference: {router: r3, neighbor: c2, value: 300}
+  - until_stable: {timeout: 120}
+  - expect: {router: all, forwarding: true, consistent: true}
+  - down: {link: c1-c2}
+  - until_stable: {timeout: 120}
+  - expect: {router: all, forwarding: true, consistent: true}
+  - up: {link: c1-c2}
+  - until_stable: {timeout: 120}
+  - expect: {router: all, forwarding: true, consistent: true}
+  - withdraw: {}
+  - until_stable: {timeout: 120}
+  - expect: {router: all, prefixes: none}

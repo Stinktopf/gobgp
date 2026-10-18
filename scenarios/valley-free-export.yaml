@@ -1,0 +1,17 @@
+name: valley-free-export
+description: r learns a provider route first, then customer routes. Its provider p2 never gets a route through p1. With OBGP it gets none, as the provider route stays the export path.
+steps:
+  - parallel:
+      - down: {link: r-a}
+      - down: {link: r-b}
+      - down: {link: r-c}
+  - announce: {rate: 2, for: 10}
+  - until_stable: {timeout: 60}
+  - parallel:
+      - expect: {router: r, via: p1}
+      - expect: {router: p2, prefixes: none}
+  - up: {}
+  - until_stable: {timeout: 60}
+  - parallel:
+      - expect: {router: p2, prefixes: any, avoid: p1}
+      - expect: {router: q}

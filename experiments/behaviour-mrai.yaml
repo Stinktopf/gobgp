@@ -1,0 +1,15 @@
+name: behaviour-mrai
+description: The runs of behaviour-oscillation with an MRAI of 30 s towards other ASes, as routers commonly hold back advertisements. Whether OBGP still converges where BGP oscillates, and how much slower both get.
+cluster: {cpus: 12, memory_mb: 13000}
+runs: 6
+bgp: {mrai: 30}
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp-rp, mode: obgp-rp}
+  - {name: obgp-rp-delay, mode: obgp-rp, refresh_delay: 1}
+  - {name: obgp-sp, mode: obgp-sp}
+  - {name: obgp-hp, mode: obgp-hp}
+  - {name: obgp-np, mode: obgp-np}
+  - {name: obgp-paper, mode: obgp-paper}
+topologies: [bad-gadget, noble-eu, germany50]
+scenarios: [fill-30-rest-120]

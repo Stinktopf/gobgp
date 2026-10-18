@@ -1,0 +1,8 @@
+name: sim-import-filter-obgp-hp-unreachable
+description: 'The simulator''s smallest unreachable of obgp-hp in import-filter, seed 1: BGP has a path, this mode none'
+steps:
+  - announce: {rate: 1, for: 1, lifetime: 86400, jitter: 0, max_active: 1}
+  - until_stable: {timeout: 120}
+  - set_import: {router: r1, neighbor: r0}
+  - until_stable: {timeout: 120}
+  - expect: {router: r1}

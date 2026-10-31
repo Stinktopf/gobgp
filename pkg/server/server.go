@@ -134,6 +134,8 @@ type BgpServer struct {
 	logger       *slog.Logger
 	logLevelVar  *slog.LevelVar
 	timingHook   FSMTimingHook
+	refresh      operaRefresh    // route refreshes of refresh pruning
+	operaUp      map[string]bool // neighbors whose tables per neighbor are fed, see operaViewPeers
 	// manage lifecycle of the server
 	isServing     atomic.Bool
 	shutdownWG    *sync.WaitGroup
@@ -184,7 +186,12 @@ func NewBgpServer(opt ...ServerOption) *BgpServer {
 		}()
 	}
 
-	table.InitOperaFromEnv()
+	if o := table.InitOperaFromEnv(); o.Enabled {
+		logger.Info("OBGP path selection enabled", slog.String("Topic", "Table"), slog.String("Pruning", o.Pruning.String()),
+			slog.Bool("ReceivedSetOrder", o.ReceivedSetOrder))
+	}
+	capable := s.operaRefreshCapable // which neighbors refresh pruning may ask, on the server's loop
+	table.OperaRefreshCapable.Store(&capable)
 
 	return s
 }
@@ -925,10 +932,21 @@ func (s *BgpServer) getPossibleBest(peer *peer, family bgp.Family) []*table.Path
 	if peer.isAddPathSendEnabled(family) {
 		return peer.localRib.GetPathList(peer.TableID(), peer.AS(), []bgp.Family{family})
 	}
-	return peer.localRib.GetBestPathList(peer.TableID(), peer.AS(), []bgp.Family{family})
+	return peer.localRib.GetExportPathList(peer.TableID(), peer.AS(), []bgp.Family{family})
 }
 
 func (s *BgpServer) getBestFromLocal(peer *peer, rfList []bgp.Family, addEOR bool) ([]*table.Path, []*table.Path) {
+	return s.getFromLocal(peer, rfList, addEOR, true)
+}
+
+// getAdvertised is getBestFromLocal for listing: what the peer gets now,
+// without bringing its OBGP tables up to date, which only a sync that also
+// sends may do.
+func (s *BgpServer) getAdvertised(peer *peer, rfList []bgp.Family, addEOR bool) ([]*table.Path, []*table.Path) {
+	return s.getFromLocal(peer, rfList, addEOR, false)
+}
+
+func (s *BgpServer) getFromLocal(peer *peer, rfList []bgp.Family, addEOR, sync bool) ([]*table.Path, []*table.Path) {
 	pathList := []*table.Path{}
 	filtered := []*table.Path{}
 
@@ -951,6 +969,17 @@ func (s *BgpServer) getBestFromLocal(peer *peer, rfList []bgp.Family, addEOR boo
 	}
 
 	for _, family := range peer.toGlobalFamilies(rfList) {
+		if operaHasView(peer, family) && !sync {
+			pathList = append(pathList, s.operaExports(peer, family)...)
+			continue
+		}
+		if operaHasView(peer, family) {
+			paths, gone := s.operaSync(peer, family)
+			// what the neighbor got and may no longer get goes out as a
+			// withdrawal with every caller, also with a route refresh answer
+			pathList = append(append(pathList, paths...), rejectedWithdrawals(gone)...)
+			continue
+		}
 		for _, path := range s.getPossibleBest(peer, family) {
 			if p := s.filterpath(peer, path, nil); p != nil {
 				pathList = append(pathList, p)
@@ -1117,6 +1146,7 @@ func (s *BgpServer) propagateUpdate(peer *peer, pathList []*table.Path) {
 			path = p
 		} else {
 			path = path.Clone(true)
+			path.SetPolicyRejected()
 		}
 
 		if !rs {
@@ -1165,7 +1195,7 @@ func (s *BgpServer) propagateUpdate(peer *peer, pathList []*table.Path) {
 						}
 					}
 					if !found {
-						candidates = s.globalRib.GetBestPathList(peer.TableID(), 0, fs)
+						candidates = s.globalRib.GetExportPathList(peer.TableID(), 0, fs)
 					}
 				}
 				paths := make([]*table.Path, 0, len(candidates))
@@ -1193,8 +1223,16 @@ func (s *BgpServer) propagateUpdate(peer *peer, pathList []*table.Path) {
 			}
 		}
 
+		ou, before := s.operaBefore(rib, path)
 		if dsts := rib.Update(path); len(dsts) > 0 {
-			s.propagateUpdateToNeighbors(rib, peer, path, dsts, true)
+			if ou != nil {
+				s.operaFeed(rib, path, ou, before)
+				if d := rib.GetDestination(path); d != nil {
+					dsts[0].Waiting = d.OperaWaiting()
+				}
+			}
+			s.propagateUpdateToNeighbors(rib, peer, path, dsts, true, ou)
+			s.operaAskRefresh(path.GetFamily(), dsts) // behind the withdrawals just queued
 		}
 	}
 }
@@ -1215,7 +1253,24 @@ func dstsToPaths(id string, as uint32, dsts []*table.Update) ([]*table.Path, []*
 	return bestList, oldList, mpathList
 }
 
-func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *peer, newPath *table.Path, dsts []*table.Update, needOld bool) {
+// dstsToExportPaths is dstsToPaths for the paths advertised to peers. With
+// OBGP enabled, these differ from the best paths used for the local choice.
+func dstsToExportPaths(id string, as uint32, dsts []*table.Update) ([]*table.Path, []*table.Path) {
+	if !table.IsOperaEnabled() {
+		bestList, oldList, _ := dstsToPaths(id, as, dsts)
+		return bestList, oldList
+	}
+	bestList := make([]*table.Path, 0, len(dsts))
+	oldList := make([]*table.Path, 0, len(dsts))
+	for _, dst := range dsts {
+		best, old := dst.GetExportChanges(id, as)
+		bestList = append(bestList, best)
+		oldList = append(oldList, old)
+	}
+	return bestList, oldList
+}
+
+func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *peer, newPath *table.Path, dsts []*table.Update, needOld bool, ou *operaUpdate) {
 	if table.SelectionOptions.DisableBestPathSelection {
 		return
 	}
@@ -1223,7 +1278,19 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 	var mpathList [][]*table.Path
 	if source == nil || !source.isRouteServerClient() {
 		gBestList, gOldList, mpathList = dstsToPaths(table.GLOBAL_RIB_NAME, 0, dsts)
+		if ou != nil { // the forwarding path within the bound instead
+			gBestList = []*table.Path{nil}
+			if ou.fwdNew != ou.fwdOld {
+				gBestList[0] = ou.fwdNew
+				if ou.fwdNew == nil && ou.fwdOld != nil {
+					gBestList[0] = ou.fwdOld.Clone(true)
+				}
+			}
+		}
 		s.notifyBestWatcher(gBestList, mpathList)
+		if table.IsOperaEnabled() {
+			gBestList, gOldList = dstsToExportPaths(table.GLOBAL_RIB_NAME, 0, dsts)
+		}
 	}
 	family := newPath.GetFamily()
 	for _, targetPeer := range s.neighborMap {
@@ -1248,6 +1315,12 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 			}
 			return family
 		}()
+		if ou != nil && ou.peers[targetPeer] {
+			if change, ok := ou.changes[targetPeer]; ok {
+				s.operaSend(targetPeer, change)
+			}
+			continue
+		}
 		if targetPeer.isAddPathSendEnabled(f) {
 			// in case of multiple paths to the same destination, we need to
 			// filter the paths before counting the number of paths to be sent.
@@ -1339,7 +1412,7 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 					}
 					continue
 				}
-				bestList, oldList, _ = dstsToPaths(targetPeer.TableID(), targetPeer.AS(), dsts)
+				bestList, oldList = dstsToExportPaths(targetPeer.TableID(), targetPeer.AS(), dsts)
 			} else {
 				bestList = gBestList
 				oldList = gOldList
@@ -1357,6 +1430,7 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 func (s *BgpServer) stopNeighbor(peer *peer, oldState bgp.FSMState, e *fsmMsg) {
 	peer.stopPeerRestarting()
 	delete(s.neighborMap, netip.MustParseAddr(peer.ID()))
+	delete(s.operaUp, peer.ID()) // a neighbor added again later starts down
 	peer.stopFSM()
 	s.broadcastPeerState(peer, bgp.BGP_FSM_IDLE, oldState, e)
 }
@@ -1410,6 +1484,7 @@ func (s *BgpServer) handleFSMMessage(peer *peer, e *fsmMsg) {
 
 			peer.prefixLimitWarned = make(map[bgp.Family]bool)
 			s.propagateUpdate(peer, peer.DropAll(dropFamilies))
+			s.operaDropViews(peer)
 
 			peer.fsm.lock.Lock()
 			if peer.fsm.pConf.Config.PeerAs == 0 {
@@ -1508,6 +1583,7 @@ func (s *BgpServer) handleFSMMessage(peer *peer, e *fsmMsg) {
 		drainChannel(peer.fsm.outgoingCh.Out())
 
 		if nextState == bgp.BGP_FSM_ESTABLISHED {
+			s.operaSessionUp(peer)
 			peer.fsm.lock.Lock()
 
 			peer.peerInfo = table.NewPeerInfo(peer.fsm.gConf, peer.fsm.pConf,
@@ -2343,6 +2419,7 @@ func (s *BgpServer) StartBgp(ctx context.Context, r *api.StartBgpRequest) error 
 		rfs, _ := oc.AfiSafis(c.AfiSafis).ToRfList()
 		s.globalRib = table.NewTableManager(s.logger, rfs)
 		s.rsRib = table.NewTableManager(s.logger, rfs)
+		s.rsRib.SetRouteServer()
 
 		if err := s.policy.Initialize(); err != nil {
 			return err
@@ -2535,7 +2612,10 @@ func (s *BgpServer) softResetOut(addr string, family bgp.Family, deferral bool) 
 			}
 		}
 
-		pathList, _ := s.getBestFromLocal(peer, families, true)
+		pathList, filtered := s.getBestFromLocal(peer, families, true)
+		if !deferral {
+			pathList = append(pathList, rejectedWithdrawals(filtered)...)
+		}
 		if len(pathList) > 0 {
 			if deferral {
 				pathList = func() []*table.Path {
@@ -2707,7 +2787,7 @@ func (s *BgpServer) getAdjRib(addr string, family bgp.Family, in bool, enableFil
 					pathList = append(pathList, path)
 				}
 			} else {
-				pathList, _ = s.getBestFromLocal(peer, peer.configuredRFlist(), true)
+				pathList, _ = s.getAdvertised(peer, peer.configuredRFlist(), true)
 			}
 			toUpdate = make([]*table.Path, 0, len(pathList))
 			for _, path := range pathList {
@@ -2760,6 +2840,12 @@ func (s *BgpServer) ListPath(r apiutil.ListPathRequest, fn func(prefix bgp.NLRI,
 		for _, dst := range tbl.GetDestinations() {
 			prefix := dst.GetNlri()
 			knownPathList := dst.GetAllKnownPathList()
+			// With tables per neighbor the router forwards on a path of its own choice, which
+			// may be admitted in a neighbor's table only.
+			fwd := dst.OperaForwarding()
+			if fwd != nil && r.TableType == api.TableType_TABLE_TYPE_GLOBAL && !slices.Contains(knownPathList, fwd) {
+				knownPathList = append([]*table.Path{fwd}, knownPathList...)
+			}
 			paths := make([]*apiutil.Path, len(knownPathList))
 
 			for i, path := range knownPathList {
@@ -2767,7 +2853,9 @@ func (s *BgpServer) ListPath(r apiutil.ListPathRequest, fn func(prefix bgp.NLRI,
 				if validation := getValidation(v, path); validation != nil {
 					p.Validation = newValidationFromTableStruct(validation)
 				}
-				if !table.SelectionOptions.DisableBestPathSelection {
+				if fwd != nil && r.TableType == api.TableType_TABLE_TYPE_GLOBAL {
+					p.Best = path == fwd
+				} else if !table.SelectionOptions.DisableBestPathSelection {
 					if i == 0 {
 						switch r.TableType {
 						case api.TableType_TABLE_TYPE_LOCAL, api.TableType_TABLE_TYPE_GLOBAL:
@@ -2846,7 +2934,7 @@ func (s *BgpServer) getAdjRibInfo(addr string, family bgp.Family, in bool) (info
 			adjRib = peer.adjRibIn
 		} else {
 			adjRib = table.NewAdjRib(s.logger, peer.configuredRFlist())
-			accepted, _ := s.getBestFromLocal(peer, peer.configuredRFlist(), false)
+			accepted, _ := s.getAdvertised(peer, peer.configuredRFlist(), false)
 			adjRib.UpdateAdjRibOut(accepted)
 		}
 		info, err = adjRib.TableInfo(family)
@@ -3050,7 +3138,7 @@ func (s *BgpServer) ListPeer(ctx context.Context, r *api.ListPeerRequest, fn fun
 							received = uint64(peer.adjRibIn.Count(flist))
 							accepted = uint64(peer.adjRibIn.Accepted(flist))
 							if getAdvertised {
-								pathList, _ := s.getBestFromLocal(peer, flist, false)
+								pathList, _ := s.getAdvertised(peer, flist, false)
 								advertised = uint64(len(pathList))
 							}
 						}
@@ -3117,6 +3205,7 @@ func (s *BgpServer) addNeighbor(c *oc.Neighbor) error {
 	if err := oc.SetDefaultNeighborConfigValues(c, pgConf, &s.bgpConfig.Global); err != nil {
 		return err
 	}
+	s.operaOnePath(c)
 
 	if vrf := c.Config.Vrf; vrf != "" {
 		if c.RouteServer.Config.RouteServerClient {
@@ -3390,6 +3479,24 @@ func (s *BgpServer) UpdatePeerGroup(ctx context.Context, r *api.UpdatePeerGroupR
 	return &api.UpdatePeerGroupResponse{NeedsSoftResetIn: doSoftreset}, err
 }
 
+// operaOnePath turns off sending Add-Path in the families OBGP selects: it
+// would send a neighbor every admitted path instead of the one export path.
+// A transparent route server keeps it towards its clients.
+func (s *BgpServer) operaOnePath(c *oc.Neighbor) {
+	for i, af := range c.AfiSafis {
+		if c.RouteServer.Config.RouteServerClient && table.RouteServerTransparent(af.State.Family) {
+			continue // a transparent route server passes every path on
+		}
+		if af.AddPaths.State.SendMax > 0 && table.IsOperaFamily(af.State.Family) {
+			s.logger.Warn("OBGP sends one path, Add-Path send is off",
+				slog.String("Topic", "Peer"),
+				slog.String("Key", c.State.NeighborAddress.String()),
+				slog.String("Family", af.State.Family.String()))
+			c.AfiSafis[i].AddPaths.Config.SendMax, c.AfiSafis[i].AddPaths.State.SendMax = 0, 0
+		}
+	}
+}
+
 func (s *BgpServer) updateNeighbor(c *oc.Neighbor) (needsSoftResetIn bool, err error) {
 	var pgConf *oc.PeerGroup
 	if c.Config.PeerGroup != "" {
@@ -3402,6 +3509,7 @@ func (s *BgpServer) updateNeighbor(c *oc.Neighbor) (needsSoftResetIn bool, err e
 	if err := oc.SetDefaultNeighborConfigValues(c, pgConf, &s.bgpConfig.Global); err != nil {
 		return needsSoftResetIn, err
 	}
+	s.operaOnePath(c)
 
 	addr, err := c.ExtractNeighborAddress()
 	if err != nil {

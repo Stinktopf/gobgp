@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% from "macros.html" import icon, page_header, problem %}
+{% set f = example.finding %}
+{# The title and counts speak of one mode: the one on the right if it shows the problem, else the first that does. #}
+{% set named = right if right in per_mode else shown[0] %}
+{% set pm = per_mode[named] %}
+{% set rs = pm.routers or [] %}
+{% set hit = ("router " ~ rs[0]) if rs | length == 1 else ("routers " ~ (rs[:-1] | join(", ")) ~ " and " ~ rs[-1]) if rs else "routers" %}
+{# Theorems 1 and 2 promise that OBGP comes to rest and forwards without loops at rest, inside their model. #}
+{% set theorem = {"no-convergence": "the convergence proof", "loop": "the proof of loop-freedom at rest"}.get(f.kind) if proof == "contradicts it" else none %}
+{% set title = {
+  "unreachable": hit ~ " lose" ~ ("s" if rs | length == 1) ~ " the prefix",
+  "black-hole": "Packets from " ~ hit ~ " end nowhere",
+  "loop": "Packets circle at rest",
+  "no-convergence": "The network never comes to rest",
+  "leaked": hit ~ " use" ~ ("s" if rs | length == 1) ~ " a leaked path",
+  "inconsistent-export": "An AS sends different paths",
+  "transient-loop": "Packets circle on the way to rest",
+  "transient-blocked": "Routers wait without a route",
+  "transient-hole": "Routers lose their route for a while",
+} %}
+{% block title %}{{ title.get(f.kind, f.kind) | capitalize }} · Simulation · OBGP Lab{% endblock %}
+{% block head %}<script src="{{ static('simulation.js') }}" defer></script>{% endblock %}
+{% block content %}
+{% call page_header("/simulation?search=" ~ search_id, "Simulation") %}
+  <h1 class="mr-auto text-2xl font-semibold tracking-tight first-letter:uppercase">{{ title.get(f.kind, f.detail) }}</h1>
+  <form method="post" action="/simulation/{{ search_id }}/{{ finding_id }}/lab"><button class="btn" data-tip="As an experiment on real routers, every mode, the simulator's prediction as checks">{{ "Open in the lab" if lab else "Play in the lab" }}</button></form>
+{% endcall %}
+<p data-problem class="-mt-4 max-w-3xl text-slate-700 dark:text-slate-300">&nbsp;</p>
+{# One short line: which modes show it, in which policies, how often. Only a contradiction of the proofs is said, the rest is in its tooltip. #}
+<p class="mt-1 mb-6 text-sm muted">
+  <span class="font-mono">{{ label }}</span> · <span class="font-mono">{{ example.instance.family }}</span>{% if pm.of %} · <span {% if shown | length > 1 %}data-tip="{% for m in shown %}{{ m }}: {{ per_mode[m].count }} of {{ per_mode[m].of }}{% if not loop.last %}&#10;{% endif %}{% endfor %}"{% endif %} class="whitespace-nowrap">in {{ pm.count }} of {{ pm.of }} networks</span>{% endif %}
+  {% if theorem %} · <span class="font-semibold text-rose-700 dark:text-rose-300">contradicts {{ theorem }}</span>{% endif %}
+  {% if lab %}{% set mine = lab[0].modes | selectattr("mode", "equalto", named) | first %}{% if mine and mine.runs %} · <a href="#lab" class="whitespace-nowrap hover:underline">in the lab {{ mine.seen }} of {{ mine.runs }} runs</a>{% endif %}{% endif %}
+</p>
+
+{{ problem(error) }}
+<div id="sim" data-search="{{ search_id }}" data-finding="{{ finding_id }}" data-modes='{{ per_mode | tojson }}'>
+  {# Two columns: the mode with the problem large, its key moments and every step, beside them the mode to compare at the same point of the run, after the same events, the RIB in focus and the network. A graph's menu chooses its mode. #}
+  {% macro graph(side, mode) %}
+    <div class="card relative flex flex-col overflow-hidden" data-side="{{ side }}">
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pt-3 text-sm">
+        <select data-mode="{{ side }}" aria-label="{{ 'Mode' if side == 'right' else 'Mode beside it' }}" class="input w-auto py-0.5 font-mono text-sm font-medium">{% for m in modes %}<option value="{{ m }}" {% if m == mode %}selected{% endif %} {% if m in shown %}data-problem class="text-rose-700 dark:text-rose-300"{% endif %}>{{ m }}</option>{% endfor %}</select>
+        <span data-state class="muted text-xs"></span>
+        {% if side == "right" and examples | length > 1 %}
+        <select aria-label="Network" class="input ml-auto w-auto max-w-full min-w-0 py-0.5 text-sm" onchange="location.href = '/simulation/{{ search_id }}/' + this.value">{% for c in examples %}<option value="{{ c.id }}" {% if c.id == finding_id %}selected{% endif %}>Network {{ loop.index }} of {{ loop.length }}, {{ c.instance.routers }} routers</option>{% endfor %}</select>
+        {% endif %}
+      </div>
+      {# The graph beside fills the height the large one gives the row. #}
+      <div class="relative {{ '' if side == 'right' else 'md:min-h-0 md:flex-1' }}">
+        <svg data-graph viewBox="-130 -118 260 250" class="block w-full {{ 'h-[36vh] md:h-[44vh]' if side == 'right' else 'h-60 md:absolute md:inset-0 md:h-full' }}" role="img"></svg>
+        <p data-wait class="muted absolute inset-0 grid place-content-center text-sm"><span><span class="spinner"></span>Playing the run…</span></p>
+      </div>
+      {% if side == "left" %}<p data-summary class="border-t border-slate-900/5 px-4 py-2 text-sm dark:border-white/5"></p>{% endif %}
+    </div>
+  {% endmacro %}
+  {# The graphs side by side, both as high as the large one. Under them two columns that end together: the moments and every step, beside them the RIBs and the network. On a phone one column. #}
+  <div class="grid gap-4 md:grid-cols-[minmax(0,1fr)_24rem]">
+    {{ graph("right", right) }}
+    {{ graph("left", left) }}
+    <div class="flex flex-col gap-4">
+        <div class="card space-y-3 px-4 py-3">
+          <p class="label">Every step</p>
+          <div data-timeline data-dense tabindex="0" role="slider" aria-label="Step, the problem filled red" aria-valuemin="0" class="relative flex h-5 w-full cursor-pointer touch-none items-center"></div>
+          <div class="flex flex-wrap items-center gap-3">
+            <div class="flex gap-1">
+              {# As the replay's controls: to the start, a step back, play, a step on, and play in a loop. #}
+              <button type="button" data-act="first" class="btn btn-icon" data-tip="To the start" aria-label="To the start">{{ icon("restart-replay") }}</button>
+              <button type="button" data-act="prev" class="btn btn-icon" data-tip="One step back" aria-label="One step back"><span class="rotate-90">{{ icon("chevron-down") }}</span></button>
+              <button type="button" data-act="play" class="btn btn-primary w-24" data-tip="Play the steps">{{ icon("play") }}<span>Play</span></button>
+              <button type="button" data-act="next" class="btn btn-icon" data-tip="One step on" aria-label="One step on"><span class="-rotate-90">{{ icon("chevron-down") }}</span></button>
+              <button type="button" data-act="loop" class="btn btn-icon" aria-pressed="false" data-tip="Loop" aria-label="Loop">{{ icon("repeat") }}</button>
+            </div>
+            <select class="input w-auto py-1 tabular-nums sm:hidden" aria-label="Speed" onchange="this.parentElement.querySelector(`input[name=speed][value='${this.value}']`).click()">
+              {% for s, label in [(0.25, "¼×"), (1, "1×"), (4, "4×"), (16, "16×"), (64, "64×")] %}<option value="{{ s }}" {% if s == 1 %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+            <div class="segmented text-xs max-sm:hidden" role="radiogroup" aria-label="Speed">
+              {% for s, label in [(0.25, "¼×"), (1, "1×"), (4, "4×"), (16, "16×"), (64, "64×")] %}<label data-tip="{{ 'One step a second' if s == 1 else label ~ ' as fast' }}"><input type="radio" name="speed" value="{{ s }}" {% if s == 1 %}checked{% endif %}>{{ label }}</label>{% endfor %}
+            </div>
+            <span data-counter class="ml-auto font-mono text-sm whitespace-nowrap tabular-nums"></span>
+          </div>
+        </div>
+        <div class="card flex flex-1 flex-col gap-2 px-4 py-3">
+          <p class="label">The network</p>
+          <dl data-policies class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm"></dl>
+          <div class="muted mt-auto flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-slate-900/5 pt-2 text-xs dark:border-white/5">
+            <span class="flex items-center gap-1.5"><span class="size-2.5 rounded-full bg-uoft-700 dark:bg-uoft-300"></span>has a route</span>
+            <span class="flex items-center gap-1.5"><span class="size-2.5 rounded-full bg-violet-400"></span>waits for a refresh</span>
+            <span class="flex items-center gap-1.5"><span class="size-2.5 rounded-full border border-slate-400 bg-slate-200 dark:bg-slate-700"></span>no route</span>
+            <span class="flex items-center gap-2"><span class="ml-0.5 size-2 rounded-full ring-2 ring-rose-600 dark:ring-rose-400"></span>the problem</span>
+            <span class="flex items-center gap-1.5"><span class="w-5 border-t-2 border-dashed border-slate-400"></span>peers</span>
+            <span>◆ origin</span>
+          </div>
+        </div>
+    </div>
+    <div class="flex flex-col gap-4">
+        <div class="card flex-1 px-4 py-3">
+          <p class="label mb-2">Key moments</p>
+          <ol data-moments class="max-h-96 space-y-0.5 overflow-y-auto pr-1 text-sm"></ol>
+        </div>
+    </div>
+  </div>
+  {# What each router takes in and sends out, at full width: a block per router, side by side. #}
+  <div class="card mt-4 px-4 py-3 text-sm" data-tables></div>
+</div>
+{% if lab %}
+{# The case on real routers: per mode the runs and those that showed it. The lab cannot replay the simulator's order of messages. #}
+<div id="lab" class="card mt-4 overflow-x-auto">
+  <div class="flex flex-wrap items-baseline gap-x-3 px-4 pt-3 text-sm">
+    <p class="label">In the lab</p>
+    <a href="/results/{{ lab[0].name }}" class="font-medium hover:underline">{{ lab[0].name }}</a>
+    {% if lab[0].state != "finished" %}<span class="muted">{{ lab[0].state }}</span>{% endif %}
+    {% for r in lab[1:] %}<a href="/results/{{ r.name }}" class="muted hover:underline">{{ r.name }}</a>{% endfor %}
+  </div>
+  <table class="list">
+    <thead><tr><th>Mode</th><th data-tip="Whether the simulator saw the problem in this mode">Simulator</th><th class="num" data-tip="Runs done without an error">Runs</th><th class="num" data-tip="Runs that failed the case's check or showed the problem's kind at their end or on the way">With the problem</th></tr></thead>
+    <tbody>
+    {% for m in lab[0].modes if m.runs %}
+      <tr><td class="font-mono">{{ m.mode }}</td>
+        <td class="{{ 'text-rose-700 dark:text-rose-300' if m.mode in per_mode else 'muted' }}">{{ "seen" if m.mode in per_mode else "–" }}</td>
+        <td class="num muted">{{ m.runs }}</td>
+        <td class="num {{ 'font-semibold text-rose-700 dark:text-rose-300' if m.seen else 'muted' }}">{{ m.seen }}</td></tr>
+    {% else %}
+      <tr><td colspan="4" class="muted">No run done yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted px-4 pb-3 text-xs">The lab cannot replay the simulator's order of messages: a problem of few orders may not show in its runs.</p>
+</div>
+{% endif %}
+<script type="application/json" id="sim-example">{{ example | tojson }}</script>
+{% endblock %}

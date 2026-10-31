@@ -1,0 +1,87 @@
+{% from "macros.html" import run_dot, run_state, icon %}
+<div class="mb-3 flex flex-wrap justify-end gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+  <span class="flex items-center gap-1.5">{{ run_dot("completed") }} done</span>
+  <span class="flex items-center gap-1.5" data-tip="A failure the simulator predicted for this mode">{{ run_dot("allowed") }} failed as predicted</span>
+  <span class="flex items-center gap-1.5" data-tip="A check failed, or a property broke: rest, no loops, the reach of BGP">{{ run_dot("failed") }} failed</span>
+  <span class="flex items-center gap-1.5">{{ run_dot("error") }} error</span>
+  <span class="flex items-center gap-1.5">{{ run_dot("running") }} running</span>
+  <span class="flex items-center gap-1.5">{{ run_dot("pending") }} pending</span>
+</div>
+{# Variants as rows, so that any number of them fits; a run opens in the replay. The first column stays while the rest scrolls. #}
+{% for topo in experiment.topologies %}
+{% if experiment.topologies | length > 1 %}<h2 class="section-title mt-6 mb-2 font-mono">{{ topo }}</h2>{% endif %}
+<div class="card mb-4 overflow-x-auto">
+  <table class="sticky-first w-full text-sm">
+    <thead class="border-b border-slate-100 dark:border-white/5">
+      <tr class="text-left [&>th]:px-4 [&>th]:py-2.5 [&>th]:font-medium [&>th]:text-slate-500 dark:[&>th]:text-slate-400">
+        <th>Variant</th>
+        {% for s in experiment.cases_of(topo) %}<th class="font-mono">{{ s }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100 dark:divide-white/5">
+      {% for v in experiment.variants %}
+      <tr class="[&>td]:px-4 [&>td]:py-2">
+        <td class="whitespace-nowrap"><span class="mr-2 inline-block h-3 w-1 rounded-full align-middle" style="background: var(--series-{{ loop.index0 % 8 + 1 }})"></span><span class="font-mono" data-tip="{{ v.summary() }}">{{ v.name }}</span></td>
+        {% for s in experiment.cases_of(topo) %}
+        {# On a touch screen the cell is the target: a tap lists its runs with what they tell (ui.js). #}
+        <td class="pointer-coarse:h-11 pointer-coarse:cursor-pointer" data-runs="{{ v.name }} · {{ s }}"><span class="flex gap-1">
+          {% for c in grid[topo][v.name][s] %}{% set r = c.state %}
+          {% if r in ("completed", "allowed", "failed") %}<a href="?tab=replay&topology={{ topo }}&scenario={{ s }}&run={{ loop.index }}&variant={{ v.name }}" data-dense class="flex rounded-full hover:outline-2 hover:outline-offset-2 hover:outline-uoft-400" aria-label="Replay run {{ loop.index }}" data-tip="Run {{ loop.index }} · {{ run_state(r) }}{% for f in c.facts %}&#10;{{ f }}{% endfor %}">{{ run_dot(r) }}</a>
+          {% elif r == "error" %}<span class="flex" data-tip="Run {{ loop.index }} · {{ run_state(r) }}{% for f in c.facts %}&#10;{{ f }}{% endfor %}">{{ run_dot(r) }}</span>
+          {% else %}{{ run_dot(r) }}{% endif %}
+          {% endfor %}
+        </span></td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endfor %}
+
+<h2 class="section-title mt-8 mb-3">Log</h2>
+{% if log %}
+<div class="card max-h-[55vh] overflow-auto py-2 font-mono text-xs leading-relaxed" data-keep-scroll="log" data-stick-bottom>
+  {% for time, level, message in log %}
+  <div class="flex gap-4 px-4 {{ 'bg-amber-50 text-amber-900 dark:bg-amber-950/50 dark:text-amber-200' if level in ('WARNING', 'ERROR') else 'text-slate-600 dark:text-slate-300' }}">
+    <span class="shrink-0 text-slate-400 tabular-nums">{{ time }}</span><span class="whitespace-pre-wrap">{{ message }}</span>
+  </div>
+  {% endfor %}
+</div>
+{% else %}<p class="muted text-sm">No log yet.</p>{% endif %}
+
+{# What went wrong, by cause, the largest first: which runs, and what to do. #}
+{% if problem_groups %}
+<h2 class="section-title mt-8 mb-3">Problems</h2>
+<section id="problems" class="mb-6 scroll-mt-20 space-y-2" aria-label="Problems">
+  {% for g in problem_groups %}
+  <details class="card group/problem overflow-hidden" {% if g.kind == "error" and loop.first %}open{% endif %}>
+    <summary class="flex cursor-pointer list-none items-start gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+      <span class="mt-1.5 flex shrink-0">{{ run_dot({"error": "error", "check": "failed", "property": "allowed" if g.runs[0].predicted else "failed", "retried": "pending"}[g.kind]) }}</span>
+      <span class="min-w-0 flex-1">
+        <span class="block font-medium">{{ g.title }}</span>
+        {% if g.hint %}<span class="muted mt-0.5 block text-sm">{{ g.hint }}</span>{% endif %}
+      </span>
+      <span class="muted shrink-0 text-sm whitespace-nowrap tabular-nums">{{ g.runs | length }} {{ "check" if g.kind == "check" else "run" }}{{ "s" if g.runs | length != 1 }} · {{ g.rows | length }} setup{{ "s" if g.rows | length != 1 }}</span>
+      {{ icon("chevron-down", "mt-0.5 size-4 shrink-0 text-slate-400 transition group-open/problem:rotate-180") }}
+    </summary>
+    {# One row per topology, variant and scenario: the runs it hit, each failure once. #}
+    <ul class="divide-y divide-slate-100 border-t border-slate-100 text-sm dark:divide-white/5 dark:border-white/5">
+      {% for row in g.rows %}
+      {% set replay = "?tab=replay&topology=" ~ row.topology ~ "&scenario=" ~ row.scenario ~ "&run=" ~ row.runs[0] ~ "&variant=" ~ row.variant %}
+      <li class="flex items-start gap-3 px-4 py-2.5">
+        <span class="min-w-0 flex-1">
+          <span class="block font-mono text-xs break-words">{{ row.topology }} · {{ row.variant }} · {{ row.scenario }}</span>
+          <span class="muted block text-xs">run{{ "s" if row.runs | length != 1 }} {{ row.span }}</span>
+          {% for l in row.lines %}
+          <span class="mt-0.5 block text-xs break-words">{% if l.message %}{{ l.message }}{% else %}Step {{ l.step }}{% if l.t is not none %} at {{ l.t | round(1) }} s{% endif %}: {{ l.problems | problems | join(", ") }}{% endif %}</span>
+          {% endfor %}
+        </span>
+        {% if g.kind != "error" %}<a href="{{ replay }}" class="btn shrink-0 px-2 py-1 text-xs" data-tip="The first of these runs">Replay</a>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endfor %}
+</section>
+{% endif %}

@@ -160,7 +160,7 @@ func (adj *AdjRib) Drop(rfList []bgp.Family) []*Path {
 	adj.walk(rfList, func(d *Destination) bool {
 		for _, p := range d.knownPathList {
 			w := p.Clone(true)
-			w.SetDropped(true)
+			w.SetSessionDropped()
 			l = append(l, w)
 		}
 		return false
@@ -211,7 +211,7 @@ func (adj *AdjRib) MarkLLGRStaleOrDrop(rfList []bgp.Family) []*Path {
 		for i, p := range d.knownPathList {
 			if p.HasNoLLGR() {
 				n := p.Clone(true)
-				n.SetDropped(true)
+				n.SetSessionDropped()
 				pathList = append(pathList, n)
 			} else {
 				n := p.Clone(false)

@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}Settings · OBGP Lab{% endblock %}
+{% block content %}
+<div class="mx-auto {{ 'max-w-xl' if initial else 'max-w-2xl' }}">
+<h1 class="mb-5 text-2xl font-semibold tracking-tight">Settings</h1>
+{# A message of a form stands above its panel, see the script below; without it at the top. #}
+{% if saved %}<p class="mb-4 text-sm text-emerald-700 dark:text-emerald-400" role="status" data-flash>{{ saved }}</p>{% endif %}
+{% if error %}<p class="error mb-4" role="alert" data-flash>{{ error }}</p>{% endif %}
+
+<div class="space-y-8">
+  {% if not initial %}
+  <section class="space-y-4" aria-label="Lab">
+    <h2 class="px-1 text-xs font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">Lab</h2>
+    {% include "partials/cluster.html" %}
+    {% set hs, mh = host_settings, machine_host %}
+    <form id="budget" method="post" action="/settings/host" class="card scroll-mt-20 space-y-4 p-5">
+      <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 class="section-title">Resource budget</h2>
+        <span class="muted text-xs">Host: {{ mh.cpus }} threads, {{ (mh.memory_mb / 1024) | round(1) }} GiB</span>
+      </div>
+      <table class="w-full table-fixed text-sm">
+        <thead>
+          <tr class="muted text-left text-xs">
+            <th class="w-1/3 pb-2 font-normal"></th>
+            <th scope="col" class="px-1 pb-2 font-normal">CPU threads</th>
+            <th scope="col" class="pl-1 pb-2 font-normal">RAM, GiB</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row" class="py-1 pr-2 text-left font-normal" data-tip="Before the host reserve. Empty: the whole host">Budget</th>
+            <td class="p-1"><input name="cpus" aria-label="CPU budget" inputmode="numeric" value="{{ hs.cpus or '' }}" placeholder="all {{ mh.cpus }}" class="input min-w-0 tabular-nums"></td>
+            <td class="py-1 pl-1"><input name="memory_gb" aria-label="RAM budget in GiB" inputmode="decimal" value="{{ ((hs.memory_mb / 1024) | round(1)) if hs.memory_mb else '' }}" placeholder="all {{ (mh.memory_mb / 1024) | round(1) }}" class="input min-w-0 tabular-nums"></td>
+          </tr>
+          <tr>
+            <th scope="row" class="py-1 pr-2 text-left font-normal" data-tip="Resources kept free for the host">Host reserve</th>
+            <td class="p-1"><input name="keep_cpus" aria-label="CPU host reserve" type="number" min="0" value="{{ hs.keep_cpus }}" class="input min-w-0 tabular-nums"></td>
+            <td class="py-1 pl-1"><input name="keep_gb" aria-label="RAM host reserve in GiB" inputmode="decimal" pattern="[0-9]+([.,][0-9]+)?" value="{{ (hs.keep_mb / 1024) | round(1) }}" class="input min-w-0 tabular-nums"></td>
+          </tr>
+          <tr class="muted tabular-nums">
+            <th scope="row" class="pt-2 pr-2 text-left font-normal" data-tip="Saved budget after subtracting the host reserve">For cluster</th>
+            <td class="px-4 pt-2">{{ limits.cpus }}</td>
+            <td class="px-4 pt-2">{{ (limits.memory_mb / 1024) | round(1) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="flex flex-wrap items-center justify-between gap-2 text-sm">
+        <label class="flex items-center gap-3"><span data-tip="More routers per thread can make sampling less precise">Routers per thread</span>
+          <input name="routers_per_cpu" inputmode="numeric" value="{{ hs.routers_per_cpu }}" class="input w-16 tabular-nums"></label>
+        <span class="muted text-xs">Up to {{ max_routers }} routers</span>
+      </div>
+      <div class="flex justify-end border-t border-slate-200/70 pt-4 dark:border-slate-800">
+        <div class="flex gap-2">
+          <button name="action" value="save" class="btn" {% if running %}disabled{% endif %}>Save for later</button>
+          <button name="action" value="apply" class="btn btn-primary" {% if running %}disabled{% endif %}>Save and apply</button>
+        </div>
+      </div>
+    </form>
+  </section>
+  {% endif %}
+  <section class="space-y-4" aria-label="Access">
+    <h2 class="px-1 text-xs font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">Access</h2>
+    <section id="password" class="card scroll-mt-20 overflow-hidden {{ 'glow-live' if initial }}" aria-label="Password">
+      <form method="post" action="/settings/password" class="space-y-3 p-5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="section-title">Password</h2>
+        </div>
+        {% if initial %}<p class="muted text-sm">Replace the initial password with one of your own.</p>{% endif %}
+        <label class="block"><span class="label">Current password</span>
+          <input name="current" type="password" autocomplete="current-password" class="input mt-1"></label>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block"><span class="label">New password</span>
+            <input name="new" type="password" autocomplete="new-password" class="input mt-1"></label>
+          <label class="block"><span class="label">Repeat new password</span>
+            <input name="repeat" type="password" autocomplete="new-password" class="input mt-1"></label>
+        </div>
+        <div class="flex justify-end pt-1"><button class="btn btn-primary">Change password</button></div>
+      </form>
+    </section>
+    {% if not initial %}
+    {# Tokens for agents: an AI assistant over MCP, or a script over the API. #}
+    <section id="agents" class="card scroll-mt-20 overflow-hidden" aria-label="Agents">
+      <div class="space-y-1 p-5 pb-3">
+        <h2 class="section-title">Agents</h2>
+        <p class="muted text-sm" data-tip="Scopes&#10;Read: results and status&#10;Control: also start, stop, update">Tokens for AI agents over MCP, or scripts over the API.</p>
+      </div>
+      {% if waiting %}
+      <ul class="mx-5 mb-4 divide-y divide-amber-200/60 rounded-lg bg-amber-50 text-sm dark:divide-amber-900/50 dark:bg-amber-950/40" aria-label="Waiting for you">
+        {% for a in waiting %}
+        <li class="px-4 py-3">
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <span class="min-w-0 basis-full sm:basis-0 sm:flex-1"><span class="font-medium">{{ a.by }}</span> asks to {{ a.text }}
+              {% if a.details or a.why %}<span class="muted mt-0.5 block text-xs">{{ a.details }}{{ ' · ' if a.details and a.why }}{% if a.why %}Waits as {{ a.why }}{% endif %}</span>{% endif %}</span>
+            <form method="post" action="/settings/actions/{{ a.id }}/reject" class="max-sm:ml-auto"><button class="btn px-2 py-1 text-xs">Reject</button></form>
+            <form method="post" action="/settings/actions/{{ a.id }}/approve"><button class="btn btn-primary px-2 py-1 text-xs">Approve</button></form>
+          </div>
+          {% if a.args.yaml %}<details class="mt-2"><summary class="muted cursor-pointer text-xs">The file</summary><pre class="mt-1 max-h-64 overflow-auto rounded bg-white p-2 font-mono text-xs dark:bg-slate-950">{{ a.args.yaml }}</pre></details>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if new_token %}
+      <div class="mx-5 mb-4 space-y-3 rounded-lg bg-uoft-50 p-4 text-sm dark:bg-uoft-900/40" role="status">
+        <p class="font-medium">Shown once only</p>
+        <div class="flex items-center gap-2"><code id="new-token" class="min-w-0 flex-1 truncate rounded bg-white px-2 py-1.5 font-mono text-xs select-all dark:bg-slate-950">{{ new_token }}</code>
+          <button type="button" class="btn shrink-0 px-2 py-1 text-xs" data-copy="#new-token">Copy</button></div>
+        <p class="label">Claude Code, paste into its terminal</p>
+        <div class="flex items-start gap-2"><code id="mcp-command" class="min-w-0 flex-1 rounded bg-white px-2 py-1.5 font-mono text-xs break-all whitespace-pre-wrap dark:bg-slate-950">{% if https %}curl -fsSk {{ base }}/certificate -o ~/.obgp-lab.crt
+echo 'export NODE_EXTRA_CA_CERTS=~/.obgp-lab.crt' >> ~/.bashrc
+export NODE_EXTRA_CA_CERTS=~/.obgp-lab.crt
+{% endif %}claude mcp add --transport http obgp-lab {{ base }}/mcp --header "Authorization: Bearer {{ new_token }}"</code>
+          <button type="button" class="btn shrink-0 px-2 py-1 text-xs" data-copy="#mcp-command">Copy</button></div>
+        {% if https %}<p class="muted text-xs break-all" data-tip="Self-signed. Compare with&#10;openssl x509 -noout -fingerprint -sha256 -in ~/.obgp-lab.crt">SHA-256 {{ fingerprint }}</p>{% endif %}
+      </div>
+      {% endif %}
+      {% if tokens %}
+      <ul class="divide-y divide-slate-100 border-y border-slate-100 text-sm dark:divide-white/5 dark:border-white/5">
+        {% for t in tokens %}
+        <li class="flex items-center gap-3 px-5 py-2.5">
+          <span class="min-w-0 flex-1">
+            <span class="flex items-center gap-2"><span class="truncate font-medium">{{ t.name }}</span><span class="tag shrink-0">{{ t.scope }}</span>{% if t.approval %}<span class="tag shrink-0">asks first</span>{% endif %}</span>
+            <span class="muted mt-0.5 block text-xs">{% if t.expired %}<span class="text-rose-700 dark:text-rose-300">Expired {{ t.expires }}</span>{% else %}{{ "Until " ~ t.expires if t.expires else "No expiry" }}{% endif %} · {{ "Last used " ~ t.used if t.used else "Never used" }}</span>
+          </span>
+          <form method="post" action="/settings/tokens/{{ t.id }}/revoke"><button class="btn px-2 py-1 text-xs" data-confirm="Revoke {{ t.name }}?" data-confirm-text="Agents with it lose access at once.">Revoke</button></form>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if activity %}
+      <ul class="space-y-1 border-b border-slate-100 px-5 py-3 text-xs dark:border-white/5" aria-label="What agents did">
+        {% for a in activity %}<li class="flex gap-2"><span class="muted shrink-0 tabular-nums">{{ a.when }}</span><span class="shrink-0 font-medium">{{ a.token or "?" }}</span><span class="muted min-w-0 truncate">{{ a.action }}</span></li>{% endfor %}
+      </ul>
+      {% endif %}
+      <form method="post" action="/settings/agents/limits" class="flex flex-wrap items-center gap-2 border-b border-slate-100 px-5 py-3 text-sm dark:border-white/5">
+        <label for="agent-queue-h" data-tip="Beyond this, queueing waits for your approval, also with a token that acts at once">Agents may fill the queue for</label>
+        <input id="agent-queue-h" name="queue_h" type="number" min="0" max="720" step="1" value="{{ agent_limits.queue_h | int }}" class="input w-20 tabular-nums">
+        <span class="muted">h</span>
+        <button class="btn">Save</button>
+      </form>
+      <form method="post" action="/settings/tokens" class="grid gap-3 p-5 sm:grid-cols-[1fr_auto_auto_auto] sm:items-end">
+        <label class="block"><span class="label">Name</span><input name="name" required maxlength="60" class="input mt-1" placeholder="e.g. Claude on my laptop"></label>
+        <label class="block"><span class="label">Scope</span>
+          <select name="scope" class="input mt-1">{% for key, what in scopes.items() %}<option value="{{ key }}" data-tip="{{ what }}">{{ key | capitalize }}</option>{% endfor %}</select></label>
+        <label class="flex items-center gap-2 pb-2 text-sm sm:order-last sm:col-span-4" data-tip="Each change of a control token waits for your approval here"><input type="checkbox" name="approval" class="accent-uoft-700" checked>Asks before each change</label>
+        <label class="block"><span class="label">Expires</span>
+          <select name="days" class="input mt-1"><option value="30">in 30 days</option><option value="90" selected>in 90 days</option><option value="365">in a year</option><option value="0">never</option></select></label>
+        <button class="btn btn-primary">New token</button>
+      </form>
+    </section>
+    {% endif %}
+  </section>
+  <section class="space-y-4" aria-label="More">
+    <h2 class="px-1 text-xs font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">More</h2>
+    {% if not initial %}
+    <form id="notifications" method="post" action="/settings/notify" class="card scroll-mt-20 space-y-3 p-5">
+      <h2 class="section-title">Notifications</h2>
+      <label class="block"><span class="label">Discord webhook</span>
+        <input name="discord" type="password" autocomplete="off" spellcheck="false" class="input mt-1 font-mono" placeholder="{{ webhook or 'https://discord.com/api/webhooks/…' }}"></label>
+      {% if webhook %}<p class="muted text-xs">Empty keeps the current webhook.</p>{% endif %}
+      <div class="flex flex-row-reverse gap-2">
+        <button name="action" value="save" class="btn btn-primary">Save</button>
+        <button name="action" value="test" class="btn">Send a test</button>
+        {% if webhook %}<button name="action" value="off" class="btn mr-auto">Turn off</button>{% endif %}
+      </div>
+    </form>
+    {% endif %}
+    <section class="card space-y-3 p-5" aria-label="Display">
+      <h2 class="section-title">Display</h2>
+      <label class="flex cursor-pointer items-center justify-between gap-4 text-sm">
+        <span>Show intro each session</span>
+        <span class="relative inline-flex shrink-0">
+          <input type="checkbox" role="switch" class="peer sr-only" data-intro-setting>
+          <span class="h-6 w-11 rounded-full bg-slate-300 transition-colors peer-checked:bg-uoft-700 peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-uoft-500 dark:bg-slate-700 dark:peer-checked:bg-uoft-400" aria-hidden="true"></span>
+          <span class="pointer-events-none absolute left-1 top-1 size-4 rounded-full bg-white shadow-sm transition-transform peer-checked:translate-x-5" aria-hidden="true"></span>
+        </span>
+      </label>
+    </section>
+    {% if not initial %}
+  {# The commit the lab runs, and new ones of its branch on GitHub. #}
+  {% set v = version %}
+  <section id="version" class="card scroll-mt-20 space-y-3 p-5">
+    <div>
+      <h2 class="section-title">Lab version</h2>
+      <p class="muted mt-1 text-sm">{% if v.branch %}<span class="font-mono">{{ v.branch }}</span> at <span class="font-mono">{{ v.commit }}</span> of {{ v.date }}{% else %}<span class="font-mono">{{ v.commit }}</span>{% endif %}.
+        {% if v.problem %}<span class="error block">{{ v.problem }}</span>
+        {% elif v.behind %}{{ v.behind }} new commit{{ "s" if v.behind != 1 }} on GitHub.
+        {% elif v.checked %}Up to date, checked {{ v.checked | clock }}.
+        {% else %}Not checked yet.{% endif %}</p>
+    </div>
+    {% if v.new %}<ul class="space-y-1 text-sm">{% for line in v.new %}{% set hash, _, title = line.partition(" ") %}<li class="flex gap-2"><span class="muted font-mono text-xs leading-5">{{ hash }}</span><span class="min-w-0 truncate" data-tip="{{ title }}">{{ title }}</span></li>{% endfor %}</ul>{% endif %}
+    {% if v.ahead or v.dirty %}<p class="text-sm text-amber-800 dark:text-amber-300">{% if v.dirty %}Local changes block updates.{% else %}{{ v.ahead }} unpublished commits.{% endif %}</p>{% endif %}
+    {% if v.branches %}
+    <form method="post" action="/settings/update/switch" class="flex flex-wrap items-center gap-2">
+      <label for="branch" class="muted text-sm">Branch on GitHub</label>
+      <select id="branch" name="branch" class="input min-w-0 flex-1">
+        {% for b in v.branches %}<option value="{{ b.name }}" {{ "selected" if (b.name == v.branch if v.branch and not v.resettable else b.default) }}>{{ b.name }}{{ " (default)" if b.default }}, {{ b.commit }} of {{ b.date }}{{ ", no way back in the UI" if not b.switch }}</option>{% endfor %}
+      </select>
+      {% if running %}<span data-tip="{{ running.name }} runs. Pause the queue or wait until it ends" data-tip-align="end"><button class="btn{{ ' btn-primary' if v.resettable }}" disabled>Switch and restart</button></span>
+      {% elif v.dirty %}<span data-tip="Local changes block a switch" data-tip-align="end"><button class="btn" disabled>Switch and restart</button></span>
+      {% else %}<button class="btn{{ ' btn-primary' if v.resettable }}" data-confirm="Switch the lab's branch?" data-confirm-text="Restarts the web interface. Results and settings stay, the current commit as a backup branch." aria-label="Switch branch">Switch and restart</button>{% endif %}
+    </form>
+    {% endif %}
+    <div class="flex flex-row-reverse gap-2">
+      {% if v.behind %}
+      <form method="post" action="/settings/update">
+        {% if running %}<span data-tip="{{ running.name }} runs. Pause the queue or wait until it ends" data-tip-align="end"><button class="btn btn-primary" disabled>Update and restart</button></span>
+        {% else %}<button class="btn btn-primary" data-confirm="Update the lab?" data-confirm-safe data-confirm-text="{{ v.behind }} new commits. Restarts the web interface, results stay." aria-label="Update">Update and restart</button>{% endif %}
+      </form>
+      {% endif %}
+      <form method="post" action="/settings/update/check"><button class="btn">Check now</button></form>
+    </div>
+  </section>
+    {% endif %}
+  </section>
+</div>
+</div>
+  <script>
+    (() => {
+      const target = location.hash && document.getElementById(location.hash.slice(1));
+      const flash = [...document.querySelectorAll("[data-flash]")];
+      if (target && flash.length) {
+        target.before(...flash);
+        flash[0].classList.add("scroll-mt-24");
+        // After the browser's own jump to the anchor, which would hide the message under the header.
+        addEventListener("load", () => requestAnimationFrame(() => flash[0].scrollIntoView({ block: "start" })));
+      }
+    })();
+    (() => {
+      const box = document.querySelector("[data-intro-setting]");
+      try { box.checked = localStorage.getItem("intro") !== "off"; } catch { box.disabled = true; }
+      box.onchange = () => { try { box.checked ? localStorage.removeItem("intro") : localStorage.setItem("intro", "off"); } catch {} };
+    })();
+  </script>
+{% endblock %}

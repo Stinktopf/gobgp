@@ -24,6 +24,7 @@ import (
 	"math/bits"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -195,6 +196,8 @@ type Table struct {
 	// this is a map[rt, MAC address]map[addrPrefixKey][]nlri
 	// this holds a map for a set of prefixes.
 	macIndex EVPNMacNLRIs
+	// routeServer marks a route server's table, see RouteServerAdmits.
+	routeServer bool
 }
 
 func NewTable(logger *slog.Logger, rf bgp.Family, dsts ...*Destination) *Table {
@@ -337,6 +340,7 @@ func (t *Table) getOrCreateDest(nlri bgp.NLRI, size int) *Destination {
 			slog.Any("Nlri", nlri),
 		)
 		dest = NewDestination(nlri, size)
+		dest.routeServer = t.routeServer
 		t.setDestination(dest)
 	}
 	return dest
@@ -347,7 +351,7 @@ func (t *Table) update(newPath *Path) *Update {
 	dst := t.getOrCreateDest(newPath.GetNlri(), 64)
 	u := dst.Calculate(t.logger, newPath)
 
-	if len(dst.knownPathList) == 0 {
+	if !dst.operaHolds() && dst.operaViewsEmpty() {
 		t.deleteDest(dst)
 		return u
 	}
@@ -832,6 +836,15 @@ type TableInfo struct {
 	NumPath        int
 	NumAccepted    int
 	NumCollision   int
+	// NumSuppressed counts the paths that OBGP keeps but does not admit.
+	NumSuppressed int
+	// NumKnown counts the prefixes with a valid path admitted or set aside,
+	// NumBlocked those of them without a valid path admitted: a valid path is
+	// set aside, but the router has no route. In every pruning mode; under
+	// refresh pruning they wait for a route refresh. The router's own table
+	// only, not the views of its neighbors.
+	NumKnown   int
+	NumBlocked int
 }
 
 type TableInfoOptions struct {
@@ -841,7 +854,7 @@ type TableInfoOptions struct {
 }
 
 func (t *Table) Info(option ...TableInfoOptions) *TableInfo {
-	var numD, numP, numC int
+	var numD, numP, numC, numS, numK, numW int
 
 	id := GLOBAL_RIB_NAME
 	var vrf *Vrf
@@ -862,6 +875,13 @@ func (t *Table) Info(option ...TableInfoOptions) *TableInfo {
 			numC += len(dests) - 1
 		}
 		for _, d := range dests {
+			aside := d.operaSuppressed()
+			numS += len(aside)
+			validAside := slices.ContainsFunc(aside, isOperaValid)
+			validAdmitted := slices.ContainsFunc(d.knownPathList, isOperaValid)
+			if validAside && !validAdmitted {
+				numW++
+			}
 			paths := d.GetKnownPathList(id, as)
 			n := len(paths)
 
@@ -878,12 +898,18 @@ func (t *Table) Info(option ...TableInfoOptions) *TableInfo {
 				numD++
 				numP += n
 			}
+			if validAdmitted || validAside {
+				numK++
+			}
 		}
 	}
 	return &TableInfo{
 		NumDestination: numD,
 		NumPath:        numP,
 		NumCollision:   numC,
+		NumSuppressed:  numS,
+		NumKnown:       numK,
+		NumBlocked:     numW,
 	}
 }
 

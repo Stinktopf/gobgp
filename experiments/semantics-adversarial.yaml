@@ -1,0 +1,25 @@
+name: semantics-adversarial
+description: Whether OBGP keeps the semantics of BGP on real sessions, in the cases of the Go tests.
+cluster: {cpus: 5, memory_mb: 38400}
+runs: 10
+bgp: {hold_time: 9, keepalive: 3, graceful_restart: true}
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp-rp, mode: obgp-rp}
+  - {name: obgp-rp-delay, mode: obgp-rp, refresh_delay: 1}
+  - {name: obgp-rp-pn, mode: obgp-rp, per_neighbor: true}
+  - {name: obgp-sp, mode: obgp-sp}
+  - {name: obgp-sp-pn, mode: obgp-sp, per_neighbor: true}
+  - {name: obgp-hp, mode: obgp-hp}
+  - {name: obgp-hp-pn, mode: obgp-hp, per_neighbor: true}
+  - {name: obgp-np, mode: obgp-np}
+  - {name: obgp-np-pn, mode: obgp-np, per_neighbor: true}
+  - {name: obgp-paper, mode: obgp-paper}
+  - {name: hybrid-rp, mode: hybrid-rp}
+  - {name: random-rp, mode: random-rp, share: 0.5}
+topologies: [adversarial]
+scenarios:
+  - class-withdraw
+  - outside-model-withdraw
+  - valley-free-export
+  - lifecycle

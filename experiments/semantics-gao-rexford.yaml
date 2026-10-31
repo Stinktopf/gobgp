@@ -1,0 +1,23 @@
+name: semantics-gao-rexford
+description: Whether routes stay valley-free and every router keeps what BGP reaches, on three tiers that follow Gao-Rexford, filled and drained. gao-rexford-23 adds three routers in which one OBGP table loses a route, as the simulator found it. They learn only the prefixes of s-a, so full reach is not defined there and the BGP run of the same seed is the reference.
+cluster: {cpus: 12, memory_mb: 83456}
+runs: 10
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp-rp, mode: obgp-rp}
+  - {name: obgp-rp-delay, mode: obgp-rp, refresh_delay: 1}
+  - {name: obgp-rp-pn, mode: obgp-rp, per_neighbor: true}
+  - {name: obgp-sp, mode: obgp-sp}
+  - {name: obgp-sp-pn, mode: obgp-sp, per_neighbor: true}
+  - {name: obgp-hp, mode: obgp-hp}
+  - {name: obgp-hp-pn, mode: obgp-hp, per_neighbor: true}
+  - {name: obgp-np, mode: obgp-np}
+  - {name: obgp-np-pn, mode: obgp-np, per_neighbor: true}
+  - {name: obgp-paper, mode: obgp-paper}
+  - {name: hybrid-rp, mode: hybrid-rp}
+  - {name: random-rp, mode: random-rp, share: 0.5}
+topologies: [gao-rexford-20, gao-rexford-23]
+scenarios:
+  - fill-60
+  - full-drain-60
+  - valley-free

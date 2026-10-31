@@ -1,0 +1,82 @@
+{% from "macros.html" import icon, loading %}
+<div id="overview" data-result="{{ result.name }}" class="space-y-4">
+    {# What it is, then the topology and scenario: the charts over the time of a run, the table of its runs. #}
+    <div>
+      <h2 class="section-title mb-1">Measurement quality</h2>
+      <p class="muted text-xs">Sampling and host load. Amber: a router below half the rate, or the host above {{ (100 * busy_host) | round | int }} % of its CPUs.</p>
+    </div>
+    {% include "partials/result-filters.html" %}
+    <div data-charts data-metrics="quality" data-spread="routers" data-src="/results/{{ result.name }}/series?topology={{ topology }}&scenario={{ scenario }}">
+      <div class="card py-10">{{ loading("Loading the series") }}</div>
+    </div>
+    {% set m = integrity %}
+    {% if sampling_rows or m.noise or m.shifting or m.images %}
+    <section id="quality" class="card min-w-0 p-5">
+      {% if sampling_rows %}
+      {% set many = sampling_rows | map(attribute="topology") | unique | list | length > 1 or sampling_rows | map(attribute="scenario") | unique | list | length > 1 %}
+      {% set with_others = sampling_rows | selectattr("others", "ne", none) | list %}
+      {% set with_saturated = sampling_rows | selectattr("saturated", "ne", none) | list %}
+      {% macro hz(x) %}{{ "%.1f" | format(x) if x is not none else "–" }}{% endmacro %}
+      {% macro pct(x) %}{{ "%.0f %%" | format(100 * x) if x is not none else "–" }}{% endmacro %}
+      {% macro sec(x) %}{{ ("%.2g s" | format(x)) if x is not none else "–" }}{% endmacro %}
+      {% set warn = "text-amber-700 dark:text-amber-300" %}
+      {% macro cells(r, set_hz, run=false) %}
+            <td class="text-right">{{ "%g Hz" | format(set_hz) if not run }}</td>
+            <td class="text-right {{ warn if r.below }}">{{ hz(r.hz) }} Hz</td>
+            <td class="whitespace-nowrap {{ warn if r.slow }}" data-tip="{{ 'Below half the rate set. ' if r.slow }}Longest gap between two samples: {{ sec(r.gap) }}">{{ hz(r.slowest) }} Hz{% if r.slowest_router and r.slowest < 0.95 * set_hz %} <span class="font-mono text-xs opacity-70">{{ r.slowest_router }}</span>{% endif %}</td>
+            <td class="text-right {{ warn if r.slow }}">{{ sec(r.resolution) }}</td>
+            <td class="text-right">{{ pct(r.cpu_mean) }}</td>
+            <td class="text-right {{ warn if r.busy }}" {% if r.busy %}data-tip="Above {{ (100 * busy_host) | round | int }} % of the CPUs"{% endif %}>{{ pct(r.cpu_max) }}</td>
+            {% if with_saturated %}<td class="text-right">{{ sec(r.saturated) }}</td>{% endif %}
+            {% if with_others %}<td class="text-right">{{ pct(r.others) }}</td>{% endif %}
+      {% endmacro %}
+      <div class="overflow-x-auto">
+      <table class="sticky-first w-full text-sm tabular-nums">
+        <thead><tr class="text-left text-xs text-slate-500 dark:text-slate-400 [&>th]:pr-6 [&>th]:pb-2 [&>th]:font-medium [&>th]:whitespace-nowrap">
+          <th>Variant</th>
+          <th class="text-right" data-tip="The rate the experiment set">Set</th>
+          <th class="text-right" data-tip="The median router of the run. For a variant, the median run">Sampled</th>
+          <th data-tip="Slowest router. For a variant, of any run">Slowest router</th>
+          <th class="text-right" data-tip="Two intervals of the slowest router">Resolution</th>
+          <th class="text-right" data-tip="Host CPU, mean of the run. For a variant, the median run">Host CPU</th>
+          <th class="text-right" data-tip="The busiest second of the run. For a variant, of any run">Peak</th>
+          {% if with_saturated %}<th class="text-right" data-tip="Seconds above {{ (100 * busy_host) | round | int }} % of the CPUs">At limit</th>{% endif %}
+          {% if with_others %}<th class="text-right" data-tip="What others than the lab took, on average">Others</th>{% endif %}
+          <th class="text-right" data-tip="When routes came to rest, if they did">At rest</th>
+          <th class="text-right">Runs</th>
+        </tr></thead>
+        {% for row in sampling_rows %}
+        <tbody class="border-t border-slate-100 dark:border-white/5" data-variant="{{ row.variant }}">
+          <tr class="[&>td]:py-1.5 [&>td]:pr-6">
+            <td class="whitespace-nowrap"><span class="font-mono">{{ row.variant }}</span>{% if many %} <span class="muted text-xs">{{ row.topology }} · {{ row.scenario }}</span>{% endif %}</td>
+            {{ cells(row, row.set_hz) }}
+            <td class="text-right {{ warn if row.rested < row.runs | length }}">{{ row.rested }} of {{ row.runs | length }}</td>
+            <td class="text-right"><button type="button" class="hit inline-flex items-center gap-1 rounded px-1 hover:bg-slate-100 dark:hover:bg-slate-800" aria-expanded="false" data-tip="Show the runs"
+              onclick="const open = this.getAttribute('aria-expanded') !== 'true'; this.setAttribute('aria-expanded', open); this.closest('tbody').querySelectorAll('[data-run]').forEach((r) => (r.hidden = !open))">{{ row.runs | length }}{{ icon("chevron-down", "size-3.5") }}</button></td>
+          </tr>
+          {% for r in row.runs %}
+          <tr data-run hidden class="text-xs text-slate-600 dark:text-slate-300 [&>td]:py-1 [&>td]:pr-6">
+            <td class="pl-4"><a href="?tab=replay&topology={{ row.topology }}&scenario={{ row.scenario }}&run={{ r.index }}&variant={{ row.variant }}" class="hit inline-block hover:underline" data-tip="Replay this run">Run {{ r.index }}</a></td>
+            {{ cells(r, row.set_hz, true) }}
+            <td class="text-right {{ warn if r.settle is none }}">{% if r.settle is none %}{{ "oscillated" if r.oscillates else "no" }}{% elif r.resolution and r.settle < r.resolution %}within {{ sec(r.resolution) }}{% else %}after {{ sec(r.settle) }}{% endif %}</td>
+            <td></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        {% endfor %}
+      </table>
+      </div>
+      {% endif %}
+      {% set m = integrity %}
+      <div class="mt-4 space-y-1 text-sm text-slate-600 dark:text-slate-300">
+        {% if sampling_rows | selectattr("limit") | list %}<p>At the limit the runs measure the host as much as the protocol. A larger host, a smaller topology or a lower rate helps.</p>{% endif %}
+        {% if m.noise %}<p>Others used {{ (100 * m.noise.median) | round | int }} % of the host's CPUs, at most {{ (100 * m.noise.max) | round | int }} % in a run.</p>{% endif %}
+        {% if m.shifting %}<p data-tip="Load of others changed most{% for x in m.shifting[:12] %}&#10;{{ x.topology }} · {{ x.scenario }} · {{ x.variant }}: {{ (100 * x.spread) | round | int }} %{% endfor %}">Others' load changed by up to {{ (100 * m.shifting[0].spread) | round | int }} % of the CPUs in {{ m.shifting[0].topology }} · {{ m.shifting[0].scenario }}. Times there compare less well.</p>{% endif %}
+        {% if m.images %}<p data-tip="Images{% for v, tags in m.images.items() %}&#10;{{ v }}: {{ tags | join(', ') }}{% endfor %}">Runs of {{ m.images | list | join(", ") }} ran on different images, e.g. after a resume.</p>{% endif %}
+      </div>
+    </section>
+    {% endif %}
+    {% if not (sampling_rows or m.noise or m.shifting or m.images) %}
+    <p class="card py-10 text-center text-sm text-slate-400">No run of this scenario is done yet.</p>
+    {% endif %}
+</div>

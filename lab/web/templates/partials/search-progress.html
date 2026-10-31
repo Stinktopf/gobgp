@@ -1,0 +1,9 @@
+{# How far a queued or running search is: polled, the page reloads once it ends. #}
+<div hx-get="/simulation/{{ s.id }}/state" hx-trigger="every 3s" hx-swap="outerHTML" role="status" class="min-w-40">
+  {% set again %}{% if s.deaths %} · <span class="text-amber-800 dark:text-amber-300" data-tip="{{ s.died or 'Its worker ended' }}, so it began again. It fails once its worker ends {{ deaths_max | default(2) }} times.">began again</span>{% endif %}{% endset %}
+  {% if s.state == "queued" %}<span class="muted text-sm">Queued{{ again }}</span>
+  {% else %}{% set p = s.progress or 0 %}
+  <div class="h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800"><div class="h-full rounded-full bg-uoft-700 dark:bg-uoft-400" style="width: {{ (100 * p) | round(1) }}%"></div></div>
+  <span class="muted text-xs tabular-nums">{{ (100 * p) | round | int }} %{% if s.left_s is not none %} · about {{ s.left_s | duration }} left{% endif %}{{ again }}</span>
+  {% endif %}
+</div>

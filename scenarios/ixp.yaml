@@ -1,0 +1,10 @@
+name: ixp
+description: 'A route server between three clients, transparent, the filter of client c against AS 65003 applied after its choice, as gobgpd has it. With OBGP c may get no route, in every mode with one table or per neighbor, never with BGP. Forwarding never loops.'
+steps:
+  - announce: {rate: 1, for: 1, lifetime: 86400, jitter: 0, max_active: 1}
+  - until_stable: {timeout: 120}
+  - expect: {router: clients, forwarding: true, prefixes: any}
+  - expect: {router: c, may_fail: [obgp-rp, obgp-sp, obgp-hp, obgp-np, obgp-paper, obgp-rp-pn, obgp-sp-pn, obgp-hp-pn, obgp-np-pn]}
+  - withdraw: {}
+  - until_stable: {timeout: 120}
+  - expect: {router: clients, prefixes: none}

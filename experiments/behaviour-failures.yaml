@@ -1,0 +1,24 @@
+name: behaviour-failures
+description: How BGP and OBGP recover from failures and policy changes on noble-eu without its preference cycles, where both come to rest, so that recovery is measured and not oscillation.
+cluster: {cpus: 14, memory_mb: 116224}
+runs: 10
+bgp: {hold_time: 9, keepalive: 3}
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp-rp, mode: obgp-rp}
+  - {name: obgp-rp-delay, mode: obgp-rp, refresh_delay: 1}
+  - {name: obgp-rp-pn, mode: obgp-rp, per_neighbor: true}
+  - {name: obgp-sp, mode: obgp-sp}
+  - {name: obgp-sp-pn, mode: obgp-sp, per_neighbor: true}
+  - {name: obgp-hp, mode: obgp-hp}
+  - {name: obgp-hp-pn, mode: obgp-hp, per_neighbor: true}
+  - {name: obgp-np, mode: obgp-np}
+  - {name: obgp-np-pn, mode: obgp-np, per_neighbor: true}
+  - {name: obgp-paper, mode: obgp-paper}
+topologies: [noble-eu-stable]
+scenarios:
+  - link-flap
+  - regional-outage
+  - vortex
+  - hijack
+primary: {metric: settle_s, variant: obgp-rp, baseline: bgp}

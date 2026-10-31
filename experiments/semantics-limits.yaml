@@ -1,0 +1,26 @@
+name: semantics-limits
+description: Where OBGP reaches its limits, each case on its own network. The simulator's smallest counterexamples outside and inside the model, and Abilene as one AS with iBGP through two route reflectors, its direct entry failing and returning. To compare how often each mode fails in the lab and in the simulator.
+cluster: {cpus: 8, memory_mb: 62976}
+runs: 10
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp-rp, mode: obgp-rp}
+  - {name: obgp-rp-delay, mode: obgp-rp, refresh_delay: 1}
+  - {name: obgp-rp-pn, mode: obgp-rp, per_neighbor: true}
+  - {name: obgp-sp, mode: obgp-sp}
+  - {name: obgp-sp-pn, mode: obgp-sp, per_neighbor: true}
+  - {name: obgp-hp, mode: obgp-hp}
+  - {name: obgp-hp-pn, mode: obgp-hp, per_neighbor: true}
+  - {name: obgp-np, mode: obgp-np}
+  - {name: obgp-np-pn, mode: obgp-np, per_neighbor: true}
+  - {name: obgp-paper, mode: obgp-paper}
+topologies: [sim-gao-rexford-obgp-rp-unreachable, sim-import-filter-obgp-hp-unreachable, sim-local-pref-bgp-no-convergence, sim-route-leak-bgp-no-convergence, sim-route-leak-obgp-rp-leaked, sim-tagging-obgp-rp-unreachable, abilene-as]
+paired: true
+scenarios:
+  - sim-gao-rexford-obgp-rp-unreachable
+  - sim-import-filter-obgp-hp-unreachable
+  - sim-local-pref-bgp-no-convergence
+  - sim-route-leak-bgp-no-convergence
+  - sim-route-leak-obgp-rp-leaked
+  - sim-tagging-obgp-rp-unreachable
+  - abilene-as

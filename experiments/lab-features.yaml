@@ -1,0 +1,22 @@
+name: lab-features
+description: Whether every building block of the lab works on real routers, iBGP, route reflection, confederations, a route server, MED, leaks, siblings, aggregates, communities, poisoning, an MRAI of 2 s and the policy steps, checked as the simulator predicts it.
+cluster: {cpus: 4, memory_mb: 30208}
+runs: 2
+bgp: {mrai: 2}
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp-rp, mode: obgp-rp}
+  - {name: obgp-rp-delay, mode: obgp-rp, refresh_delay: 1}
+  - {name: obgp-rp-pn, mode: obgp-rp, per_neighbor: true}
+  - {name: obgp-sp, mode: obgp-sp}
+  - {name: obgp-sp-pn, mode: obgp-sp, per_neighbor: true}
+  - {name: obgp-hp, mode: obgp-hp}
+  - {name: obgp-hp-pn, mode: obgp-hp, per_neighbor: true}
+  - {name: obgp-np, mode: obgp-np}
+  - {name: obgp-np-pn, mode: obgp-np, per_neighbor: true}
+  - {name: obgp-paper, mode: obgp-paper}
+topologies: [lab-features, ixp]
+paired: true
+scenarios:
+  - lab-features
+  - ixp

@@ -1,0 +1,36 @@
+roles:
+  origins: [a]
+  line: [b, c, d]
+routers:
+  a:
+    asn: 65101
+    routerId: 10.9.0.1
+    position: {x: 0, y: 0}
+    neighbors:
+      - name: b
+        peerAs: 65102
+  b:
+    asn: 65102
+    routerId: 10.9.0.2
+    position: {x: 150, y: 0}
+    neighbors:
+      - name: a
+        peerAs: 65101
+      - name: c
+        peerAs: 65103
+  c:
+    asn: 65103
+    routerId: 10.9.0.3
+    position: {x: 300, y: 0}
+    neighbors:
+      - name: b
+        peerAs: 65102
+      - name: d
+        peerAs: 65104
+  d:
+    asn: 65104
+    routerId: 10.9.0.4
+    position: {x: 450, y: 0}
+    neighbors:
+      - name: c
+        peerAs: 65103

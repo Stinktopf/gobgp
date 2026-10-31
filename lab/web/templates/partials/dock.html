@@ -1,0 +1,170 @@
+{% from "macros.html" import icon, run_state %}
+{# The sub-jobs of a job: its runs by topology and scenario, a dot per run. #}
+{% macro subjobs(parts, name) -%}
+{% set dock_states = ["completed", "allowed", "failed", "error", "running", "pending"] %}
+<ul class="dock-parts" data-keep-scroll="parts-{{ name }}">
+  {% for p in parts %}
+  <li class="flex items-center gap-3 py-0.5">
+    <span class="min-w-0 flex-1 truncate font-mono">{{ p.topology }} <span class="muted">·</span> {{ p.scenario }}</span>
+    <span class="flex flex-wrap justify-end gap-0.5 max-sm:hidden">
+      {%- for r in p.runs %}<span class="dock-run dock-run-{{ r.state }}" role="img" aria-label="{{ r.variant }}, run {{ r.index }}: {{ run_state(r.state) }}" data-tip="{{ r.variant }}, run {{ r.index }}&#10;{{ run_state(r.state) }}"></span>{% endfor -%}
+    </span>
+    {# On a phone a dot per run gets too small: a bar of the states instead, in the order of the legend. #}
+    {% set counts = p.runs | map(attribute="state") | list %}
+    {% set shown = [] %}{% for state in dock_states if state in counts %}{% set _ = shown.append((state, counts.count(state))) %}{% endfor %}
+    <span class="flex h-2 w-24 shrink-0 overflow-hidden rounded-full sm:hidden" role="img"
+          aria-label="{% for state, n in shown %}{{ n }} {{ run_state(state) | lower }}{{ ', ' if not loop.last }}{% endfor %}"
+          data-tip="{% for state, n in shown %}{{ run_state(state) }}: {{ n }}{{ '&#10;' | safe if not loop.last }}{% endfor %}">
+      {%- for state, n in shown %}<span class="dock-bar-{{ state }} h-full" style="width: {{ 100 * n / counts | length }}%"></span>{% endfor -%}
+    </span>
+    <span class="muted w-10 text-right tabular-nums">{{ p.done }}/{{ p.runs | length }}</span>
+  </li>
+  {% endfor %}
+</ul>
+{%- endmacro %}
+{% macro toggle(name) -%}
+<button type="button" class="dock-expand" aria-expanded="false" aria-label="Runs of {{ name }}" data-job-toggle>{{ icon("chevron-down") }}</button>
+{%- endmacro %}
+{# What an agent asks for, one at a time: a card on every page but the settings, which list all. #}
+{% if asks %}{% set a = asks[0] %}
+<div class="ask-card" hidden role="alertdialog" aria-label="An agent asks" data-asks="{{ asks | map(attribute='id') | join(',') }}">
+  <p class="text-sm"><span class="font-medium">{{ a.by }}</span> asks to {{ a.text }}</p>
+  {% if a.details %}<p class="muted mt-0.5 truncate text-xs" data-tip="{{ a.details }}">{{ a.details }}</p>{% endif %}
+  <div class="mt-2 flex items-center gap-2">
+    {% if asks | length > 1 %}<a href="/settings#agents" class="muted text-xs hover:underline">+{{ asks | length - 1 }} more</a>{% endif %}
+    <button type="button" class="btn ml-auto px-2 py-1 text-xs" data-ask-later>Later</button>
+    <form method="post" action="/settings/actions/{{ a.id }}/reject"><button class="btn px-2 py-1 text-xs">Reject</button></form>
+    <form method="post" action="/settings/actions/{{ a.id }}/approve"><button class="btn btn-primary px-2 py-1 text-xs">Approve</button></form>
+  </div>
+</div>
+{% endif %}
+{% if active or searching or queue %}
+<div class="dock-bar">
+  <div class="mx-auto flex h-12 max-w-6xl items-center gap-3 px-4 text-sm">
+    {% if active %}
+    {% set s = active.status %}
+    <span class="size-2 shrink-0 animate-pulse rounded-full bg-sky-500" role="img" aria-label="Running"></span>
+    <a href="/results/{{ active.name }}" class="min-w-0 truncate font-mono font-medium hover:underline">{{ active.name }}</a>
+    <span class="muted hidden shrink-0 tabular-nums sm:inline">{{ s.done }}/{{ s.total }}</span>
+    <div class="hidden h-1.5 w-32 shrink-0 overflow-hidden rounded-full bg-slate-200 md:block dark:bg-slate-800">
+      <div class="h-full rounded-full bg-uoft-700 dark:bg-uoft-400" style="width: {{ (100 * s.done / s.total) if s.total else 0 }}%"></div>
+    </div>
+    <span class="muted hidden min-w-0 truncate lg:inline">{{ s.phase or "" }}</span>
+    {% if left_s is not none %}
+    <span class="muted shrink-0 tabular-nums">{{ left_s | duration }} left<span class="hidden sm:inline"> · ends {{ active_ends | clock }}</span></span>
+    {% endif %}
+    {% if queue and gpu_wait_s %}<span class="hidden shrink-0 text-amber-800 sm:inline dark:text-amber-300" data-tip="Others use a GPU, the next result waits">Next waits for an idle GPU</span>{% endif %}
+    {% elif searching %}
+    {# A search of the simulator: no cluster needed. #}
+    <span class="size-2 shrink-0 animate-pulse rounded-full bg-sky-500" role="img" aria-label="Running"></span>
+    <a href="/simulation?search={{ searching.id }}" class="min-w-0 truncate font-medium hover:underline">Simulator search</a>
+    <span class="muted hidden shrink-0 tabular-nums sm:inline">{{ ((searching.progress or 0) * 100) | round | int }} %</span>
+    <div class="hidden h-1.5 w-32 shrink-0 overflow-hidden rounded-full bg-slate-200 md:block dark:bg-slate-800">
+      <div class="h-full rounded-full bg-uoft-700 dark:bg-uoft-400" style="width: {{ (searching.progress or 0) * 100 }}%"></div>
+    </div>
+    {% if searching.left_s is not none %}<span class="muted shrink-0 tabular-nums">{{ searching.left_s | duration }} left</span>{% endif %}
+    {% if searching.deaths %}<span class="hidden shrink-0 text-amber-800 sm:inline dark:text-amber-300" data-tip="{{ searching.died or 'Its worker ended' }}. A search fails once its worker ends {{ deaths_max | default(2) }} times.">Began again</span>{% endif %}
+    {% elif cluster_off and results_waiting %}
+    <a href="/settings#cluster" class="font-medium hover:underline">Cluster switched off · start in Settings</a>
+    {% elif paused %}
+    <span class="size-2 shrink-0 rounded-full bg-amber-500" role="img" aria-label="Paused"></span>
+    <span class="font-medium">Queue paused</span>
+    {% if pause_reason %}<span class="min-w-0 truncate text-amber-800 dark:text-amber-300" data-tip="{{ pause_reason }} Free space, then resume the queue">{{ pause_reason }}</span>{% endif %}
+    {% elif docker_down %}
+    <span class="size-2 shrink-0 rounded-full bg-amber-500" role="img" aria-label="Waiting"></span>
+    <a href="/settings#cluster" class="font-medium hover:underline" data-tip="Docker is down. Start it and the queue goes on">Waiting for Docker</a>
+    {% elif gpu_wait_s %}
+    <span class="size-2 shrink-0 rounded-full bg-amber-500" role="img" aria-label="Waiting"></span>
+    <a href="/settings#cluster" class="font-medium hover:underline" data-tip="Others use a GPU. The next result waits, see Settings">Waiting for an idle GPU</a>
+    <span class="muted shrink-0 tabular-nums">{{ "at least " if gpu_busy }}{{ (gpu_wait_s / 60) | round(0, "ceil") | int }} min</span>
+    {% else %}
+    <span class="muted">Starting next…</span>
+    {% endif %}
+    <div class="ml-auto flex shrink-0 items-center gap-1">
+      {% if all_ends %}<span class="mr-2 hidden text-xs whitespace-nowrap tabular-nums sm:inline">All done {{ all_ends | clock }}</span>{% endif %}
+      <button type="button" class="btn" aria-controls="dock-queue" aria-expanded="false" data-dock-toggle data-tip="The runs of each result, and what waits" data-tip-align="end">
+        {{ icon("list") }}<span class="hidden sm:inline">Runs</span>
+        {% if queue %}<span class="ml-0.5 border-l border-slate-200 pl-2 font-normal text-slate-500 tabular-nums dark:border-white/10 dark:text-slate-400">{{ queue | length }} queued</span>{% endif %}
+      </button>
+      {% if paused and (active or searching) %}
+      <span class="muted px-2 text-xs whitespace-nowrap" data-tip="The running result ends its phase, then the queue waits" data-tip-align="end">Pausing…</span>
+      {% elif paused and not cluster_off %}
+      <form method="post" action="/queue/resume">
+        <button class="btn" data-tip="Go on in the same order" data-tip-align="end">{{ icon("play") }}<span class="hidden sm:inline">Resume</span></button>
+      </form>
+      {% endif %}
+      {# Pause and cancel in one menu, above the bar. #}
+      {% if active or searching or queue %}
+      <details class="relative" data-dock-menu>
+        <summary class="btn cursor-pointer list-none [&::-webkit-details-marker]:hidden" aria-label="Stop">{{ icon("stop") }}<span class="hidden sm:inline">Stop</span>{{ icon("chevron-down") }}</summary>
+        <div class="menu-panel sm:right-0 sm:left-auto sm:bottom-full sm:mt-0 sm:mb-2 sm:w-60 sm:p-1.5">
+          {% if (active or searching) and not paused %}
+          <form method="post" action="/queue/pause"><button class="dock-menu-item" data-tip="It ends its phase and stays first. Nothing new starts" data-tip-align="end">{{ icon("pause") }}Pause the queue</button></form>
+          {% endif %}
+          {% if searching and not active %}
+          <form method="post" action="/simulation/{{ searching.id }}/stop"><button class="dock-menu-item text-rose-700 dark:text-rose-300" aria-label="Cancel" data-confirm="Cancel the simulator search?" data-confirm-text="Its progress is lost.">{{ icon("close") }}Cancel the running one</button></form>
+          {% endif %}
+          {% if active %}
+          <form method="post" action="/results/{{ active.name }}/stop"><button class="dock-menu-item text-rose-700 dark:text-rose-300" aria-label="Cancel" data-confirm="Cancel {{ active.name }}?" data-confirm-text="Its runs are kept.">{{ icon("close") }}Cancel the running one</button></form>
+          {% endif %}
+          {% if queue %}
+          <form method="post" action="/queue/stop"><button class="dock-menu-item text-rose-700 dark:text-rose-300" aria-label="Cancel all" data-confirm="Cancel all?" data-confirm-text="Runs are kept.">{{ icon("close") }}Cancel all</button></form>
+          {% endif %}
+        </div>
+      </details>
+      {% endif %}
+    </div>
+  </div>
+  <div id="dock-queue" class="dock-queue" data-keep-scroll="dock-queue">
+    {% if active %}
+    <section class="dock-job" data-job="{{ active.name }}" data-open-default>
+      <div class="dock-job-head">
+        <span class="-ml-1 flex w-5 shrink-0 justify-center"><span class="size-1.5 rounded-full bg-sky-500"></span></span>
+        {{ toggle(active.name) }}
+        <a href="/results/{{ active.name }}" class="min-w-0 flex-1 truncate font-mono font-medium hover:underline">{{ active.name }}</a>
+        <span class="muted text-xs">running</span>
+      </div>
+      {{ subjobs(active_parts, active.name) }}
+    </section>
+    {% elif searching %}
+    <section class="dock-job">
+      <div class="dock-job-head">
+        <span class="-ml-1 flex w-5 shrink-0 justify-center"><span class="size-1.5 rounded-full bg-sky-500"></span></span>
+        <a href="/simulation?search={{ searching.id }}" class="min-w-0 flex-1 truncate font-medium hover:underline">Simulator search, up to {{ searching.routers }} routers</a>
+        <span class="muted text-xs">running</span>
+      </div>
+    </section>
+    {% endif %}
+    {% if queue %}
+    <p class="muted px-4 pt-2 pb-1 text-xs">Waiting · {{ queue | length }}</p>
+    <ol data-queue>
+      {% for d in queue %}
+      <li class="dock-job" data-job="{{ d.name }}" data-name="{{ d.name }}">
+        <div class="dock-job-head">
+          <button type="button" class="drag-handle" aria-label="Move {{ 'the simulator search' if d.search else d.name }}" data-tip="Drag to reorder, or press ↑ ↓">{{ icon("grip") }}</button>
+          {% if d.search %}
+          <a href="/simulation?search={{ d.search }}" class="min-w-0 flex-1 truncate font-medium hover:underline">Simulator search</a>
+          <form method="post" action="/simulation/{{ d.search }}/stop"><button class="btn btn-icon btn-danger" data-tip="Cancel" data-tip-align="end" aria-label="Cancel" data-confirm="Cancel the simulator search?" data-confirm-text="It leaves the queue.">{{ icon("close") }}</button></form>
+        </div>
+      </li>
+      {% else %}
+          {{ toggle(d.name) }}
+          <a href="/results/{{ d.name }}" class="min-w-0 flex-1 truncate font-mono hover:underline">{{ d.name }}</a>
+          {% if d.takes_s is not none %}
+          <span class="muted hidden text-xs tabular-nums sm:inline">{{ d.takes_s | duration }}</span>
+          <span class="text-xs whitespace-nowrap tabular-nums">ends {{ d.ends | clock }}</span>
+          {% endif %}
+          <form method="post" action="/results/{{ d.name }}/stop"><button class="btn btn-icon btn-danger" data-tip="Cancel" data-tip-align="end" aria-label="Cancel" data-confirm="Cancel {{ d.name }}?" data-confirm-text="It can be resumed later.">{{ icon("close") }}</button></form>
+        </div>
+        <ul class="dock-parts" hx-get="/partials/dock/parts/{{ d.name }}" hx-trigger="intersect once" hx-swap="outerHTML"><li class="muted py-0.5">…</li></ul>
+      </li>
+      {% endif %}
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="muted px-4 py-2 text-xs">Nothing else waits.</p>
+    {% endif %}
+    {% if all_ends %}<p class="muted px-4 pt-1 text-right text-xs tabular-nums">All done {{ all_ends | clock }}, in {{ all_s | duration }}</p>{% endif %}
+  </div>
+</div>
+{% endif %}

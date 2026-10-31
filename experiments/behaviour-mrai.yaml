@@ -1,0 +1,20 @@
+name: behaviour-mrai
+description: The topologies and variants of behaviour-oscillation with an MRAI of 30 s towards other ASes, as routers commonly hold back advertisements, and ten minutes of rest instead of two, as the network moves in MRAI waves. Whether OBGP still converges where BGP oscillates, and how much slower both get. Hold churn spans a longer rest than there.
+cluster: {cpus: 25, memory_mb: 206336}
+runs: 10
+bgp: {mrai: 30}
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp-rp, mode: obgp-rp}
+  - {name: obgp-rp-delay, mode: obgp-rp, refresh_delay: 1}
+  - {name: obgp-rp-pn, mode: obgp-rp, per_neighbor: true}
+  - {name: obgp-sp, mode: obgp-sp}
+  - {name: obgp-sp-pn, mode: obgp-sp, per_neighbor: true}
+  - {name: obgp-hp, mode: obgp-hp}
+  - {name: obgp-hp-pn, mode: obgp-hp, per_neighbor: true}
+  - {name: obgp-np, mode: obgp-np}
+  - {name: obgp-np-pn, mode: obgp-np, per_neighbor: true}
+  - {name: obgp-paper, mode: obgp-paper}
+topologies: [bad-gadget, noble-eu, germany50]
+scenarios: [fill-30-rest-600]
+primary: {metric: settle_s, variant: obgp-rp, baseline: bgp}

@@ -1,0 +1,390 @@
+source: sndlib/nobel-eu
+roles:
+  origins: [brussels, zagreb]
+routers:
+  amsterdam:
+    asn: 65000
+    routerId: 10.0.0.1
+    location: {lat: 52.2, lon: 4.51}
+    neighbors:
+      - name: brussels
+        peerAs: 65006
+        localPref: 100
+      - name: glasgow
+        peerAs: 65011
+        localPref: 100
+      - name: hamburg
+        peerAs: 65012
+        localPref: 100
+      - name: london
+        peerAs: 65013
+        localPref: 200
+  brussels:
+    asn: 65006
+    routerId: 10.0.0.7
+    location: {lat: 50.49, lon: 4.2}
+    neighbors:
+      - name: amsterdam
+        peerAs: 65000
+        localPref: 100
+      - name: frankfurt
+        peerAs: 65010
+        localPref: 100
+      - name: paris
+        peerAs: 65019
+        localPref: 100
+  glasgow:
+    asn: 65011
+    routerId: 10.0.0.12
+    location: {lat: 55.51, lon: -4.16}
+    neighbors:
+      - name: amsterdam
+        peerAs: 65000
+        localPref: 100
+      - name: dublin
+        peerAs: 65009
+        localPref: 100
+  hamburg:
+    asn: 65012
+    routerId: 10.0.0.13
+    location: {lat: 53.33, lon: 10.0}
+    neighbors:
+      - name: amsterdam
+        peerAs: 65000
+        localPref: 200
+      - name: berlin
+        peerAs: 65004
+        localPref: 100
+      - name: frankfurt
+        peerAs: 65010
+        localPref: 100
+  london:
+    asn: 65013
+    routerId: 10.0.0.14
+    location: {lat: 51.3, lon: -0.07}
+    neighbors:
+      - name: amsterdam
+        peerAs: 65000
+        localPref: 100
+      - name: dublin
+        peerAs: 65009
+        localPref: 100
+      - name: paris
+        peerAs: 65019
+        localPref: 200
+  athens:
+    asn: 65001
+    routerId: 10.0.0.2
+    location: {lat: 37.58, lon: 23.42}
+    neighbors:
+      - name: belgrade
+        peerAs: 65003
+        localPref: 100
+      - name: rome
+        peerAs: 65021
+        localPref: 200
+  belgrade:
+    asn: 65003
+    routerId: 10.0.0.4
+    location: {lat: 44.47, lon: 20.25}
+    neighbors:
+      - name: athens
+        peerAs: 65001
+        localPref: 200
+      - name: budapest
+        peerAs: 65007
+        localPref: 100
+      - name: zagreb
+        peerAs: 65026
+        localPref: 100
+  rome:
+    asn: 65021
+    routerId: 10.0.0.22
+    location: {lat: 41.53, lon: 12.29}
+    neighbors:
+      - name: athens
+        peerAs: 65001
+        localPref: 100
+      - name: milan
+        peerAs: 65016
+        localPref: 200
+      - name: zagreb
+        peerAs: 65026
+        localPref: 100
+  barcelona:
+    asn: 65002
+    routerId: 10.0.0.3
+    location: {lat: 41.22, lon: 2.07}
+    neighbors:
+      - name: lyon
+        peerAs: 65014
+        localPref: 100
+      - name: madrid
+        peerAs: 65015
+        localPref: 100
+  lyon:
+    asn: 65014
+    routerId: 10.0.0.15
+    location: {lat: 45.43, lon: 4.49}
+    neighbors:
+      - name: barcelona
+        peerAs: 65002
+        localPref: 100
+      - name: paris
+        peerAs: 65019
+        localPref: 100
+      - name: zurich
+        peerAs: 65027
+        localPref: 100
+  madrid:
+    asn: 65015
+    routerId: 10.0.0.16
+    location: {lat: 40.25, lon: -3.42}
+    neighbors:
+      - name: barcelona
+        peerAs: 65002
+        localPref: 100
+      - name: bordeaux
+        peerAs: 65005
+        localPref: 100
+  budapest:
+    asn: 65007
+    routerId: 10.0.0.8
+    location: {lat: 47.29, lon: 19.02}
+    neighbors:
+      - name: belgrade
+        peerAs: 65003
+        localPref: 200
+      - name: prague
+        peerAs: 65020
+        localPref: 100
+      - name: warsaw
+        peerAs: 65025
+        localPref: 100
+  zagreb:
+    asn: 65026
+    routerId: 10.0.0.27
+    location: {lat: 45.48, lon: 15.57}
+    neighbors:
+      - name: belgrade
+        peerAs: 65003
+        localPref: 100
+      - name: rome
+        peerAs: 65021
+        localPref: 100
+      - name: vienna
+        peerAs: 65024
+        localPref: 100
+  berlin:
+    asn: 65004
+    routerId: 10.0.0.5
+    location: {lat: 52.31, lon: 13.21}
+    neighbors:
+      - name: hamburg
+        peerAs: 65012
+        localPref: 100
+      - name: copenhagen
+        peerAs: 65008
+        localPref: 100
+      - name: munich
+        peerAs: 65017
+        localPref: 100
+      - name: prague
+        peerAs: 65020
+        localPref: 100
+      - name: warsaw
+        peerAs: 65025
+        localPref: 100
+  copenhagen:
+    asn: 65008
+    routerId: 10.0.0.9
+    location: {lat: 55.41, lon: 12.32}
+    neighbors:
+      - name: berlin
+        peerAs: 65004
+        localPref: 100
+      - name: oslo
+        peerAs: 65018
+        localPref: 100
+  munich:
+    asn: 65017
+    routerId: 10.0.0.18
+    location: {lat: 48.07, lon: 11.33}
+    neighbors:
+      - name: berlin
+        peerAs: 65004
+        localPref: 100
+      - name: frankfurt
+        peerAs: 65010
+        localPref: 100
+      - name: milan
+        peerAs: 65016
+        localPref: 100
+      - name: vienna
+        peerAs: 65024
+        localPref: 200
+  prague:
+    asn: 65020
+    routerId: 10.0.0.21
+    location: {lat: 50.04, lon: 14.25}
+    neighbors:
+      - name: budapest
+        peerAs: 65007
+        localPref: 200
+      - name: berlin
+        peerAs: 65004
+        localPref: 100
+      - name: vienna
+        peerAs: 65024
+        localPref: 100
+  warsaw:
+    asn: 65025
+    routerId: 10.0.0.26
+    location: {lat: 52.14, lon: 20.59}
+    neighbors:
+      - name: budapest
+        peerAs: 65007
+        localPref: 100
+      - name: berlin
+        peerAs: 65004
+        localPref: 100
+      - name: stockholm
+        peerAs: 65022
+        localPref: 100
+  bordeaux:
+    asn: 65005
+    routerId: 10.0.0.6
+    location: {lat: 44.51, lon: -0.35}
+    neighbors:
+      - name: madrid
+        peerAs: 65015
+        localPref: 100
+      - name: paris
+        peerAs: 65019
+        localPref: 100
+  paris:
+    asn: 65019
+    routerId: 10.0.0.20
+    location: {lat: 48.51, lon: 2.2}
+    neighbors:
+      - name: brussels
+        peerAs: 65006
+        localPref: 100
+      - name: london
+        peerAs: 65013
+        localPref: 100
+      - name: lyon
+        peerAs: 65014
+        localPref: 100
+      - name: bordeaux
+        peerAs: 65005
+        localPref: 100
+      - name: strasbourg
+        peerAs: 65023
+        localPref: 200
+  frankfurt:
+    asn: 65010
+    routerId: 10.0.0.11
+    location: {lat: 50.07, lon: 8.38}
+    neighbors:
+      - name: brussels
+        peerAs: 65006
+        localPref: 100
+      - name: hamburg
+        peerAs: 65012
+        localPref: 200
+      - name: munich
+        peerAs: 65017
+        localPref: 100
+      - name: strasbourg
+        peerAs: 65023
+        localPref: 100
+  oslo:
+    asn: 65018
+    routerId: 10.0.0.19
+    location: {lat: 59.54, lon: 10.45}
+    neighbors:
+      - name: copenhagen
+        peerAs: 65008
+        localPref: 100
+      - name: stockholm
+        peerAs: 65022
+        localPref: 100
+  dublin:
+    asn: 65009
+    routerId: 10.0.0.10
+    location: {lat: 53.21, lon: -6.15}
+    neighbors:
+      - name: glasgow
+        peerAs: 65011
+        localPref: 100
+      - name: london
+        peerAs: 65013
+        localPref: 100
+  strasbourg:
+    asn: 65023
+    routerId: 10.0.0.24
+    location: {lat: 48.35, lon: 7.45}
+    neighbors:
+      - name: paris
+        peerAs: 65019
+        localPref: 100
+      - name: frankfurt
+        peerAs: 65010
+        localPref: 200
+      - name: zurich
+        peerAs: 65027
+        localPref: 100
+  zurich:
+    asn: 65027
+    routerId: 10.0.0.28
+    location: {lat: 47.22, lon: 8.32}
+    neighbors:
+      - name: lyon
+        peerAs: 65014
+        localPref: 100
+      - name: strasbourg
+        peerAs: 65023
+        localPref: 100
+      - name: milan
+        peerAs: 65016
+        localPref: 100
+  milan:
+    asn: 65016
+    routerId: 10.0.0.17
+    location: {lat: 45.28, lon: 9.11}
+    neighbors:
+      - name: rome
+        peerAs: 65021
+        localPref: 100
+      - name: munich
+        peerAs: 65017
+        localPref: 200
+      - name: zurich
+        peerAs: 65027
+        localPref: 100
+  vienna:
+    asn: 65024
+    routerId: 10.0.0.25
+    location: {lat: 48.12, lon: 16.21}
+    neighbors:
+      - name: zagreb
+        peerAs: 65026
+        localPref: 100
+      - name: munich
+        peerAs: 65017
+        localPref: 100
+      - name: prague
+        peerAs: 65020
+        localPref: 200
+  stockholm:
+    asn: 65022
+    routerId: 10.0.0.23
+    location: {lat: 59.19, lon: 18.03}
+    neighbors:
+      - name: warsaw
+        peerAs: 65025
+        localPref: 100
+      - name: oslo
+        peerAs: 65018
+        localPref: 100

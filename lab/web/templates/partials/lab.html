@@ -1,0 +1,148 @@
+{% from "macros.html" import cluster_badge, icon %}
+{% if active %}
+{% set s = active.status %}
+{% set live = s.live or [] %}
+{% set parts = (s.current or "").replace("#", "/").split("/") %}
+{% set run = s.done + 1 if s.done < s.total else s.total %}
+{# The running result, as the highlight of the page: a head, the numbers in one row, the chart, the progress. #}
+<section class="mb-6 rounded-2xl bg-uoft-700 p-6 text-white shadow-sm dark:bg-uoft-800">
+  <div class="flex items-start gap-4">
+    <div class="min-w-0 flex-1">
+      <div class="flex items-center gap-2 text-xs font-medium tracking-wide text-white/70 uppercase">
+        <span class="relative flex size-2"><span class="absolute inline-flex size-full animate-ping rounded-full bg-white/60"></span><span class="relative inline-flex size-2 rounded-full bg-white"></span></span>
+        Running
+      </div>
+      <a href="/results/{{ active.name }}" class="mt-1.5 block truncate font-mono text-lg font-medium hover:underline">{{ active.name }}</a>
+      {% if active.experiment.description %}<p class="mt-0.5 truncate text-sm text-white/70" data-tip="{{ active.experiment.description }}">{{ active.experiment.description }}</p>{% endif %}
+    </div>
+    <form method="post" action="/results/{{ active.name }}/stop">
+      <button class="rounded-lg bg-white/15 px-3 py-1.5 text-sm font-medium transition hover:bg-white/25" data-confirm="Stop {{ active.name }}?" data-confirm-text="It can be resumed later.">Stop</button>
+    </form>
+  </div>
+
+  {% set paths = live | map(attribute="paths") | list %}
+  <dl class="mt-6 grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+    {% for label, value, unit, tip, line in [
+         ("Run", run, "of " ~ s.total, None, None),
+         ("Prefixes", live[-1].destinations | compact if live else "–", "", "Prefixes a router knows, on average", "bg-white"),
+         ("Paths", live[-1].paths | compact if live else "–", "", "Paths a router admits, on average", "bg-white/45"),
+         ("Left", left_s | duration if left_s is not none else "–", "", None, None)] %}
+    <div class="min-w-0" {% if tip %}data-tip="{{ tip }}"{% endif %}>
+      <dt class="flex items-center gap-1.5 text-xs text-white/70">{% if line %}<span class="h-0.5 w-3 rounded {{ line }}"></span>{% endif %}{{ label }}</dt>
+      <dd class="mt-1 flex items-baseline gap-1.5"><span class="text-3xl leading-none font-semibold tracking-tight tabular-nums">{{ value }}</span>{% if unit %}<span class="text-sm whitespace-nowrap text-white/60">{{ unit }}</span>{% endif %}</dd>
+    </div>
+    {% endfor %}
+  </dl>
+
+  {% set top = ([1] + paths) | max %}
+  <svg viewBox="0 0 320 64" preserveAspectRatio="none" class="mt-5 h-16 w-full rounded-lg bg-white/10" aria-label="Prefixes and paths over the last minute">
+    <polyline points="{{ sparkline(paths, top) }}" fill="none" stroke="rgb(255 255 255 / 0.45)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+    <polyline points="{{ sparkline(live | map(attribute='destinations') | list, top) }}" fill="none" stroke="#ffffff" stroke-width="2" vector-effect="non-scaling-stroke"/>
+  </svg>
+
+  <div class="mt-5 h-1.5 overflow-hidden rounded-full bg-white/15" role="progressbar" aria-valuemin="0" aria-valuemax="{{ s.total }}" aria-valuenow="{{ s.done }}">
+    <div class="h-full rounded-full bg-white transition-all" style="width: {{ (100 * s.done / s.total) if s.total else 0 }}%"></div>
+  </div>
+  <div class="mt-2 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-sm text-white/75">
+    {% if parts | length == 4 %}<span class="font-mono break-all" data-tip="Topology · variant · scenario · run">{{ parts[0] }} · {{ parts[1] }} · {{ parts[2] }} · #{{ parts[3] }}</span>{% endif %}
+    <span>{{ s.phase or "" }}</span>
+  </div>
+  {% if s.attempt and s.attempt > 1 %}<p class="mt-2 rounded-lg bg-white/10 px-3 py-2 text-sm text-white/85">Attempt {{ s.attempt }} of {{ s.attempts }} · {{ s.failure }}</p>{% endif %}
+</section>
+{% endif %}
+{% set m = machine %}
+{% macro chart(label, top, axis, budget=None) -%}
+<div>
+{# The top of the axis, above the chart, so that no curve runs under it. #}
+<div class="muted mb-1 text-right text-xs leading-none tabular-nums">{{ axis }}</div>
+<svg viewBox="0 0 320 64" preserveAspectRatio="none" class="h-16 w-full overflow-visible" role="img" aria-label="{{ label }}">
+  {% for y in [16, 32, 48] %}<line x1="0" x2="320" y1="{{ y }}" y2="{{ y }}" class="stroke-slate-200 dark:stroke-slate-800" stroke-width="1" vector-effect="non-scaling-stroke"/>{% endfor %}
+  {{ caller() }}
+  {% if budget is not none and budget < top %}{% set y = 64 - 64 * budget / top %}<line x1="0" x2="320" y1="{{ y }}" y2="{{ y }}" class="stroke-uoft-700 dark:stroke-uoft-400" stroke-width="1" stroke-dasharray="4 3" vector-effect="non-scaling-stroke"/>{% endif %}
+  <line x1="0" x2="320" y1="64" y2="64" class="stroke-slate-300 dark:stroke-slate-700" stroke-width="1" vector-effect="non-scaling-stroke"/>
+</svg>
+</div>
+{%- endmacro %}
+{% macro band(low, high, top, fill, stroke) -%}
+<polygon points="{{ area(low, high, top) }}" class="{{ fill }}"/>
+<polyline points="{{ line(high, top) }}" fill="none" class="{{ stroke }}" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+{%- endmacro %}
+{% macro since(minutes) -%}
+<div class="muted mt-1.5 flex justify-between text-xs tabular-nums"><span>{{ minutes }} min ago</span><span>now</span></div>
+{%- endmacro %}
+{% macro key(colour, label, value) -%}
+<span class="flex items-center gap-1.5 whitespace-nowrap"><span class="h-0.5 w-3 rounded {{ colour }}"></span>{{ label }} <span class="tabular-nums text-slate-900 dark:text-slate-100">{{ value }}</span></span>
+{%- endmacro %}
+{# A share in percent, with a decimal below 10, so that a lab on a large host does not read as 0. #}
+{% macro pct(x) -%}{{ ("%.1f" | format(100 * x)) if 100 * x < 9.95 else (100 * x) | round | int }}{%- endmacro %}
+{% macro threads(x) -%}{{ ("%.1f" | format(x * m.threads)) if x * m.threads < 9.95 else (x * m.threads) | round | int }}{%- endmacro %}
+{% if m and m.busy is not none %}
+{% set h = host_series() %}
+{% set zero = [0] * (h.busy | length) %}
+{% set minutes = [1, (h.seconds / 60) | round | int] | max %}
+{% set LAB = ("fill-uoft-700/40 dark:fill-uoft-400/35", "stroke-uoft-700 dark:stroke-uoft-400", "bg-uoft-700 dark:bg-uoft-400") %}
+{% set OTHERS = ("fill-slate-400/15 dark:fill-slate-500/20", "stroke-slate-400 dark:stroke-slate-500", "bg-slate-400 dark:bg-slate-500") %}
+{# The host over the last minutes: the lab and others on its CPUs and memory, and its GPUs. #}
+<section class="card mb-6 p-5" aria-label="Host">
+  <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+    <h2 class="font-medium">Host</h2>
+    <span class="muted text-xs max-sm:order-last max-sm:basis-full" data-tip="For the lab{% if limits %}&#10;CPU: {{ limits.cpus }} threads, {{ limits.headroom }} kept free&#10;Memory: {{ (limits.memory_mb / 1024) | round | int }} GiB, {{ (limits.keep_mb / 1024) | round | int }} GiB kept free&#10;Routers: {{ limits.cpus * limits.per_cpu }} by CPU, {{ limits.by_memory }} by memory{% endif %}">{{ m.threads }} threads · {{ (m.total_mb / 1024) | round | int }} GiB{% if limits %}, {{ (limits.memory_mb / 1024) | round | int }} GiB for the lab{% endif %}{% if max_routers %} · up to {{ max_routers }} routers{% endif %}</span>
+    <span class="ml-auto" aria-label="Cluster status">{{ cluster_badge(cluster_state) }}</span>
+    {# On a phone the charts take a screen before the list: the numbers in a line, the charts on a tap. #}
+    <button type="button" class="hit flex basis-full items-center justify-between gap-2 pt-1 text-sm tabular-nums sm:hidden" aria-controls="host-charts" aria-expanded="false" data-host-toggle>
+      <span>CPU {{ pct(m.busy) }} %{% if h.split %}, lab {{ threads(m.lab) }} threads{% endif %} · memory {{ (m.memory_mb / 1024) | round | int }} of {{ (m.total_mb / 1024) | round | int }} GiB</span>{{ icon("chevron-down", "host-chevron text-slate-400 transition-transform") }}
+    </button>
+  </div>
+  {% set cpu_top = ceiling(h.busy, 1, 0.01) %}
+  {% set memory_top = ceiling(h.memory_mb, m.total_mb, 1024, 1024) %}
+  {% set cpu_budget = limits.cpus / m.threads if limits else None %}
+  <div id="host-charts" class="host-charts mt-4 grid gap-x-10 gap-y-6 md:grid-cols-2 {{ 'lg:grid-cols-3' if h.gpu }}">
+    <div>
+      <div class="flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
+        <div><div class="muted text-xs">CPU</div><div class="text-2xl leading-tight font-semibold whitespace-nowrap tabular-nums">{{ pct(m.busy) }} <span class="muted text-sm font-normal">% of the host</span></div>{% if h.busy %}<div class="muted text-xs whitespace-nowrap tabular-nums">min {{ pct(h.busy | min) }} · max {{ pct(h.busy | max) }} %</div>{% endif %}</div>
+        {% if h.split %}<div class="muted flex gap-4 pb-1 text-xs" data-tip="Busy threads, on average">{{ key(LAB[2], "lab", threads(m.lab) ~ (" of " ~ limits.cpus if limits else "")) }}{{ key(OTHERS[2], "others", threads(m.others)) }}</div>{% endif %}
+      </div>
+      <div class="mt-2" data-tip="Share of {{ m.threads }} threads{% if h.split %}&#10;Lab: the minikube cluster&#10;Others: the rest of the host{% endif %}{% if limits %}&#10;Dashed: the lab's {{ limits.cpus }} threads{% endif %}">
+        {% call chart("CPU over the last minutes", cpu_top, ((100 * cpu_top) | round | int) ~ " %", cpu_budget) %}
+          {% if h.split %}
+          {% set stacked = [] %}{% for a in h.lab %}{% set _ = stacked.append(a + h.others[loop.index0]) %}{% endfor %}
+          {{ band(h.lab, stacked, cpu_top, OTHERS[0], OTHERS[1]) }}{{ band(zero, h.lab, cpu_top, LAB[0], LAB[1]) }}
+          {% else %}{{ band(zero, h.busy, cpu_top, OTHERS[0], OTHERS[1]) }}{% endif %}
+        {% endcall %}
+        {{ since(minutes) }}
+      </div>
+    </div>
+    <div>
+      <div class="flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
+        <div><div class="muted text-xs">Memory</div><div class="text-2xl leading-tight font-semibold whitespace-nowrap tabular-nums">{{ (m.memory_mb / 1024) | round | int }} <span class="muted text-sm font-normal">of {{ (m.total_mb / 1024) | round | int }} GiB</span></div>{% if h.memory_mb %}<div class="muted text-xs whitespace-nowrap tabular-nums">min {{ (h.memory_mb | min / 1024) | round | int }} · max {{ (h.memory_mb | max / 1024) | round | int }} GiB</div>{% endif %}</div>
+        {% if h.lab_mb %}<div class="muted flex gap-4 pb-1 text-xs">{{ key(LAB[2], "lab", ((m.lab_mb / 1024) | round | int) ~ " GiB") }}{{ key(OTHERS[2], "others", (((m.memory_mb - m.lab_mb) / 1024) | round | int) ~ " GiB") }}</div>{% endif %}
+      </div>
+      <div class="mt-2" data-tip="In use, of {{ (m.total_mb / 1024) | round | int }} GiB{% if limits %}&#10;Dashed: the lab's {{ (limits.memory_mb / 1024) | round | int }} GiB{% endif %}">
+        {% call chart("Memory over the last minutes", memory_top, ((memory_top / 1024) | round | int) ~ " GiB", limits.memory_mb if limits else None) %}
+          {% if h.lab_mb %}
+          {{ band(h.lab_mb, h.memory_mb, memory_top, OTHERS[0], OTHERS[1]) }}{{ band(zero, h.lab_mb, memory_top, LAB[0], LAB[1]) }}
+          {% else %}{{ band(zero, h.memory_mb, memory_top, OTHERS[0], OTHERS[1]) }}{% endif %}
+        {% endcall %}
+        {{ since(minutes) }}
+      </div>
+    </div>
+    {# The GPUs, which the lab does not use: a host shared with others waits for them, see the settings. #}
+    {% if h.gpu %}
+    {% set gpu_top = ceiling(h.gpu, 1, 0.01) %}
+    {% set used, total = m.gpus | sum(attribute="memory_mb"), m.gpus | sum(attribute="total_mb") %}
+    <div>
+      <div class="flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
+        <div><div class="muted text-xs">{{ "GPU" if m.gpus | length == 1 else (m.gpus | length) ~ " GPUs" }}</div><div class="text-2xl leading-tight font-semibold whitespace-nowrap tabular-nums">{{ ((m.gpus | sum(attribute="util")) / (m.gpus | length)) | round | int }} <span class="muted text-sm font-normal">%</span></div><div class="muted text-xs whitespace-nowrap tabular-nums">min {{ (100 * h.gpu | min) | round | int }} · max {{ (100 * h.gpu | max) | round | int }} %</div></div>
+        <div class="muted pb-1 text-xs tabular-nums">{{ (used / 1024) | round(1) }} of {{ (total / 1024) | round | int }} GiB</div>
+      </div>
+      <div class="mt-2" data-tip="Every 10 s, unused by the lab{% for g in m.gpus %}&#10;{{ g.name }}: {{ g.util | round | int }} %, {{ (g.memory_mb / 1024) | round(1) }} of {{ (g.total_mb / 1024) | round | int }} GiB{% endfor %}">
+        {% call chart("GPU over the last minutes", gpu_top, ((100 * gpu_top) | round | int) ~ " %") %}
+          {{ band(zero, h.gpu, gpu_top, OTHERS[0], OTHERS[1]) }}
+        {% endcall %}
+        {{ since(minutes) }}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}

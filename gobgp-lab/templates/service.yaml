@@ -5,11 +5,13 @@ metadata:
   name: {{ $name }}
 spec:
   clusterIP: None
+  # Neighbors resolve each other before their sessions are up.
+  publishNotReadyAddresses: true
   selector:
     app: {{ $name }}
   ports:
-    - name: ipapi
+    - name: api
       port: 8080
-      targetPort: ipapi
+      targetPort: api
 ---
 {{- end }}

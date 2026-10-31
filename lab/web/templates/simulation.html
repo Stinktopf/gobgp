@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% from "macros.html" import list_header, problem, state_badge, delete_button, group_body, icon %}
+{% set titles = {
+  "unreachable": "Routers lose a prefix that BGP reaches",
+  "black-hole": "Packets end at a router without a route",
+  "loop": "Packets circle at rest",
+  "no-convergence": "The network never comes to rest",
+  "leaked": "Routers use a leaked path",
+  "inconsistent-export": "An AS sends different paths",
+  "transient-loop": "Packets circle on the way to rest",
+  "transient-blocked": "Routers wait without a route",
+  "transient-hole": "Routers lose their route for a while",
+} %}
+{# How far a queued or running search is: polled, the page reloads once it ends. #}
+{% macro search_progress(s) -%}
+{% include "partials/search-progress.html" %}
+{%- endmacro %}
+{% block title %}Simulation · OBGP Lab{% endblock %}
+{% block content %}
+{% call list_header("Simulation", "#findings" if groups else "") %}
+  {% if groups %}<button type="button" class="btn btn-icon" data-groups-all data-tip="Collapse all" aria-label="Collapse all">{{ icon("chevron-down", "group-chevron") }}</button>{% endif %}
+  <form method="post" action="/simulation/searches"><button class="btn btn-primary" data-tip="Every network up to five routers, every policy, the way to rest, one table and tables per neighbor. Waits in the lab's queue.">{{ icon("add") }}New search</button></form>
+{% endcall %}
+{{ problem(error) }}
+
+
+{% if searches %}
+<div class="card mb-6 overflow-x-auto">
+  <table class="list">
+    <thead><tr><th>Search</th><th class="num" data-tip="Problems, each with its networks">Problems</th><th class="num hidden sm:table-cell">Started</th><th></th></tr></thead>
+    <tbody>
+    {% for s in searches %}
+      <tr onclick="location.href = '/simulation?search={{ s.id }}'" {% if current and s.id == current.id %}aria-current="true" class="bg-slate-50 dark:bg-white/5"{% endif %}>
+        <td class="w-full max-w-0 sm:min-w-72 sm:max-w-none">
+          <a href="/simulation?search={{ s.id }}" class="block truncate font-medium">Up to {{ s.routers }} routers{% if s.family %}, {{ s.family }}{% endif %}<span class="muted font-normal sm:hidden"> · {{ s.started | created }}</span></a>
+          <span class="item-note block truncate">{% if s.tables == "both" %}one table and per neighbor{% elif s.tables %}tables per neighbor{% else %}one table{% endif %} · {{ s.seeds }} message orders{% if s.transient %} · the way to rest{% endif %}{% if s.by %} · {{ s.by }}{% endif %}</span>
+        </td>
+        <td class="num muted">{{ s.problems if s.state == "done" else "" }}</td>
+        <td class="num muted hidden whitespace-nowrap sm:table-cell">{{ s.started | created }}</td>
+        <td class="w-0 pr-5 text-right whitespace-nowrap" onclick="event.stopPropagation()">
+          {% if s.state in ("running", "queued") %}<span class="inline-flex items-center gap-3">{{ search_progress(s) }}<form method="post" action="/simulation/{{ s.id }}/stop" class="inline">{% if s.state == "queued" %}<button class="btn btn-danger" data-confirm="Cancel this search?" data-confirm-text="It leaves the queue.">Cancel</button>{% else %}<button class="btn btn-danger" data-confirm="Stop this search?" data-confirm-text="What it found so far is lost.">Stop</button>{% endif %}</form></span>
+          {% else %}{% if s.state != "done" %}{{ state_badge(s.state) }}{% endif %}{{ delete_button("/simulation/" ~ s.id ~ "/delete", "this search", text="Its findings and replays go with it.") }}{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if not current %}
+<div class="card p-6 text-sm">No searches yet.</div>
+{% elif current.state in ("running", "queued") %}
+<div class="card p-6 text-sm"><p class="mb-3">{{ "The search runs" if current.state == "running" else "The search is queued" }}. Its problems show here once it is done.</p>{{ search_progress(current) }}</div>
+{% elif current.state in ("failed", "stopped") %}
+<div class="card p-6 text-sm">The search {{ "was stopped" if current.state == "stopped" else "failed: " ~ current.error }}.</div>
+{% elif not current.findings %}
+<div class="card p-6 text-sm">Every mode behaved as BGP on every network of this search.</div>
+{% else %}
+<div class="card overflow-x-auto">
+  <table class="list" id="findings" data-groups="simulation" data-fixed>
+    <thead><tr><th>Modes</th><th class="num" data-tip="Networks kept as examples, the smallest opens. How often it shows is on its page.">Examples</th><th class="num hidden sm:table-cell" data-tip="Of the smallest network">Routers</th><th class="hidden md:table-cell" data-tip="The proofs promise rest and no loops at rest, inside their model. They make no claim on lost routes or the way to rest.">Proof</th></tr></thead>
+    {% for g in groups %}{% call group_body(g.kind, 4, g.problems | length, titles.get(g.kind, g.kind)) %}
+      {% for p in g.problems %}
+      <tr onclick="location.href = '/simulation/{{ current.id }}/{{ p.id }}'" data-item="{{ p.id }}" data-search="{{ titles.get(p.kind, p.kind) }} {{ p.modes | join(' ') }} {{ p.cause }} {{ p.families | join(' ') }}">
+        <td class="w-full max-w-0">
+          <a href="/simulation/{{ current.id }}/{{ p.id }}" class="block sm:truncate"><span class="font-mono font-medium">{{ p.label }}</span>{% if p.cause %}<span class="muted"> · {{ p.cause }}</span>{% endif %}</a>
+          <span class="item-note block truncate font-mono">{% if p.proof == "contradicts it" %}<span class="font-sans font-semibold text-rose-700 md:hidden dark:text-rose-300">contradicts the proof · </span>{% endif %}{{ p.families | join(", ") }}</span>
+        </td>
+        <td class="num muted">{{ p.examples | length }}</td>
+        <td class="num muted hidden sm:table-cell">{{ p.examples[0].instance.routers }}</td>
+        <td class="hidden whitespace-nowrap md:table-cell {% if p.proof == 'contradicts it' %}font-semibold text-rose-700 dark:text-rose-300{% else %}muted{% endif %}">{{ p.proof }}</td>
+      </tr>
+      {% endfor %}
+    {% endcall %}{% endfor %}
+  </table>
+</div>
+<script src="{{ static('groups.js') }}"></script>
+{% endif %}
+{% endblock %}

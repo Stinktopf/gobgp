@@ -1,0 +1,21 @@
+name: internet-dfz
+description: How BGP and OBGP handle full tables of the Internet, injected at the four largest Tier-1 networks of the 32 largest networks.
+# About 12 GB for the largest routers, 360 GB in all. Check with lab rib core-32 which networks peer with RIS.
+cluster: {cpus: 64, memory_mb: 471040, router_limit_mb: 16384}
+runs: 6
+sampling: {interval: 1.0, stable_s: 5}
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp-rp, mode: obgp-rp}
+  - {name: obgp-rp-delay, mode: obgp-rp, refresh_delay: 1}
+  - {name: obgp-rp-pn, mode: obgp-rp, per_neighbor: true}
+  - {name: obgp-sp, mode: obgp-sp}
+  - {name: obgp-sp-pn, mode: obgp-sp, per_neighbor: true}
+  - {name: obgp-hp, mode: obgp-hp}
+  - {name: obgp-hp-pn, mode: obgp-hp, per_neighbor: true}
+  - {name: obgp-np, mode: obgp-np}
+  - {name: obgp-np-pn, mode: obgp-np, per_neighbor: true}
+  - {name: obgp-paper, mode: obgp-paper}
+topologies: [core-32]
+scenarios: [dfz-fill-drain]
+primary: {metric: rss_mean, variant: obgp-rp, baseline: bgp}

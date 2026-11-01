@@ -1,0 +1,5 @@
+name: sim-route-leak-bgp-no-convergence
+description: 'The simulator''s smallest no-convergence of bgp in route-leak, seed 2: still busy after 20000 messages'
+steps:
+  - announce: {rate: 1, for: 1, lifetime: 86400, jitter: 0, max_active: 1}
+  - until_stable: {timeout: 120}

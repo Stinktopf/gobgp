@@ -1,72 +1,122 @@
-# GoBGP: BGP implementation in Go
+<p align="center">
+  <picture>
+    <source srcset="assets/logo-router-dark.png" media="(prefers-color-scheme: dark)">
+    <img src="assets/logo-router-light.png" alt="OBGP Router" width="336">
+  </picture>
+</p>
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/osrg/gobgp)](https://goreportcard.com/report/github.com/osrg/gobgp)
-[![Tests](https://github.com/osrg/gobgp/actions/workflows/ci.yml/badge.svg)](https://github.com/osrg/gobgp/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/osrg/gobgp/v4.svg)](https://pkg.go.dev/github.com/osrg/gobgp/v4)
-[![Releases](https://img.shields.io/github/release/osrg/gobgp/all.svg?style=flat-square)](https://github.com/osrg/gobgp/releases)
-[![LICENSE](https://img.shields.io/github/license/osrg/gobgp.svg?style=flat-square)](https://github.com/osrg/gobgp/blob/master/LICENSE)
+<p align="center"><b>An oscillation-free BGP router based on <a href="https://github.com/osrg/gobgp">GoBGP</a>,<br>
+and the lab that measures it.</b></p>
 
-GoBGP is an open source Border Gateway Protocol (BGP) implementation designed from scratch for
-modern environment and implemented in a modern programming language,
-[the Go Programming Language](http://golang.org/).
+<p align="center">
+<a href="https://doi.org/10.23919/IFIPNetworking70592.2026.11578986">IFIP Networking 2026</a> ·
+<a href="https://opendl.ifip-tc6.org/db/conf/networking/networking2026/1571247489.pdf">Paper</a> ·
+<a href="vis">Figures</a> ·
+<a href="results/public/ifip-networking-2026">Data</a>
+</p>
 
-----
+Preference cycles make BGP oscillate. OBGP ([LCN 2022](https://doi.org/10.1109/LCN53696.2022.9843706),
+[ICC 2022](https://doi.org/10.1109/ICC45855.2022.9839159)) orders route import and export strictly,
+so that under the assumptions of its proof it cannot. BGP messages stay as they are.
 
-## Install
+- **Router:** gobgpd with OBGP, every part switchable back to the paper's code.
+- **Lab:** BGP and OBGP on real routers in Kubernetes, from topology to statistics.
+- **Agents:** AI assistants operate the lab over MCP, with a person approving each change.
+- **Simulator:** gobgpd's decision code on every small network, to find where OBGP deviates from BGP, replayed step by step in the lab's Simulation area.
 
-Try [a binary release](https://github.com/osrg/gobgp/releases/latest).
+## How it works
 
-## Documentation
+Paths are ordered by AS path length, ties broken by ASN.
 
-### Using GoBGP
+- **Import:** a path is admitted only if it is better than the worst admitted one.
+- **Export:** peers get the worst admitted path, so a better one never changes what they see.
+- **Pruning:** a withdrawn or changed path sets aside the paths containing its old AS sequence.
+- **Re-admission:** once no valid path is left, set-aside paths come back as their neighbors answer a route refresh.
+- **Per neighbor (optional):** a table per eBGP neighbor, each exporting the worst path that neighbor may get.
+- **iBGP:** paths from the own AS skip the import filter but count for the threshold.
+- **Forwarding:** the FIB gets GoBGP's usual best path, loop-free once routes settle.
 
-- [Getting Started](docs/sources/getting-started.md)
-- CLI
-  - [Typical operation examples](docs/sources/cli-operations.md)
-  - [Complete syntax](docs/sources/cli-command-syntax.md)
-- [Route Server](docs/sources/route-server.md)
-- [Route Reflector](docs/sources/route-reflector.md)
-- [Policy](docs/sources/policy.md)
-- Zebra Integration
-  - [FIB manipulation](docs/sources/zebra.md)
-  - [Equal Cost Multipath Routing](docs/sources/zebra-multipath.md)
-- [MRT](docs/sources/mrt.md)
-- [BMP](docs/sources/bmp.md)
-- [EVPN](docs/sources/evpn.md)
-- [Flowspec](docs/sources/flowspec.md)
-- [RPKI](docs/sources/rpki.md)
-- [Metrics](docs/sources/metrics.md)
-- [Managing GoBGP with your favorite language with gRPC](docs/sources/grpc-client.md)
-- Go Native BGP Library
-  - [Basics](docs/sources/lib.md)
-  - [BGP-LS](docs/sources/bgp-ls.md)
-  - [SR Policy](docs/sources/lib-srpolicy.md)
-- [Graceful Restart](docs/sources/graceful-restart.md)
-- [Additional Paths](docs/sources/add-paths.md)
-- [Peer Group](docs/sources/peer-group.md)
-- [Dynamic Neighbor](docs/sources/dynamic-neighbor.md)
-- [eBGP Multihop](docs/sources/ebgp-multihop.md)
-- [TTL Security](docs/sources/ttl-security.md)
-- [Confederation](docs/sources/bgp-confederation.md)
-- Data Center Networking
-  - [Unnumbered BGP](docs/sources/unnumbered-bgp.md)
-- [Sentry](docs/sources/sentry.md)
+What it costs: [Limitations](docs/router.md#limitations).
 
-### Externals
+## Results
 
-- [Tutorial: Using GoBGP as an IXP connecting router](http://www.slideshare.net/shusugimoto1986/tutorial-using-gobgp-as-an-ixp-connecting-router)
-- [GoBGP.nix: A NixOS module for GoBGP. Containing a working FRR implementation and a rich set of Options](https://github.com/wavelens/gobgp.nix)
+The paper's results: [paper](https://opendl.ifip-tc6.org/db/conf/networking/networking2026/1571247489.pdf),
+[figures](vis), [data](results/public/ifip-networking-2026).
+The modes since the paper have no published lab results yet. The questions and their experiments:
+[docs/evaluation.md](docs/evaluation.md).
 
-## Community, discussion and support
+## Router
 
-We have the [Slack](https://join.slack.com/t/gobgp/shared_invite/zt-g9il5j8i-3gZwnXArK0O9Mnn4Yu~IrQ) for questions, discussion, suggestions, etc.
+```bash
+go build -o . ./cmd/gobgpd ./cmd/gobgp
+GOBGP_OPERA_ENABLED=true ./gobgpd -f gobgpd.conf
+```
 
-You have code or documentation for GoBGP? Awesome! Send a pull
-request. No CLA, board members, governance, or other mess. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for info on
-code contributing.
+Without `GOBGP_OPERA_ENABLED` it is plain GoBGP. Settings, modes and limitations: [docs/router.md](docs/router.md).
+Every design decision and what the router supports: [DESIGN.md](DESIGN.md).
 
-## Licensing
+## Lab
 
-GoBGP is licensed under the Apache License, Version 2.0. See
-[LICENSE](https://github.com/osrg/gobgp/blob/master/LICENSE) for the full
-license text.
+<p align="center">
+  <picture>
+    <source srcset="assets/readme/process-dark.svg" media="(prefers-color-scheme: dark)">
+    <img src="assets/readme/process-light.svg" alt="Topologies, scenarios, experiments, results" width="780">
+  </picture>
+</p>
+
+Like Containerlab, Kathará and Mininet, the lab runs real daemons, one Kubernetes pod per router. It adds:
+
+- **Experiments as files:** each result keeps its inputs, seeds and software versions.
+- **Scenarios:** steps that announce, withdraw, fail links and change policies.
+- **Checks:** every run for rest, loops, black holes, reach and policy against BGP of the same seed.
+- **Statistics:** medians with exact intervals, paired variants with Wilcoxon tests.
+- **Topologies:** drawn, generated, or from [SNDlib](https://sndlib.put.poznan.pl), [CAIDA](https://www.caida.org/catalog/datasets/as-relationships/) and [RIPE RIS](https://ris.ripe.net).
+
+<p align="center">
+  <picture>
+    <source srcset="assets/readme/replay-dark.png" media="(prefers-color-scheme: dark)">
+    <img src="assets/readme/replay-light.png" alt="Replay of BAD GADGET: BGP keeps sending updates, OBGP has come to rest" width="640">
+  </picture>
+  <br><sub>A replay of BAD GADGET: BGP keeps sending updates, OBGP has come to rest.</sub>
+</p>
+
+One command sets it up on a Linux host with Docker. Then open the printed address and run `lab-smoke`.
+
+```bash
+git clone https://github.com/Stinktopf/gobgp.git && cd gobgp/scripts && ./setup.sh
+```
+
+- **Setup and host sizes:** [docs/setup.md](docs/setup.md)
+- **Metrics, checks and statistics:** [docs/evaluation.md](docs/evaluation.md)
+- **Agents:** [docs/agents.md](docs/agents.md)
+
+## Simulator
+
+It plays one prefix on every connected network up to five routers, with gobgpd's decision code and
+every family of policies, and finds where a mode loses a route or loops. Each case replays message by
+message in the web UI, and Play in the lab turns it into an experiment.
+
+What it found: [DESIGN.md](DESIGN.md#what-the-router-supports). Running it: [docs/simulator.md](docs/simulator.md).
+
+## Citation
+
+```bibtex
+@inproceedings{nickel2026obgp,
+  author    = {Nickel, Lucas Immanuel and Rieger, Sebastian and Moghaddassian, Morteza and Garcia-Luna-Aceves, J. J.},
+  title     = {Making {BGP-4} More Efficient and Oscillation-Free},
+  booktitle = {2026 IFIP Networking Conference (IFIP Networking)},
+  year      = {2026},
+  pages     = {1--9},
+  doi       = {10.23919/IFIPNetworking70592.2026.11578986}
+}
+```
+
+## Acknowledgments
+
+This work was supported by a fellowship of the German Academic Exchange Service (DAAD) and by
+the Canada Excellence Research Chair in Intelligent Digital Infrastructures at the University
+of Toronto, funded by the Tri-agency Institutional Programs Secretariat.
+
+## License
+
+[Apache License 2.0](LICENSE), like GoBGP. Logos and icons are in [`assets/`](assets).

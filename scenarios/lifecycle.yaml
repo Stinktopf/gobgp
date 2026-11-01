@@ -1,0 +1,27 @@
+name: lifecycle
+description: Restarts, a soft reset, a prepend and a link failure, each checked.
+steps:
+  - announce: {rate: 2, for: 10}
+  - until_stable: {timeout: 60}
+  - expect: {router: q}
+  - restart: {router: r, graceful: true}
+  - until_stable: {timeout: 60}
+  - expect: {router: q}
+  - soft_reset: {router: r}
+  - until_stable: {timeout: 60}
+  - expect: {router: q}
+  - prepend: {router: r, times: 2}
+  - until_stable: {timeout: 60}
+  - expect: {router: q}
+  - prepend: {router: r, times: 0}
+  - restart: {router: r}
+  - until_stable: {timeout: 60}
+  - expect: {router: q}
+  - down: {link: r-q}
+  - until_stable: {timeout: 60}
+  - expect: {router: q, prefixes: none}
+  - up: {}
+  - until_stable: {timeout: 60}
+  - parallel:
+      - expect: {router: q}
+      - expect: {router: p2, prefixes: any, avoid: p1}

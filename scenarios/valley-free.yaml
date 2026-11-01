@@ -1,0 +1,9 @@
+name: valley-free
+description: No route passes a stub that does not announce it.
+steps:
+  - announce: {rate: 2, for: 15}
+  - until_stable: {timeout: 60}
+  - parallel:
+      - expect: {router: tier1, avoid: s-b}
+      - expect: {router: tier1, avoid: s-d}
+      - expect: {router: tier1, avoid: s-e}

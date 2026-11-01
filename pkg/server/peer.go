@@ -636,7 +636,12 @@ func (peer *peer) handleUpdate(e *fsmMsg) ([]*table.Path, []bgp.Family, bool) {
 				allowOwnAS := int(peer.fsm.pConf.AsPathOptions.Config.AllowOwnAs)
 				peer.fsm.lock.Unlock()
 				if hasOwnASLoop(localAS, allowOwnAS, aspath) {
+					// The update still replaces the route the peer sent before
+					// (RFC 4271, 9.1.2): it is withdrawn, not left stale. A
+					// peer in the confederation sends such paths, since its
+					// check sees confederation segments as AS 0.
 					path.SetRejected(true)
+					paths = append(paths, path.Clone(true))
 					continue
 				}
 			}
@@ -654,6 +659,7 @@ func (peer *peer) handleUpdate(e *fsmMsg) ([]*table.Path, []bgp.Family, bool) {
 						slog.String("Data", path.String()))
 
 					path.SetRejected(true)
+					paths = append(paths, path.Clone(true)) // as for an AS loop: the route before goes
 					continue
 				}
 			}

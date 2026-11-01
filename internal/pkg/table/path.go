@@ -141,13 +141,26 @@ type Path struct {
 	remoteID  uint32
 	family    bgp.Family
 	rejected  bool
+	// a withdrawal made by the router's own import policy, not by the peer
+	policyRejected bool
 	// doesn't exist in the adj
-	dropped bool
+	dropped dropState
 
 	// For BGP Nexthop Tracking, this field shows if nexthop is invalidated by IGP.
 	IsNexthopInvalid bool
 	IsWithdraw       bool
 }
+
+// dropState records why a path no longer exists in the adj-RIB-in.
+type dropState uint8
+
+const (
+	notDropped dropState = iota
+	// withdrawn by the peer
+	droppedByWithdraw
+	// removed because the session to the peer is gone
+	droppedBySession
+)
 
 type FilteredType uint8
 
@@ -417,11 +430,35 @@ func (path *Path) SetRejected(y bool) {
 }
 
 func (path *Path) IsDropped() bool {
-	return path.dropped
+	return path.dropped != notDropped
 }
 
 func (path *Path) SetDropped(y bool) {
-	path.dropped = y
+	if !y {
+		path.dropped = notDropped
+	} else if path.dropped == notDropped {
+		path.dropped = droppedByWithdraw
+	}
+}
+
+// IsSessionDropped reports whether the path was removed because the session
+// to the peer is gone rather than withdrawn by the peer.
+func (path *Path) IsSessionDropped() bool {
+	return path.dropped == droppedBySession
+}
+
+func (path *Path) SetSessionDropped() {
+	path.dropped = droppedBySession
+}
+
+// IsPolicyRejected reports whether the withdrawal was made by the router's own
+// import policy rejecting the path, rather than by the peer.
+func (path *Path) IsPolicyRejected() bool {
+	return path.policyRejected
+}
+
+func (path *Path) SetPolicyRejected() {
+	path.policyRejected = true
 }
 
 func (path *Path) HasNoLLGR() bool {
@@ -1348,6 +1385,10 @@ func (p *Path) SetSource(peerInfo *PeerInfo) {
 
 func (p *Path) LocalID() uint32 {
 	return p.localID
+}
+
+func (p *Path) SetLocalID(id uint32) {
+	p.localID = id
 }
 
 func (p *Path) RemoteID() uint32 {

@@ -145,6 +145,16 @@ type TableManager struct {
 	Vrfs   map[string]*Vrf
 	rfList []bgp.Family
 	logger *slog.Logger
+	// routeServer marks a route server's tables, see RouteServerAdmits.
+	routeServer bool
+}
+
+// SetRouteServer marks the tables of a route server, before they hold paths.
+func (manager *TableManager) SetRouteServer() {
+	manager.routeServer = true
+	for _, t := range manager.Tables {
+		t.routeServer = true
+	}
 }
 
 func NewTableManager(logger *slog.Logger, rfList []bgp.Family) *TableManager {

@@ -1,0 +1,8 @@
+name: hijack
+description: A random router copies five origin prefixes.
+steps:
+  - announce: {rate: 1, for: 30}
+  - wait: 10
+  - originate: {router: random}
+  - until_stable: {timeout: 60}
+  - wait: 30

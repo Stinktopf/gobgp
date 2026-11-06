@@ -70,7 +70,9 @@ A path is one AS path to a prefix from one neighbor, a route the path selected f
 
 Loops and black holes on the way follow the next hops each router samples on every change. Above 256
 prefixes every router follows the same sample of 256 (Followed). Under `bgp-pn` packets from an eBGP
-neighbor follow the route sent to it, see [DESIGN.md](../DESIGN.md#ns-bgp-as-the-yardstick).
+neighbor follow the route sent to it, see [DESIGN.md](../DESIGN.md#ns-bgp-as-the-yardstick). A
+stopped router forwards nothing. Back up, it counts as neither loop nor black hole until it has told
+its routes again, as its old ones went with the restart.
 
 **Tables and resources**
 

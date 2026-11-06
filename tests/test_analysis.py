@@ -289,9 +289,13 @@ def test_a_stopped_router_forwards_nothing_until_it_is_up_again():
     dataset = type("D", (), {"topology": lambda self, name: {"routers": routers}})()
     p = "10.0.0.0/24"
     own = {"o": [{"t": 0.5, "hops": f"* {p}=."}], "a": [{"t": 1.0, "hops": f"* {p}=b|"}], "b": [{"t": 1.0, "hops": f"* {p}=a|"}]}
-    # a and b loop from 1 s; b stops at 3 s and comes back at 5 s with the routes it had: meanwhile a sends into a hole.
+    # a and b loop from 1 s; b stops at 3 s, a sends into a hole. b comes back at 5 s and is unknown until it tells its
+    # routes: its old ones went with the restart, so packets end at b, neither looping nor lost.
     run = {"events": [{"name": "down", "mode": "session", "routers": ["b"], "t": 3.0}, {"name": "up", "routers": ["b"], "t": 5.0}]}
-    assert analysis.loops_on_the_way(dataset, RunKey("t", "v", "s", 1), run, own, 0.0, 10.0) == (7.0, 1, 2.0, 1)
+    assert analysis.loops_on_the_way(dataset, RunKey("t", "v", "s", 1), run, own, 0.0, 10.0) == (2.0, 1, 2.0, 1)
+    # Once b tells its routes at 7 s, they count again: a loop from 7 s on.
+    own["b"].append({"t": 7.0, "hops": f"* {p}=a|"})
+    assert analysis.loops_on_the_way(dataset, RunKey("t", "v", "s", 1), run, own, 0.0, 10.0) == (5.0, 1, 2.0, 1)
 
 
 def test_on_large_tables_loops_on_the_way_count_on_the_sample_from_when_it_was_named():

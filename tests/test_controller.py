@@ -291,3 +291,20 @@ def test_ns_bgp_samples_the_route_sent_to_each_neighbor(controller, monkeypatch)
     routes = app.routes()["p"]
     assert routes["from"] == "c" and routes["ingress"] == {"a": {"from": "c", "as_path": [65003, 9], "next_hop": "10.1.0.3"},
                                                            "c": {"from": "a", "as_path": [65001, 7, 9], "next_hop": "10.1.0.1"}}
+
+
+def test_a_restarted_daemon_tells_its_whole_table(controller, monkeypatch):
+    # Its routes before the stop are gone: the lab must not keep them until the first change after.
+    app, daemon = controller("b", 65002, [], {})
+    monkeypatch.setattr(app, "daemon", daemon)
+    table = lambda n: type("T", (), {"num_destination": n})()
+    seen = {"p1": "a|", "p2": "."}
+    monkeypatch.setattr(app, "hops", lambda: dict(seen))
+    clock = [100.0]
+    monkeypatch.setattr(app.time, "monotonic", lambda: clock[0])
+    cache = {}
+    assert app.hops_changed(cache, table(2), (2, 2, 5)) == "* p1=a| p2=."
+    daemon.generation += 1  # as Daemon.start does
+    seen["p1"] = "c|"
+    clock[0] += 0.1
+    assert app.hops_changed(cache, table(2), (2, 2, 5)) == "* p1=c| p2=."

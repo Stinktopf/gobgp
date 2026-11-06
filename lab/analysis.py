@@ -95,7 +95,7 @@ from statistics import mean, median
 
 from .results import COUNTERS, Dataset, RunKey, write_atomic
 
-VERSION = 36  # of the metrics; a change recomputes the cached summaries
+VERSION = 37  # of the metrics; a change recomputes the cached summaries
 METRICS = ["convergence_s", "settle_s", "hold_churn", "oscillates", "rest_s", "unreached", "stale_end", "loops_end", "holes_end", "loops_s", "loops_max", "holes_s", "holes_max", "flaps", "sessions_down_end", "flaps_unplanned", "down_unplanned", "hops_sampled",
            "blocked_s", "blocked_max", "known_mean", "sample_hz", "sample_hz_min", "host_cpu_max", "host_others_spread", "host_others_mean", "adj_in_mean", "rib_mean", "rib_max", "suppressed_mean",
            "selected_mean", "path_len_avg", "rss_mean", "heap_mean", "objects_mean", "cpu_s_mean"]
@@ -294,6 +294,10 @@ def loops_on_the_way(dataset: Dataset, key: RunKey, run: dict, own: dict, start:
     happenings.sort(key=lambda h: h[0])
     current: dict[str, dict[str, str | None]] = {}
     kept: dict[str, dict] = {}  # the routes of a stopped router, for the changes it sends once it is up
+    # Routers back up that have not told their routes since: unknown. Packets
+    # end there, neither looping nor in a black hole: their old routes are
+    # gone with the restart, and an empty table would be no truer.
+    unknown: set[str] = set()
     looping: dict[str, bool] = {}
     holing: dict[str, bool] = {}
     routers, total, most, last, touched, everything = topology, 0.0, 0, None, set(), False
@@ -301,6 +305,9 @@ def loops_on_the_way(dataset: Dataset, key: RunKey, run: dict, own: dict, start:
     for k, (t, what, detail) in enumerate(happenings):
         if what == "hops":
             router, value = detail
+            if router in unknown:
+                unknown.discard(router)
+                everything = True
             before = dict(current.get(router, {}))
             items = value.split()
             if value == "~" or (items and items[0] == "*"):  # the whole table: empty, or every prefix
@@ -322,6 +329,8 @@ def loops_on_the_way(dataset: Dataset, key: RunKey, run: dict, own: dict, start:
                 kept[r], current[r] = current.get(r, {}), {}
             for r in off - detail:
                 current[r] = kept.pop(r, {})
+                unknown.add(r)
+            unknown -= set(detail)
             off, everything = set(detail), True
         # Every happening at one moment applied, then the prefixes it touched, and those looping, are followed.
         if k + 1 < len(happenings) and happenings[k + 1][0] == t:
@@ -333,7 +342,7 @@ def loops_on_the_way(dataset: Dataset, key: RunKey, run: dict, own: dict, start:
             total += span if any(looping.values()) else 0.0
             holed += span if any(holing.values()) else 0.0
         for prefix in changed:
-            hops = {r: current.get(r, {}).get(prefix) for r in routers}
+            hops = {r: r if r in unknown else current.get(r, {}).get(prefix) for r in routers}
             found = forwarding.check(routers, hops)
             looping[prefix] = any("loops" in p for p in found)
             holing[prefix] = any("without a route" in p for p in found)

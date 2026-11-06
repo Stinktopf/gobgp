@@ -89,6 +89,8 @@ def check(routers: dict, next_hops: dict, starts: list[str] | None = None) -> li
 
     def route(at: str, came: str | None) -> tuple[str | None, int | None]:
         v = next_hops.get(at)
+        if v == at:  # the origin, or a router the analysis does not know yet: packets end there, from any neighbor
+            return at, None
         if isinstance(v, Ingress):
             if came not in v:
                 came = next((rs for rs in v if rs is not None and came in clients.get(rs, ())), came)

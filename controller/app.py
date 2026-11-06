@@ -108,6 +108,7 @@ class Daemon:
         self.rejected: set[str] = set()  # neighbors whose routes the own import policy rejects
         self.revision = 0  # of the configuration, to know when gobgpd took it
         self.started = 0.0  # when gobgpd last started, by the wall clock
+        self.generation = 0  # how often gobgpd started: the next hops of a new one are told whole
         self.lock = threading.Lock()
 
     def boot(self) -> None:
@@ -132,6 +133,7 @@ class Daemon:
             flags = ["-r"] if graceful else []
             self.process = subprocess.Popen(["gobgpd", "--api-hosts", GOBGP_API, "-f", GOBGP_CONFIG, *flags])
             self.started = time.time()
+            self.generation += 1  # a new daemon: its next hops are told whole, see hops_changed
 
     def running(self) -> bool:
         process = self.process
@@ -607,6 +609,8 @@ def hops_changed(cache: dict, table, key: tuple) -> str:
     now = time.monotonic()
     if cache.get("watch") != WATCH_VERSION:  # other prefixes to follow: all of them anew, now
         cache.update(watch=WATCH_VERSION, hops=None, hops_until=now + 2)
+    if cache.get("daemon") != daemon.generation:  # started anew: its whole table, not the changes since before
+        cache.update(daemon=daemon.generation, hops=None, hops_until=now + 2)
     if WATCHED is None and table.num_destination > HOPS_MAX:
         if cache.get("hops") == "!":
             return ""

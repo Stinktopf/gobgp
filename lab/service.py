@@ -216,6 +216,9 @@ def stop(interactive: bool = False) -> None:
     state_file().unlink(missing_ok=True)
 
 
+READY_S = 5  # a busy server answers /healthz within this, as it does no work for it
+
+
 def ready(state: dict) -> bool:
     host = "127.0.0.1" if state["http"] or state["host"] in ("0.0.0.0", "::") else state["host"]
     try:
@@ -225,7 +228,10 @@ def ready(state: dict) -> bool:
             import warnings
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                response = session.get(f"{'http' if state['http'] else 'https'}://{host}:{state['port']}/login", verify=False, timeout=1)
+                base = f"{'http' if state['http'] else 'https'}://{host}:{state['port']}"
+                response = session.get(f"{base}/healthz", verify=False, timeout=READY_S)
+                if response.status_code == 404:  # a server started before /healthz
+                    response = session.get(f"{base}/login", verify=False, timeout=READY_S)
             return response.status_code == 200
     except requests.RequestException:
         return False

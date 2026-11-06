@@ -25,7 +25,7 @@ from .mcp_server import Endpoint
 from .routes import routers
 from .routes.settings import watch_updates
 
-PUBLIC_PATHS = ("/login", "/static/", "/assets/", "/certificate")  # the certificate is in every TLS handshake anyway
+PUBLIC_PATHS = ("/login", "/healthz", "/static/", "/assets/", "/certificate")  # the certificate is in every TLS handshake anyway
 TOKEN_PATHS = ("/api/", "/mcp")  # agents, with a token instead of the login
 
 def warm_up() -> None:
@@ -91,6 +91,10 @@ def create_app() -> FastAPI:
         page = render(request, "error.html", status=error.status_code, detail=error.detail, nav="")
         page.status_code = error.status_code
         return page
+    @app.get("/healthz")
+    def healthz():
+        """Whether the server answers, for the watchdog: no page, no login, no state of the lab."""
+        return Response("ok", media_type="text/plain")
     for router in routers:
         app.include_router(router)
     app.router.routes.append(Route("/mcp", mcp, methods=["GET", "POST", "DELETE"]))

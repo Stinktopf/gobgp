@@ -635,6 +635,20 @@ def to_measure(dataset: Dataset) -> int:
     return sum(1 for k in stamps if (known.get(str(k)) or {}).get("mtime") != mtimes[k])
 
 
+def known_metrics(dataset: Dataset) -> dict[str, dict]:
+    """The metrics of the runs measured already, from the cache, never
+    measured here: for what must not wait, as the dock. The rest is measured
+    in the background."""
+    try:
+        cached = json.loads((dataset.path / "analysis.json").read_text())
+    except (OSError, ValueError):
+        cached = {}
+    runs = cached.get("runs", {}) if cached.get("stamp", [None])[0] == VERSION else {}
+    if to_measure(dataset):
+        analyse_in_background(dataset)
+    return {k: e["metrics"] for k, e in runs.items()}
+
+
 def analyse_in_background(dataset: Dataset) -> None:
     """Measures a result in a thread of its own, unless one does already."""
     if str(dataset.path) in PROGRESS:

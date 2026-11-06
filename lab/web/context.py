@@ -187,17 +187,23 @@ def looks(dataset: Dataset) -> dict:
     as it ended, a completed one whose routes did not come to rest as
     restless, one that failed only checks it may fail as allowed. Each
     run is looked at once until it changes, the metrics come from the
-    summary of the result, made again only when a run is new."""
+    summary of the result as far as it is measured: the dock never waits
+    for an analysis. A completed run not measured yet looks completed until
+    it is, then it is looked at again."""
     stamps = dataset.done_stamps()
     path = lambda k: dataset.path / k.path / "run.json"
     new = [k for k, stamp in stamps.items() if (_LOOKS.get(path(k)) or (None,))[0] != stamp]
-    metrics = analysis.run_summary(dataset) if new else {}
+    metrics = analysis.known_metrics(dataset) if new else {}
+    unmeasured = {}
     for k in new:
         try:
             run = dataset.run(k)
         except (OSError, ValueError):
             continue  # being written
         state, m = run.get("status", "completed"), metrics.get(str(k))
+        if state == "completed" and m is None and not allowed_failures(run):
+            unmeasured[k] = state
+            continue
         # Rest is a property as any other: a run without it failed, as one that failed a check, unless the simulator foretold it.
         if state == "timeout" or (state == "completed" and m and not came_to_rest(m)):
             # A timeout here is a wait for rest in vain: foretold as well where the simulator saw no rest.
@@ -205,7 +211,7 @@ def looks(dataset: Dataset) -> dict:
         elif state == "completed" and allowed_failures(run):
             state = "allowed"
         _LOOKS[path(k)] = (stamps[k], state)
-    return {k: _LOOKS[path(k)][1] for k in stamps if path(k) in _LOOKS}
+    return {**{k: _LOOKS[path(k)][1] for k in stamps if path(k) in _LOOKS}, **unmeasured}
 
 
 def parts(dataset: Dataset, running: bool = False) -> list[dict]:

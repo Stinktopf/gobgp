@@ -26,6 +26,7 @@ def test_the_runs_tab_lists_the_problems_and_the_header_links_to_them(client, la
     # The fake runs have no samples to analyse.
     monkeypatch.setattr(analysis, "run_summary", lambda d: {})
     monkeypatch.setattr(analysis, "summary", lambda d: [])
+    monkeypatch.setattr(analysis, "to_measure", lambda d: 0)
     page = client.get(f"/results/{dataset.name}?tab=runs").text
     assert 'id="problems"' in page and "Routers took more than their memory" in page and "Attempt 2: x /noise/pause" in page
     assert "completed only after a failed attempt" in page and "tab=runs#problems" in page

@@ -8,7 +8,7 @@ from statistics import median
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from ... import (
     analysis,
@@ -312,9 +312,8 @@ def result(request: Request, name: str, tab: str = "runs", metric: str = "",
     tab = OLD_TABS.get(tab, tab)
     tab = tab if tab in TABS else "runs"
     dataset = find(name)
-    # Many runs to measure, e.g. after a new version of the metrics: the page opens at once and shows how far it is.
-    if str(dataset.path) in analysis.PROGRESS or analysis.to_measure(dataset) > MEASURE_AT_ONCE:
-        analysis.analyse_in_background(dataset)
+    # Runs to measure, e.g. new ones or after a new version of the metrics: the page opens at once and shows how far it is.
+    if measuring(dataset):
         return render(request, "result-analysing.html", nav="results", result=dataset, progress=analysis.PROGRESS.get(str(dataset.path)))
     metrics = metrics_of(dataset)
     metric = metric if metric in metrics else next(iter(metrics))
@@ -322,7 +321,14 @@ def result(request: Request, name: str, tab: str = "runs", metric: str = "",
                   error=error, **result_context(dataset, tab, topology, scenario))
 
 
-MEASURE_AT_ONCE = 20  # runs a result page measures before it shows, more in the background
+def measuring(dataset: Dataset) -> bool:
+    """Whether runs of a result wait for their metrics. They are then measured
+    in the background: a page never measures, so that no request waits for
+    another's analysis, which takes seconds for a run that oscillates."""
+    if str(dataset.path) in analysis.PROGRESS or analysis.to_measure(dataset) > 0:
+        analysis.analyse_in_background(dataset)
+        return True
+    return False
 
 
 @router.get("/results/{name}/analysing", response_class=HTMLResponse)
@@ -338,6 +344,8 @@ def result_analysing(request: Request, name: str):
 def result_header(request: Request, name: str):
     if not (dataset := Dataset.find(name)):
         return gone()
+    if measuring(dataset):
+        return Response(status_code=204)  # htmx keeps what it shows until the new runs are measured
     return still(dataset, render(request, "partials/result-header.html", **result_context(dataset, "")))
 
 
@@ -349,6 +357,8 @@ def result_partial(request: Request, name: str, tab: str, metric: str = "",
         raise HTTPException(404)
     if not (dataset := Dataset.find(name)):
         return gone()
+    if measuring(dataset):
+        return Response(status_code=204)
     metrics = metrics_of(dataset)
     metric = metric if metric in metrics else next(iter(metrics))
     return still(dataset, render(request, f"partials/tab-{tab}.html", tab=tab, metric=metric, metrics=metrics,

@@ -632,3 +632,42 @@ def test_a_primary_comparison_that_cannot_be_significant_is_refused(lab_files):
     few = e.model_copy(update={"runs": 5})
     with _pytest.raises(ValueError, match="cannot be significant"):
         few.check_files()
+
+
+def test_polled_parts_of_a_result_never_wait_for_its_analysis(client, monkeypatch):
+    # New runs of a running result are measured in the background: a poll keeps what it shows meanwhile.
+    from lab import analysis
+
+    started = []
+    monkeypatch.setattr(analysis, "to_measure", lambda d: 1)
+    monkeypatch.setattr(analysis, "analyse_in_background", lambda d: started.append(d.name))
+    monkeypatch.setattr(analysis, "summary", lambda d: (_ for _ in ()).throw(AssertionError("measured in the request")))
+    for part in ("header", "runs", "table"):
+        assert client.get(f"/results/ifip-networking-2026/partials/{part}").status_code == 204
+    assert started == ["ifip-networking-2026"] * 3
+
+
+def test_the_health_check_needs_no_login_and_no_state(app, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from lab.web import context
+
+    monkeypatch.setattr(context, "overview", lambda: (_ for _ in ()).throw(AssertionError("the overview was computed")))
+    answer = TestClient(app).get("/healthz", follow_redirects=False)
+    assert answer.status_code == 200 and answer.text == "ok"
+
+
+def test_the_dock_shows_unmeasured_runs_without_measuring_them(lab_files, monkeypatch):
+    from lab import analysis
+    from lab.results import Dataset, RunKey
+    from lab.web import context
+
+    d = Dataset.all()[0]
+    key = RunKey("t", "bgp", "s", 1)
+    monkeypatch.setattr(context, "_LOOKS", {})  # looks of other tests at the same result
+    monkeypatch.setattr(Dataset, "done_stamps", lambda self: {key: 1})
+    monkeypatch.setattr(Dataset, "run", lambda self, k: {"status": "completed"})
+    monkeypatch.setattr(analysis, "known_metrics", lambda dataset: {})
+    monkeypatch.setattr(analysis, "run_summary", lambda dataset: (_ for _ in ()).throw(AssertionError("measured for the dock")))
+    assert context.looks(d) == {key: "completed"}
+    assert context._LOOKS == {}  # looked at again once it is measured

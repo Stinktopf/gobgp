@@ -563,14 +563,16 @@ class Run:
 
     # Prefixes
 
-    def announced(self) -> set[str]:
-        """The distinct prefixes announced anywhere, which every router should hold."""
+    def announced(self, of: set[str] | None = None) -> set[str]:
+        """The distinct prefixes announced anywhere, which every router should
+        hold, or only by the routers of."""
         announced = set()
-        for r in set(self.origins) | self.originated | self.announcers:
+        for r in (set(self.origins) | self.originated | self.announcers) & (of if of is not None else set(self.network.routers)):
             status = self.routers.get(r, "/noise", timeout=STATUS_S)
             announced |= set(status["prefixes"]) | set(status["originated"])
-        for mine in self.injected.values():
-            announced |= mine
+        for r, mine in self.injected.items():
+            if of is None or r in of:
+                announced |= mine
         return announced
 
     def prefixes(self) -> int:
@@ -933,7 +935,8 @@ class Run:
         routers, _ = self.network.targets("expect", e, self.random(position))
         names = sorted(self.network.routers) if e.forwarding else routers  # a packet may pass any router
         tables = {r: self.routers.get(r, "/routes", timeout=STATUS_S) for r in names}
-        problems = check_routes(e, self.announced(), {r: tables[r] for r in routers},
+        of = set(self.network.routers_of(e.of, self.random(position))) if e.of else None
+        problems = check_routes(e, self.announced(of), {r: tables[r] for r in routers},
                                 self.network.routers[e.avoid]["asn"] if e.avoid else None)
         if e.forwarding:
             problems += check_forwarding(forwarding.with_igp(self.network.routers, self.igp), self.announced(), tables, self.cluster.addresses(), routers)

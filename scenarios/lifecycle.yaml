@@ -1,5 +1,5 @@
 name: lifecycle
-description: Restarts, a soft reset, a prepend and a link failure, each checked.
+description: Restarts, a soft reset, a prepend and a link failure, each checked. p2 may lose routes with one OBGP table, as in valley-free-export.
 steps:
   - announce: {rate: 2, for: 10}
   - until_stable: {timeout: 60}
@@ -25,3 +25,4 @@ steps:
   - parallel:
       - expect: {router: q}
       - expect: {router: p2, prefixes: any, avoid: p1}
+      - expect: {router: p2, may_fail: [obgp-rp, obgp-sp, obgp-hp, obgp-np, obgp-paper]}

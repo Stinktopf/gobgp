@@ -183,3 +183,9 @@ def test_expect_none_counts_withdrawn_routes_still_held():
     route = {"from": "r2", "as_path": [65001]}
     assert check_routes(e, set(), {"r1": {"10.0.0.0/24": route}, "r2": {}}, None) == ["r1 holds 1 prefixes"]
     assert check_routes(e, set(), {"r1": {}}, None) == []
+
+
+def test_a_loss_foretold_by_a_check_of_some_origins_is_predicted():
+    run = {"events": [{"name": "expect", "allowed": True, "routers": ["x-c"], "prefixes": "all", "of": "one-table-sources",
+                       "problems": ["x-c misses 30 of 30 prefixes"]}]}
+    assert problems._predicted(run, {"x-c"}, "reach")

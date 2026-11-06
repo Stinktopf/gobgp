@@ -22,7 +22,7 @@ The same on both sides:
   withdraw                  all prefixes
   down, up                  a link a-b, closed with a notification
   set_preference, prepend, set_export, set_import
-  expect                    prefixes, via, avoid and forwarding
+  expect                    prefixes, of, via, avoid and forwarding
   until_stable, wait        the simulator plays until the network is quiet
 
 The order of messages is not the lab's to choose: where a result depends
@@ -336,7 +336,9 @@ def _events(scenario, topology: dict, index: dict, own: str | None = None, life:
             if routers is None or (a.via and a.via not in index) or (a.avoid and a.avoid not in index):
                 problems.append(f"{where}: named routers only")
                 continue
-            e = {"after": QUIET, "kind": "expect", "routers": routers, "prefixes": a.prefixes if present or a.prefixes != "all" else "any"}
+            # A check of the prefixes of some origins claims nothing of another's.
+            claims = present and (not a.of or (own is not None and index.get(own) in (_routers(a.of, topology, index) or [])))
+            e = {"after": QUIET, "kind": "expect", "routers": routers, "prefixes": a.prefixes if claims or a.prefixes != "all" else "any"}
             if a.via:
                 e["via"] = index[a.via]
             if a.avoid:

@@ -1,5 +1,5 @@
 name: class-withdraw
-description: a loses its customer route and stops announcing to all its providers, as Gao-Rexford says. Nobody loses a valid route.
+description: a loses its customer route and stops announcing to all its providers, as Gao-Rexford says. Nobody loses a valid route, but p2 with one OBGP table. r may keep its provider route as the export path, which its provider p2 may not get.
 steps:
   - announce: {rate: 2, for: 10}
   - until_stable: {timeout: 60}
@@ -10,3 +10,4 @@ steps:
       - expect: {router: r, avoid: a}
       - expect: {router: b}
       - expect: {router: q}
+      - expect: {router: p2, may_fail: [obgp-rp, obgp-sp, obgp-hp, obgp-np, obgp-paper]}

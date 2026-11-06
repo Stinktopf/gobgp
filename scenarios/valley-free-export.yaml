@@ -14,4 +14,5 @@ steps:
   - until_stable: {timeout: 60}
   - parallel:
       - expect: {router: p2, prefixes: any, avoid: p1}
+      - expect: {router: p2, may_fail: [obgp-rp, obgp-sp, obgp-hp, obgp-np, obgp-paper]}
       - expect: {router: q}

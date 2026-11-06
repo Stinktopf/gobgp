@@ -214,6 +214,7 @@ class Expect(Model):
     prefixes: Literal["all", "none", "any"] = Field("all", description="Whether the routers hold every announced prefix, no route at all, or any number")
     via: str | None = Field(None, description="The best route to every prefix comes from this neighbor")
     avoid: str | None = Field(None, description="No best route passes this router")
+    of: str | None = Field(None, description="Only the prefixes this router or role announces, for routers that learn no others")
     forwarding: bool = Field(False, description="Forwarding from these routers neither loops nor ends at a router without a "
                                                 "route, over the IGP costs inside an AS, as the simulator checks it")
     consistent: bool = Field(False, description="Every AS sends its neighbors in other ASes one path per prefix, "
@@ -557,6 +558,8 @@ class Network:
                     raise ValueError(f"{args.via} is not a neighbor of {r}")
             if args.avoid and args.avoid not in self.routers:
                 raise ValueError(f"unknown router {args.avoid!r}")
+            if args.of:
+                self.routers_of(args.of, random_)  # a router or a role, else ValueError
             return routers, []
         if kind == "igp":
             for i in [i for i, c in enumerate(args.link) if c == "-"]:

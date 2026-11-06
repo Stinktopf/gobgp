@@ -313,3 +313,17 @@ def test_predictions_sum_the_parts_per_mode_and_say_where_the_simulator_cannot_p
     out = simulate.predictions(e, seeds=10, workers=2)
     assert out["bad-gadget|fill-60"] == {"bgp": {"converged": 2, "runs": 20}, "obgp-rp": {"converged": 20, "runs": 20}, "obgp-rp-pn": {"converged": 20, "runs": 20}}
     assert out["noble-eu|fill-60"] == {"unsupported": ["too large here"]}
+
+
+def test_a_check_of_some_origins_claims_nothing_of_another_origin():
+    from lab import scenario as sc_mod
+    from lab import simulate as sim
+
+    topology = {"roles": {"origins": ["a", "b"], "lose": ["c"], "src": ["a"]},
+                "routers": {"a": {"asn": 1, "neighbors": [{"name": "c"}]}, "b": {"asn": 2, "neighbors": [{"name": "c"}]},
+                            "c": {"asn": 3, "neighbors": [{"name": "a"}, {"name": "b"}]}}}
+    sc = sc_mod.parse({"name": "t", "steps": [{"announce": {"rate": 1, "for": 1}}, {"until_stable": {"timeout": 10}},
+                                              {"expect": {"router": "lose", "of": "src"}}]})
+    index = {r: i for i, r in enumerate(topology["routers"])}
+    claims = {own: next(e for e in sim._events(sc, topology, index, own)[0] if e["kind"] == "expect")["prefixes"] for own in ("a", "b")}
+    assert claims == {"a": "all", "b": "any"}

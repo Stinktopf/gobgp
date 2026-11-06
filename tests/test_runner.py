@@ -652,3 +652,14 @@ def test_the_routers_go_away_before_the_run_is_written(lab_files, monkeypatch):
     result, rows = run.execute()
     assert order == ["deploy", "steps", "final", "sampler stopped", "addresses", "rows", "undeploy"]
     assert result["addresses"] == {"10.0.0.1": "r1"} and rows == [{"t": 0.5}]
+
+
+def test_a_check_of_some_origins_counts_only_their_prefixes(lab_files):
+    # A router that learns only one origin's prefixes, as x-c of gao-rexford-23, misses none of its own.
+    run = engine(lab_files)
+    first, second = run.origins[0], run.origins[1] if len(run.origins) > 1 else None
+    run.routers.prefixes = {first: ["10.0.0.0/24"], **({second: ["10.9.0.0/24"]} if second else {})}
+    assert run.announced({first}) == {"10.0.0.0/24"}
+    assert run.announced() == {"10.0.0.0/24", *(["10.9.0.0/24"] if second else [])}
+    with pytest.raises(ValueError, match="unknown router or role"):
+        run.network.targets("expect", scenario.Expect(router="all", of="nobody"), None)

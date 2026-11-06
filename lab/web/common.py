@@ -86,7 +86,7 @@ def gone() -> Response:
 
 def still(dataset: Dataset, response: HTMLResponse) -> HTMLResponse:
     """Ends the polling of a page on a result that no longer runs (htmx stops at 286)."""
-    if dataset.status.get("state") not in ("running", "queued") and dataset.name not in jobs.queue():
+    if dataset.status.get("state") not in ("running", "queued", "interrupted") and dataset.name not in jobs.queue():
         response.status_code = 286
     return response
 

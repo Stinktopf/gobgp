@@ -129,10 +129,11 @@ def overview() -> dict:
     paused = jobs.paused()
     pause_reason = jobs.pause_reason() if paused else ""
     gpu_wait = jobs.gpu_wait_s() if results else 0
+    boot_wait = jobs.boot_wait_s() if results else 0
     docker_down = bool(results) and not hostload.docker_running()
     if not active and not searching and not names:
         return {"active": None, "searching": None, "queue": [], "results_waiting": False, "paused": paused, "pause_reason": pause_reason,
-                "gpu_wait_s": 0, "docker_down": False}
+                "gpu_wait_s": 0, "boot_wait_s": 0, "docker_down": False}
     past = estimate.history()
     clock = datetime.now()
     left = estimate.remaining_s(active, past) if active else None
@@ -150,8 +151,8 @@ def overview() -> dict:
         queue.append({"name": name, "takes_s": takes, "ends": ends if takes is not None else None})
     # The whole of it: the running result and every waiting one that can be estimated.
     return {"active": active, "searching": searching, "results_waiting": bool(results), "active_parts": parts(active, running=True) if active else [], "left_s": left, "active_ends": clock + timedelta(seconds=left) if left is not None else None,
-            "queue": queue, "paused": paused, "pause_reason": pause_reason, "gpu_wait_s": gpu_wait, "gpu_busy": hostload.gpu_in_use(hostload.now()) is not False,
-            "docker_down": docker_down, "all_ends": ends if queue and ends > clock and not paused and not gpu_wait and not docker_down else None, "all_s": (ends - clock).total_seconds()}
+            "queue": queue, "paused": paused, "pause_reason": pause_reason, "gpu_wait_s": gpu_wait, "boot_wait_s": boot_wait, "gpu_busy": hostload.gpu_in_use(hostload.now()) is not False,
+            "docker_down": docker_down, "all_ends": ends if queue and ends > clock and not paused and not gpu_wait and not boot_wait and not docker_down else None, "all_s": (ends - clock).total_seconds()}
 
 
 WAITING_S: dict = {}  # result -> (what it was estimated from, seconds)

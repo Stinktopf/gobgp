@@ -36,6 +36,9 @@ def queue_file() -> Path:
     return PRIVATE / "queue.json"
 
 
+BOOT_WAIT_S = 15 * 60  # results wait this long after the host booted, see web/jobs.py
+
+
 def pause_file() -> Path:
     """There while the queue is paused: nothing new starts."""
     return PRIVATE / "queue.paused"

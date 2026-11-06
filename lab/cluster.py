@@ -239,6 +239,25 @@ class Cluster:
         )
         return have
 
+    def trouble(self) -> str | None:
+        """Why the cluster cannot serve a run, None when it can: Docker
+        down, its container stopped, or Kubernetes not ready. A run that
+        failed with one of these failed for the cluster, not for itself."""
+        try:
+            running = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", PROFILE],
+                                     capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return "Docker does not answer"
+        if running.returncode:
+            return "Docker does not answer" if "daemon" in running.stderr else f"the container {PROFILE} is gone"
+        if running.stdout.strip() != "true":
+            return f"the container {PROFILE} is stopped"
+        try:
+            sh("kubectl", "--context", PROFILE, "get", "--raw", "/readyz", timeout=15)
+        except LabError as e:
+            return f"Kubernetes is not ready: {str(e)[-200:]}"
+        return None
+
     def max_pods(self) -> int:
         """Pods the node must hold: a router each, as many as fit, and
         Kubernetes itself. Kubernetes holds DEFAULT_PODS unless told."""

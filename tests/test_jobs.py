@@ -250,3 +250,61 @@ def test_the_queue_waits_for_docker_and_goes_on_by_itself(lab_files, monkeypatch
     up[0] = True
     jobs._step()
     assert started == ["t-a"]
+
+
+def test_an_interrupted_result_stays_in_the_queue_and_goes_on(lab_files, monkeypatch):
+    from lab import cluster, host
+
+    monkeypatch.setattr(cluster, "holding", lambda: None)
+    monkeypatch.setattr(host, "low_disk", lambda path: None)
+    started = []
+    monkeypatch.setattr(J.subprocess, "Popen", lambda args, **kw: started.append(args[-1]))
+    d = waiting_result("t-a")
+    d.write_status({"state": "interrupted"})  # e.g. the host shut down while it ran
+    jobs = J.Jobs()
+    jobs._save(["t-a"])
+    jobs._step()
+    assert started == ["t-a"] and jobs.queue() == ["t-a"]
+
+
+def test_results_wait_after_the_host_booted(lab_files, monkeypatch):
+    from lab import cluster, host
+
+    monkeypatch.setattr(cluster, "holding", lambda: None)
+    monkeypatch.setattr(host, "low_disk", lambda path: None)
+    started = []
+    monkeypatch.setattr(J.subprocess, "Popen", lambda args, **kw: started.append(args[-1]))
+    uptime = [60.0]
+    monkeypatch.setattr(host, "uptime_s", lambda: uptime[0])
+    waiting_result("t-a")
+    jobs = J.Jobs()
+    jobs._save(["t-a"])
+    jobs._step()
+    assert started == [] and jobs.boot_wait_s() == results.BOOT_WAIT_S - 60 and jobs.held_back()
+    uptime[0] = results.BOOT_WAIT_S + 1
+    jobs._step()
+    assert started == ["t-a"]
+
+
+def test_a_stop_marks_the_result_before_its_runner_gets_sigterm(lab_files, monkeypatch):
+    from lab import cluster, runner
+
+    d = waiting_result("t-a")
+    d.write_status({"state": "running"})
+    monkeypatch.setattr(cluster, "holding", lambda: ("t-a", 4242))
+    marked = []
+    monkeypatch.setattr(J.os, "kill", lambda pid, sig: marked.append((pid, (d.path / runner.STOP_FILE).exists())))
+    J.Jobs().stop("t-a")
+    assert marked == [(4242, True)]
+
+
+def test_a_pause_interrupts_the_running_result_without_the_mark(lab_files, monkeypatch):
+    from lab import cluster, runner
+
+    d = waiting_result("t-a")
+    monkeypatch.setattr(cluster, "holding", lambda: ("t-a", 4242))
+    monkeypatch.setattr(J.os, "kill", lambda pid, sig: None)
+    jobs = J.Jobs()
+    jobs._save(["t-a"])
+    jobs.pause()
+    assert not (d.path / runner.STOP_FILE).exists()

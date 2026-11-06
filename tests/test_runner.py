@@ -447,3 +447,137 @@ def test_large_announcements_name_one_sample_of_prefixes_to_every_router():
     few = SimpleNamespace(**{**vars(me), "announced": lambda: set(list(many)[:10])})
     runner.Run.watch_hops(few)
     assert len(posted) == 2  # few enough to follow whole
+
+
+def lab_smoke_result(name):
+    import json
+
+    from lab import results
+
+    path = results.PRIVATE / name
+    path.mkdir(parents=True)
+    e = Experiment.load(config.path("lab-smoke"))
+    meta = {"experiment": e.model_dump(mode="json"), "commits": {v.name: "c0ffee" for v in e.variants}, "created": "2026-01-01",
+            "versions": {}, "predictions": {}}
+    (path / "dataset.json").write_text(json.dumps(meta))
+    return results.Dataset(path)
+
+
+class FakeCluster:
+    """A cluster that builds and deploys nothing, and is in trouble as told."""
+
+    def __init__(self, resources, troubles=()):
+        self.resources, self.troubles, self.starts = resources, list(troubles), 0
+
+    def build(self, commit):
+        return "tag"
+
+    def prune(self, keep):
+        pass
+
+    def undeploy(self):
+        pass
+
+    def start(self):
+        self.starts += 1
+
+    def trouble(self):
+        return self.troubles.pop(0) if self.troubles else None
+
+
+def fake_lab(monkeypatch, cluster):
+    from lab import analysis, lifecycle
+
+    monkeypatch.setattr(runner, "oversized", lambda e: {})
+    monkeypatch.setattr(runner, "fitted", lambda c: c)
+    monkeypatch.setattr(runner, "Cluster", lambda resources: cluster)
+    monkeypatch.setattr(lifecycle, "ensure_cluster", lambda c: {})
+    monkeypatch.setattr(runner, "Routers", lambda: type("R", (), {"ensure": lambda self: None, "close": lambda self: None})())
+    monkeypatch.setattr(runner, "quiet_host", lambda stop, cpus: None)
+    monkeypatch.setattr(analysis, "run_bins", lambda *a: None)
+
+
+@pytest.mark.parametrize("stopped_by_hand", [False, True])
+def test_a_sigterm_interrupts_unless_a_person_stopped_it(lab_files, monkeypatch, stopped_by_hand):
+    d = lab_smoke_result("t-sig")
+    fake_lab(monkeypatch, FakeCluster(config.Cluster()))
+
+    class Ended:
+        def __init__(self, *a):
+            pass
+
+        def execute(self):
+            if stopped_by_hand:
+                runner.stop_requested(d)
+            raise runner.Cancelled  # as when SIGTERM sets stop
+
+    monkeypatch.setattr(runner, "Run", Ended)
+    runner.run(d, threading.Event())
+    assert d.status["state"] == ("stopped" if stopped_by_hand else "interrupted")
+    assert bool(d.meta.get("interruptions")) is not stopped_by_hand
+
+
+def test_a_lost_cluster_costs_no_attempt_and_the_run_plays_again(lab_files, monkeypatch):
+    d = lab_smoke_result("t-lost")
+    cluster = FakeCluster(config.Cluster(), troubles=["the container obgp-lab is stopped"])
+    fake_lab(monkeypatch, cluster)
+    recovered = []
+    monkeypatch.setattr(runner, "recover", lambda c, stop, status, why, recoveries: recovered.append(why))
+    calls = []
+
+    class FlakyOnce:
+        def __init__(self, *a):
+            pass
+
+        def execute(self):
+            calls.append(1)
+            if len(calls) == 1:
+                raise LabError("The connection to the server 192.168.49.2:8443 was refused")
+            return {"status": "completed"}, []
+
+    monkeypatch.setattr(runner, "Run", FlakyOnce)
+    runner.run(d, threading.Event())
+    first = d.keys()[0]
+    assert recovered == ["the container obgp-lab is stopped"]
+    assert d.run(first)["attempts"] == 1 and "failures" not in d.run(first)
+    assert d.status["state"] == "finished" and d.status["errors"] == 0
+
+
+def test_recovery_starts_only_its_own_cluster_and_gives_up_in_time(lab_files, monkeypatch):
+    from lab import results
+
+    never = type("Stop", (), {"wait": lambda self, s: False})()
+    status = type("S", (), {"update": lambda self, **kw: None})()
+    cluster = FakeCluster(config.Cluster(), troubles=[None])
+    runner.recover(cluster, never, status, "Docker does not answer", [])
+    assert cluster.starts == 1
+    with pytest.raises(runner.Cancelled):
+        runner.recover(cluster, never, status, "Docker does not answer", [time.time()] * runner.RECOVERIES_PER_HOUR)
+    assert "within an hour" in results.pause_file().read_text()
+
+
+def test_recovery_waits_while_the_host_shuts_down(lab_files, monkeypatch):
+    waits = []
+
+    class Stop:
+        def wait(self, s):
+            waits.append(s)
+            return len(waits) > 2  # SIGTERM arrives as the host goes down
+
+    monkeypatch.setattr(host, "shutting_down", lambda: True)
+    cluster = FakeCluster(config.Cluster())
+    status = type("S", (), {"update": lambda self, **kw: None})()
+    with pytest.raises(runner.Cancelled):
+        runner.recover(cluster, Stop(), status, "Docker does not answer", [])
+    assert cluster.starts == 0
+
+
+def test_going_on_after_a_reboot_names_it(lab_files, monkeypatch):
+    from lab import service
+
+    d = lab_smoke_result("t-boot")
+    monkeypatch.setattr(service, "boot_id", lambda: "before")
+    runner.interrupted(d, "noble-eu/bgp/fill-60/1", "the runner was ended from outside")
+    monkeypatch.setattr(service, "boot_id", lambda: "after")
+    runner.went_on_after_reboot(d)
+    assert d.meta["interruptions"][-1]["rebooted"] is True

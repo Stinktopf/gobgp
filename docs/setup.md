@@ -28,6 +28,9 @@ All in `scripts/`.
 
 - **Results:** teardown and uninstall keep them. `--purge` also deletes private results.
 - **Watchdog:** a crontab line restarts the web UI after a reboot or crash. Stop keeps it off until Start.
+- **Restarts:** only Stop ends a result. One cut short by a shutdown, a restart of Docker or a lost cluster
+  goes on by itself and plays the cut run again, once the host has run 15 minutes and Docker 5. The lab
+  then starts only its own cluster. After 30 minutes or three losses within an hour it pauses the queue.
 - **Updates:** restart only the web UI and keep the cluster.
 
 ## Host size

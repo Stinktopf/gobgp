@@ -33,6 +33,10 @@ def quiet_host(monkeypatch):
     a GPU, whose Docker runs."""
     monkeypatch.setattr(host, "docker_root", lambda: config.ROOT)
     monkeypatch.setattr(host, "docker_running", lambda: True)
+    # A host up for long, with Docker settled, not shutting down: a fresh CI runner is not.
+    monkeypatch.setattr(host, "uptime_s", lambda: 1e9)
+    monkeypatch.setattr(host, "docker_up_s", lambda: 1e9)
+    monkeypatch.setattr(host, "shutting_down", lambda: False)
     # The charts of the host read its watch: one without a thread, which would
     # ask Docker every second for the rest of the tests.
     monkeypatch.setattr(host, "_watching", lambda: type("Watch", (), {"state": {}, "history": deque()})())

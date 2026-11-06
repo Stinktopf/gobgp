@@ -21,11 +21,12 @@ from datetime import UTC, datetime
 import requests
 
 from . import config
+from .results import BOOT_WAIT_S
 
 log = logging.getLogger("lab")
 WEBHOOK = re.compile(r"https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+")
 # The colours of the states in the interface: emerald, rose and amber.
-COLORS = {"finished": 0x059669, "failed": 0xE11D48, "stopped": 0xD97706}
+COLORS = {"finished": 0x059669, "failed": 0xE11D48, "stopped": 0xD97706, "interrupted": 0xD97706}
 STARTED = 0x1E3765  # U of T Blue
 
 
@@ -158,8 +159,11 @@ def _queue(dataset, before: float, past) -> str | None:
 
 def lab_restarted(reboot: bool, waiting: list[str], error: str | None = None) -> None:
     """Tells that the watchdog started the lab again, why, and what it does now."""
-    text = ("The host rebooted. " if reboot else "The web server had ended. ") + "The watchdog started it again"
-    text += f" and resumes {_listing(waiting)}." if waiting else ". Nothing was queued."
+    text = (f"{platform.node()} rebooted. " if reboot else "The web server had ended. ") + "The watchdog started it again"
+    if waiting:
+        text += f" and resumes {_listing(waiting)}" + (f", after the host ran {BOOT_WAIT_S // 60} min." if reboot else ".")
+    else:
+        text += ". Nothing was queued."
     fields = [{"name": "Last log line", "value": f"`{error}`"}] if error else []
     send({"title": "Lab started again", "description": text, "color": COLORS["stopped"], "fields": fields})
 
@@ -197,7 +201,10 @@ def result_ended(dataset) -> None:
             took = f" in {_duration((ended - began).total_seconds())}"
     except (KeyError, ValueError):
         pass
-    lines.append(f"{done} of {total} runs{took}" + (", stopped by hand, it continues once resumed" if state == "stopped" else ""))
+    lines.append(f"{done} of {total} runs{took}" + {"stopped": ", stopped by hand, it continues once resumed",
+                                                      "interrupted": ", it goes on by itself"}.get(state, ""))
+    if state == "interrupted" and (why := (dataset.meta.get("interruptions") or [{}])[-1].get("cause")):
+        lines.append(f"Interrupted: {why}")
     if runs := _statuses(dataset):
         lines.append(runs)
     try:

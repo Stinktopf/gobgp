@@ -2,8 +2,10 @@
 
 The worker is `lab resume <result>` in its own session, so it keeps
 running when the web server restarts. A result whose worker vanished
-while running, e.g. after a reboot, is resumed automatically; one whose
-worker fails before it starts is marked failed instead of retried.
+while running, e.g. after a reboot, is resumed automatically, as is one
+interrupted: ended by anything but Stop, such as a shutdown of the host.
+After a boot results wait BOOT_WAIT_S. One whose worker fails before it
+starts is marked failed instead of retried.
 Whether a result runs is told by the cluster lock, which its runner holds.
 """
 
@@ -17,7 +19,7 @@ import threading
 import time
 
 from .. import cluster, config, host, simulation
-from ..results import Dataset, pause_file, queue_file, queued, write_atomic
+from ..results import BOOT_WAIT_S, Dataset, pause_file, queue_file, queued, write_atomic
 
 log = logging.getLogger("lab")
 
@@ -89,7 +91,7 @@ class Jobs:
                     return
                 if running[0] not in (queue := self.queue()):  # started on the command line
                     self._save([running[0]] + queue)
-                os.kill(running[1], signal.SIGTERM)  # the runner stops and writes "stopped"
+                os.kill(running[1], signal.SIGTERM)  # the runner stops and writes "interrupted"
             elif (search := simulation.running()) and _searching(search):
                 simulation.requeue(search["id"])  # it runs again from the start on resume, not counted as a death
                 simulation._kill(search.get("group"), search.get("group_born"))
@@ -102,7 +104,12 @@ class Jobs:
         """Whether the queue has work but waits: paused, for an idle GPU or
         for Docker. The cluster may then stop when idle, the next result
         starts it."""
-        return bool(self.queue()) and (self.paused() or self.gpu_wait_s() > 0 or not host.docker_running())
+        return bool(self.queue()) and (self.paused() or self.gpu_wait_s() > 0 or self.boot_wait_s() > 0 or not host.docker_running())
+
+    def boot_wait_s(self) -> float:
+        """Seconds results still wait after the host booted, 0 for none: an
+        admin may be at work, and Docker and the other users start first."""
+        return max(0.0, BOOT_WAIT_S - host.uptime_s())
 
     def resume_queue(self) -> None:
         """Goes on in the same order, with the runs the paused result still misses."""
@@ -147,12 +154,15 @@ class Jobs:
                 return
             state, running = dataset.status.get("state"), cluster.holding()
             if running and running[0] == name:
+                from ..runner import stop_requested
+
+                stop_requested(dataset)  # else the SIGTERM would only interrupt it
                 os.kill(running[1], signal.SIGTERM)  # the runner stops and writes "stopped"
                 return
             if self.worker and self.worker.poll() is None and self.worker.args[-1] == name:
                 self.worker.terminate()  # started, but not yet running
                 self.worker.wait(timeout=10)
-            if state in ("queued", "running"):  # never started, or its worker is gone
+            if state in ("queued", "running", "interrupted"):  # never started, interrupted, or its worker is gone
                 dataset.write_status({**dataset.status, "state": "stopped"})
 
     def supervise(self) -> None:
@@ -218,14 +228,14 @@ class Jobs:
                 # Done, or ended for a reason that needs attention.
                 self._save([n for n in self.queue() if n != name])
                 continue
-            if gpu_waiting or not host.docker_running():  # goes on by itself once it can
+            if gpu_waiting or self.boot_wait_s() > 0 or not host.docker_running():  # goes on by itself once it can
                 return
             if low := host.low_disk(dataset.path):
                 log.warning("%s Pausing the queue.", low)
                 pause_file().parent.mkdir(parents=True, exist_ok=True)
                 pause_file().write_text(low)
                 return
-            # Queued, or running without a worker, e.g. after a reboot.
+            # Queued, interrupted, or running without a worker, e.g. after a reboot.
             with open(dataset.path / "worker.log", "a") as out:  # the worker keeps its own copy
                 self.worker = subprocess.Popen(
                     [sys.executable, "-m", "lab.cli", "resume", name],

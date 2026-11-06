@@ -73,6 +73,10 @@
     {% elif docker_down %}
     <span class="size-2 shrink-0 rounded-full bg-rose-500" role="img" aria-label="Waiting"></span>
     <a href="/settings#cluster" class="font-medium hover:underline" data-tip="Docker is down. Start it and the queue goes on">Waiting for Docker</a>
+    {% elif boot_wait_s %}
+    <span class="size-2 shrink-0 rounded-full bg-rose-500" role="img" aria-label="Waiting"></span>
+    <span class="font-medium" data-tip="The host started again. Results wait a while, so that others and Docker start first">Waiting after a reboot</span>
+    <span class="muted shrink-0 tabular-nums">{{ (boot_wait_s / 60) | round(0, "ceil") | int }} min</span>
     {% elif gpu_wait_s %}
     <span class="size-2 shrink-0 rounded-full bg-rose-500" role="img" aria-label="Waiting"></span>
     <a href="/settings#cluster" class="font-medium hover:underline" data-tip="Others use a GPU. The next result waits, see Settings">Waiting for an idle GPU</a>

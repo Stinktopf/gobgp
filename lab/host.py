@@ -305,3 +305,33 @@ def docker_running() -> bool:
             up = False
         _docker = (time.monotonic(), up)
     return _docker[1]
+
+
+def uptime_s() -> float:
+    """Seconds since the host booted, a large number where it cannot be read."""
+    try:
+        return float(Path("/proc/uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return 1e9
+
+
+def shutting_down() -> bool:
+    """Whether the host is shutting down or rebooting: then nothing starts again."""
+    try:
+        state = subprocess.run(["systemctl", "is-system-running"], capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return state == "stopping"
+
+
+def docker_up_s() -> float:
+    """Seconds since the Docker service last started, a large number where
+    systemd does not run it, e.g. Docker Desktop: it then counts as settled."""
+    try:
+        since = subprocess.run(["systemctl", "show", "docker", "--property=ActiveEnterTimestampMonotonic", "--value"],
+                               capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return 1e9
+    if not since.isdigit() or since == "0":
+        return 1e9
+    return max(0.0, uptime_s() - int(since) / 1e6)

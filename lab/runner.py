@@ -31,10 +31,90 @@ from .scenario import Network, Step
 
 log = logging.getLogger("lab")
 ATTEMPTS = 3
+# The lab is a guest on a shared host: after Docker or the host restarted it
+# waits until Docker has run a while, only starts its own cluster again, and
+# gives up after a while or a few times an hour, pausing the queue.
+DOCKER_SETTLED_S = 5 * 60
+RECOVER_WAIT_S = 30 * 60
+RECOVERIES_PER_HOUR = 3
+STOP_FILE = "stop"  # in the folder of a result: a person stopped it; any other end of the runner interrupts it
 
 
 class Cancelled(Exception):
     pass
+
+
+def stop_requested(dataset: Dataset) -> None:
+    """Marks a result as stopped by a person, before its runner gets SIGTERM:
+    without the mark a SIGTERM interrupts it, e.g. when the host shuts down,
+    and the queue resumes it."""
+    (dataset.path / STOP_FILE).touch()
+
+
+def settle(stop: threading.Event, status: "Status") -> None:
+    """Waits while the host shuts down and until Docker answers and has run
+    DOCKER_SETTLED_S, as after a restart of Docker or the host."""
+    while host.shutting_down() or not host.docker_running() or host.docker_up_s() < DOCKER_SETTLED_S:
+        status.update(phase="waiting for Docker to settle")
+        if stop.wait(30):
+            raise Cancelled
+
+
+def recover(cluster: Cluster, stop: threading.Event, status: "Status", why: str, recoveries: list[float]) -> None:
+    """Starts the cluster again after it was lost, as a guest: only its own
+    container, once Docker settled, never while the host shuts down. Gives up
+    after RECOVER_WAIT_S or RECOVERIES_PER_HOUR, pausing the queue."""
+    now_s = time.time()
+    recoveries[:] = [t for t in recoveries if now_s - t < 3600]
+    if len(recoveries) >= RECOVERIES_PER_HOUR:
+        give_up(f"The cluster was lost {len(recoveries) + 1} times within an hour, last: {why}.")
+    recoveries.append(now_s)
+    log.warning("the cluster is lost (%s): waiting for it, the run is not counted", why)
+    deadline = time.monotonic() + RECOVER_WAIT_S
+    while True:
+        status.update(phase=f"waiting for the cluster: {why}")
+        if stop.wait(30):
+            raise Cancelled
+        if host.shutting_down() or not host.docker_running() or host.docker_up_s() < DOCKER_SETTLED_S:
+            pass
+        else:
+            try:
+                cluster.start()
+            except (LabError, RuntimeError) as e:  # Incompatible too: the lab never deletes it here
+                why = str(e)[-200:]
+            else:
+                if not (why := cluster.trouble()):
+                    log.info("the cluster is back")
+                    return
+        if time.monotonic() > deadline:
+            give_up(f"The cluster did not come back within {RECOVER_WAIT_S // 60} min: {why}.")
+
+
+def give_up(reason: str) -> None:
+    """Pauses the queue with the reason and ends the runner: the result is interrupted and goes on once the queue resumes."""
+    log.error("%s Pausing the queue.", reason)
+    pause_file().parent.mkdir(parents=True, exist_ok=True)
+    pause_file().write_text(reason)
+    raise Cancelled
+
+
+def interrupted(dataset: Dataset, run: str | None, cause: str) -> None:
+    """Records why and where a result was interrupted, with the boot of the host."""
+    from .service import boot_id
+
+    entry = {"at": now(), "run": run, "cause": cause, "boot": boot_id()}
+    dataset.update(interruptions=[*dataset.meta.get("interruptions", []), entry])
+    log.warning("interrupted at %s: %s", run or "its start", cause)
+
+
+def went_on_after_reboot(dataset: Dataset) -> None:
+    """Names a reboot as the cause of the last interruption once the result goes on after one."""
+    from .service import boot_id
+
+    entries = dataset.meta.get("interruptions", [])
+    if entries and entries[-1].get("boot") not in (None, boot_id()) and not entries[-1].get("rebooted"):
+        dataset.update(interruptions=[*entries[:-1], {**entries[-1], "rebooted": True}])
+        log.info("going on after a reboot of the host")
 
 
 SILENT_S = 30  # a router that hands over no samples this long fails the run
@@ -133,6 +213,8 @@ def run(dataset: Dataset, stop: threading.Event) -> None:
     if skipped := oversized(experiment):
         log.warning("skipped on this host: %s", "; ".join(f"{t}, {', '.join(why)}" for t, why in skipped.items()))
         keys = [k for k in keys if k.topology not in skipped]
+    (dataset.path / STOP_FILE).unlink(missing_ok=True)  # of an earlier stop
+    went_on_after_reboot(dataset)
     status = Status(dataset, total=len(keys), done=sum(map(dataset.is_done, keys)))
     status.update(skipped=skipped, limit=limit(experiment) if skipped else None)
     if status.data["done"] == len(keys):
@@ -140,11 +222,19 @@ def run(dataset: Dataset, stop: threading.Event) -> None:
         return
     cluster = Cluster(fitted(experiment.cluster))
     routers = None
+    recoveries: list[float] = []  # when the cluster was lost, for RECOVERIES_PER_HOUR
     try:
+        settle(stop, status)
         status.update(phase="starting cluster")
         from .lifecycle import ensure_cluster
 
-        dataset.update(cluster=ensure_cluster(cluster))
+        try:
+            dataset.update(cluster=ensure_cluster(cluster))
+        except Exception:
+            if not (why := cluster.trouble()):
+                raise
+            recover(cluster, stop, status, why, recoveries)
+            dataset.update(cluster=ensure_cluster(cluster))
         tags = {}
         for v in experiment.variants:
             status.update(phase=f"building {v.name} ({dataset.commits[v.name][:12]})")
@@ -178,13 +268,26 @@ def run(dataset: Dataset, stop: threading.Event) -> None:
                 log.info("%s: the lab or host is still %.0f %% busy, starting anyway", key, 100 * busy)
             started = time.monotonic()
             failures = []  # why each attempt before the last failed, kept also for a run that then completed
-            for attempt in range(1, ATTEMPTS + 1):
+            attempt = 0
+            while attempt < ATTEMPTS:
+                attempt += 1
                 status.update(attempt=attempt, attempts=ATTEMPTS, failure=failures[-1] if failures else None)
                 try:
                     routers.ensure()
                     result, samples = Run(dataset, key, cluster, routers, tags[key.variant], status, stop).execute()
                     break
                 except LabError as e:
+                    if stop.is_set():  # ended from outside: its commands fail as the host shuts down
+                        raise Cancelled from e
+                    if why := cluster.trouble():
+                        # The cluster failed, not the run: not counted, played again from its start once it is back.
+                        log.warning("%s: attempt %d failed with the cluster, not counted: %s", key, attempt, e)
+                        attempt -= 1
+                        recover(cluster, stop, status, why, recoveries)
+                        routers.close()
+                        routers = Routers()
+                        started = time.monotonic()
+                        continue
                     log.warning("%s: attempt %d failed: %s", key, attempt, e)
                     failures.append(str(e))
                     result, samples = {"status": "error", "message": str(e)}, []
@@ -204,8 +307,20 @@ def run(dataset: Dataset, stop: threading.Event) -> None:
             status.finished(error=result["status"] == "error")
         status.update(state="finished", current=None, run_started=None, phase=None, attempt=None, failure=None)
     except (Cancelled, Interrupted):
-        status.update(state="stopped", phase=None)
+        if (dataset.path / STOP_FILE).exists():
+            status.update(state="stopped", phase=None)
+        else:
+            try:
+                reason = pause_file().read_text().strip() or "the queue was paused"
+            except OSError:
+                reason = "the runner was ended from outside, e.g. as the host shut down"
+            interrupted(dataset, status.data.get("current"), reason)
+            status.update(state="interrupted", phase=None)
     except Exception as e:
+        if why := cluster.trouble():  # it failed because the cluster did: goes on later, does not fail
+            interrupted(dataset, status.data.get("current"), f"{why}: {str(e)[-200:]}")
+            status.update(state="interrupted", phase=None)
+            return
         status.update(state="failed", phase=None, error=str(e))
         raise
     finally:

@@ -432,6 +432,14 @@ class Run:
             raise LabError(f"{', '.join(oom)} took more than {self.experiment.cluster.router_limit_mb} MiB and restarted")
         if restarts:
             raise LabError(f"routers restarted {restarts} times")
+        addresses, rows = self.cluster.addresses(), self.sampler.rows()
+        # Away before the run is written and analysed: routers that oscillate
+        # would go on, load the host while the next run waits for quiet and
+        # grow until their memory limit ends them. The next deploy is the fallback.
+        try:
+            self.cluster.undeploy()
+        except LabError as e:
+            log.warning("%s: the routers stay until the next run: %s", self.key, e)
         return {
             # A failed check outweighs a timeout: the routes were wrong.
             "status": "failed" if any(e["name"] == "expect" and not analysis.check_ok(e) for e in self.events)
@@ -441,14 +449,14 @@ class Run:
             "seed": seed,
             "watched": watched,
             # The routers' addresses, so that next hops inside an AS name their router.
-            "addresses": self.cluster.addresses(),
+            "addresses": addresses,
             # In the order of their start; parallel steps record them as they end.
             "events": sorted(self.events, key=lambda e: e["t"]),
             "measurements": self.measurements,
             "host": load.summary(),
             # Which router ran which mode, where they differ.
             **({"modes": self.modes} if self.variant.mixed else {}),
-        }, self.sampler.rows()
+        }, rows
 
     # The step engine
 

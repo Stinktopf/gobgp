@@ -592,3 +592,63 @@ def test_old_router_images_are_never_pruned_in_the_docker_of_the_host(monkeypatc
     monkeypatch.setattr(cluster.subprocess, "run", lambda *a, **kw: calls.append(a))
     cluster.Cluster(config.Cluster()).prune(keep=set())
     assert calls == []
+
+
+def test_the_routers_go_away_before_the_run_is_written(lab_files, monkeypatch):
+    # Routers that oscillate would go on after the run, load the host and grow until their memory limit ends them.
+    from collections import deque
+
+    order = []
+
+    class Deployed:
+        resources = config.Cluster()
+
+        def deploy(self, *a):
+            order.append("deploy")
+
+        def pods(self):
+            return {}
+
+        def restarts(self):
+            return 0, []
+
+        def addresses(self):
+            order.append("addresses")
+            return {"10.0.0.1": "r1"}
+
+        def undeploy(self):
+            order.append("undeploy")
+
+    class Sampled:
+        failed, count = 0, 10
+
+        def __init__(self, *a):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            order.append("sampler stopped")
+
+        def now(self):
+            return 1.0
+
+        def rows(self):
+            order.append("rows")
+            return [{"t": 0.5}]
+
+    monkeypatch.setattr(runner, "Sampler", Sampled)
+    monkeypatch.setattr(runner, "HostLoad", lambda clock: type("L", (), {"start": lambda s: None, "stop": lambda s: None, "summary": lambda s: {}})())
+    run = engine(lab_files)
+    run.cluster = Deployed()
+    run.variant = run.experiment.variants[0]
+    run.scenario = type("Scenario", (), {"steps": []})()
+    run.steps = lambda steps, position: order.append("steps")
+    run.spool = lab_files / "spool"
+    run.tag = "tag"
+    run.status = type("Status", (), {"samples": deque(), "watched": set(), "update": lambda self, **_: None, "live": lambda self, *a: None})()
+    run.final = lambda: order.append("final")
+    result, rows = run.execute()
+    assert order == ["deploy", "steps", "final", "sampler stopped", "addresses", "rows", "undeploy"]
+    assert result["addresses"] == {"10.0.0.1": "r1"} and rows == [{"t": 0.5}]

@@ -170,3 +170,18 @@ def test_a_pulled_go_image_goes_unless_in_use(installation, monkeypatch):
     uninstall.record(base, "docker-image golang:1.24")
     kept = uninstall.cleanup(root, settings, base, no_sudo)
     assert ["docker", "image", "rm"] in calls and "Docker image golang:1.24 (still in use)" in kept
+
+
+def test_images_of_others_keep_host_changes_but_the_labs_own_do_not(installation, monkeypatch):
+    _, _, base = installation
+    monkeypatch.setattr(uninstall.shutil, "which", lambda _: "/usr/bin/docker")
+    images = ["gcr.io/k8s-minikube/kicbase:v0.0.48", "golang:1.24", "postgres:16"]
+    monkeypatch.setattr(uninstall, "output", lambda command: "" if command[1] == "ps" else "\n".join(images))
+    kept = []
+    uninstall.undo_host(["package docker.io 1.0", "docker-image golang:1.24"], base, no_sudo, kept)
+    assert kept == ["host changes (other Docker images exist)"]
+    images.pop()  # only the lab's: kicbase and the Go image it pulled
+    monkeypatch.setattr(uninstall, "remove_packages", lambda packages, privileged, kept: kept.append("removed"))
+    kept = []
+    uninstall.undo_host(["package docker.io 1.0", "docker-image golang:1.24"], base, no_sudo, kept)
+    assert kept == ["removed"]

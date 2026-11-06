@@ -581,3 +581,14 @@ def test_going_on_after_a_reboot_names_it(lab_files, monkeypatch):
     monkeypatch.setattr(service, "boot_id", lambda: "after")
     runner.went_on_after_reboot(d)
     assert d.meta["interruptions"][-1]["rebooted"] is True
+
+
+def test_old_router_images_are_never_pruned_in_the_docker_of_the_host(monkeypatch):
+    from lab import cluster
+
+    calls = []
+    monkeypatch.setattr(cluster.Cluster, "_docker_env", lambda self: dict(cluster.os.environ))  # docker-env named nothing
+    monkeypatch.setattr(cluster, "sh", lambda *a, **kw: calls.append(a) or "")
+    monkeypatch.setattr(cluster.subprocess, "run", lambda *a, **kw: calls.append(a))
+    cluster.Cluster(config.Cluster()).prune(keep=set())
+    assert calls == []

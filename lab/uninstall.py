@@ -123,16 +123,24 @@ def remove_packages(packages, privileged, kept):
     privileged(["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "purge", "--no-auto-remove", "-y", *candidates])
 
 
+KICBASE = "gcr.io/k8s-minikube/kicbase"  # the image of the minikube node, pulled for the lab
+
+
 def undo_host(lines, base, privileged, kept):
     packages = [tuple(line.split()[1:]) for line in lines if line.startswith("package ")]
     changes = any(line.startswith(("package ", "docker-group ", "inotify-before ", "docker-started ")) for line in lines)
     if not changes:
         return
-    # Other Docker workloads, including stopped containers, may rely on these changes.
+    # Other Docker workloads, including stopped containers and images of others, may rely on these changes.
     if shutil.which("docker"):
         try:
             if output(["docker", "ps", "-aq"]):
                 kept.append("host changes (other Docker containers exist)")
+                return
+            own = {raw for kind, _, raw in (line.partition(" ") for line in lines) if kind == "docker-image"}
+            images = output(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"]).split()
+            if [i for i in images if i not in own and not i.startswith(KICBASE)]:
+                kept.append("host changes (other Docker images exist)")
                 return
         except RuntimeError:
             kept.append("host changes (Docker usage could not be checked)")

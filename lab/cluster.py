@@ -5,6 +5,7 @@ import fcntl
 import functools
 import hashlib
 import json
+import logging
 import os
 import platform
 import re
@@ -316,12 +317,16 @@ class Cluster:
         """Removes router images beyond the newest few, except those in keep;
         every commit and change of the controller makes a new one."""
         env = self._docker_env()
+        if not env.get("DOCKER_HOST") or env.get("DOCKER_HOST") == os.environ.get("DOCKER_HOST"):
+            # Never the Docker of the host: its images belong to others too.
+            logging.getLogger("lab").warning("minikube docker-env named no Docker of the cluster, old router images are kept")
+            return
         lines = sh("docker", "images", IMAGE, "--format", "{{.CreatedAt}}\t{{.Tag}}", env=env).splitlines()
         tags = [line.split("\t")[1] for line in sorted(lines, reverse=True) if "\t" in line]
         old = [t for t in tags[self.KEEP_IMAGES:] if t not in keep]
         if old:
+            # Only the lab's own tags: docker rmi also removes the layers no other image uses.
             subprocess.run(["docker", "rmi", *(f"{IMAGE}:{t}" for t in old)], env=env, capture_output=True, timeout=600)
-            sh("docker", "image", "prune", "-f", env=env)  # the layers only they used
 
     def deploy(self, name: str, topology: dict, tag: str, mode: dict[str, str], seed: int, bgp: config.Bgp,
                refresh_delay: float = 0, per_neighbor: bool = False) -> None:

@@ -53,6 +53,8 @@ Paths below are relative to the repository root. The README starts inside `scrip
 - A watchdog line in the user's crontab restarts the web server after reboots and crashes. Stop and teardown keep it off until start.
 - Script, UI and MCP updates restart only the web server and preserve cluster state. Local changes block updates. After a rewritten history a branch switch is needed, MCP updates switch by themselves.
 - Setup/start/update preserve results and configuration. Teardown removes runtime, `--purge` additionally removes private results. Public results and settings remain.
+- The lab is a guest on a shared host: it never stops, restarts or prunes Docker and touches only its own container,
+  profile and the images inside minikube. Recovery only starts its own cluster.
 - Uninstall uses `~/obgp-lab/installed.txt` to undo recorded changes. Never remove unowned or changed tools, unrelated containers, shared caches or packages that APT needs for other software. Keep results unless `--purge` is explicit. Old installations have incomplete host provenance.
 - Helpers are in `scripts/internal/`, asset tools in `scripts/dev/`. Keep wrappers thin.
 

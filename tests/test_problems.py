@@ -189,3 +189,17 @@ def test_a_loss_foretold_by_a_check_of_some_origins_is_predicted():
     run = {"events": [{"name": "expect", "allowed": True, "routers": ["x-c"], "prefixes": "all", "of": "one-table-sources",
                        "problems": ["x-c misses 30 of 30 prefixes"]}]}
     assert problems._predicted(run, {"x-c"}, "reach")
+
+
+def test_a_loop_on_the_way_the_simulator_saw_is_predicted():
+    from lab.results import RunKey
+
+    meta = {"predictions": {"t|s": {"obgp-rp": {"converged": 20, "runs": 20, "findings": {"transient-loop": 20}}}}}
+    e = Experiment.model_validate({"name": "x", "topologies": ["bad-gadget"], "scenarios": ["fill-60"],
+                                   "variants": [{"name": "obgp-rp", "mode": "obgp-rp"}]})
+    dataset = type("D", (), {"experiment": e, "meta": meta})()
+    assert problems.way_predicted(dataset, RunKey("t", "obgp-rp", "s", 1), "loops-way")
+    assert not problems.way_predicted(dataset, RunKey("t", "obgp-rp", "s", 1), "holes-way")
+    # Asked before the simulator looked at the way: nothing foretold.
+    meta["predictions"]["t|s"]["obgp-rp"].pop("findings")
+    assert not problems.way_predicted(dataset, RunKey("t", "obgp-rp", "s", 1), "loops-way")

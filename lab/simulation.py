@@ -199,7 +199,7 @@ def _finish(entry: dict) -> dict:
     try:
         found = []
         for k, tables in enumerate(passes):
-            more = simulate.search(entry["routers"], entry["seeds"], entry["family"], entry.get("transient", False),
+            more = simulate.search(entry["routers"], entry["seeds"], entry["family"], entry.get("transient", True),
                                    started=lambda pid: _update(entry["id"], group=pid, group_born=_born(pid)), tables=tables, progress=told(k))
             found += [e for e in more if not (k and e["finding"]["mode"] in ("bgp", "obgp-paper"))]
         findings = [{**e, "id": i} for i, e in enumerate(found)]
@@ -211,7 +211,7 @@ def _finish(entry: dict) -> dict:
     return _change(entry["id"], lambda now: {**changes, "state": "stopped"} if now.get("state") == "stopped" else changes)
 
 
-def run(routers: int, seeds: int = 3, family: str = "", transient: bool = False, by: str | None = None, tables: bool | str = False) -> dict:
+def run(routers: int, seeds: int = 3, family: str = "", transient: bool = True, by: str | None = None, tables: bool | str = False) -> dict:
     """Runs a search now, in this process, and keeps it: the command line."""
     with _exclusive():
         entry = _new(routers, seeds, family, transient, by, tables)

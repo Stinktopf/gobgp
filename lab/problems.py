@@ -117,6 +117,18 @@ def prediction(dataset: Dataset, key: RunKey) -> dict | None:
     return p
 
 
+# What the simulator names each problem on the way, see internal/pkg/obgpsim/oracle.go.
+ON_THE_WAY = {"loops-way": "transient-loop", "holes-way": "transient-hole", "blocked": "transient-blocked"}
+
+
+def way_predicted(dataset: Dataset, key: RunKey, cause: str) -> bool:
+    """Whether the simulator saw this problem on the way to rest for this mode
+    here, in some order of messages. Results asked it before it looked at the
+    way tell nothing of it."""
+    p = prediction(dataset, key)
+    return p is not None and (p.get("findings") or {}).get(ON_THE_WAY[cause], 0) > 0
+
+
 def restless_predicted(dataset: Dataset, key: RunKey) -> bool:
     """Whether the simulator saw this mode not come to rest here in some order of messages: then a run without rest is the hypothesis."""
     p = prediction(dataset, key)
@@ -240,7 +252,7 @@ def broken(dataset: Dataset) -> list[dict]:
             mine, base = m.get(metric), (ref or {}).get(metric)
             if mine is not None and base is not None and mine > base + resolution and not (
                     lost(m) is not None and lost(ref) is not None and lost(m) <= lost(ref) + resolution):
-                found.append((cause_, f"{what} for {mine:g} s on the way, BGP of this seed {base:g} s", False))
+                found.append((cause_, f"{what} for {mine:g} s on the way, BGP of this seed {base:g} s", way_predicted(dataset, key, cause_)))
         if m.get("flaps_unplanned") is not None:  # per session: those no step touched
             if m["flaps_unplanned"]:
                 found.append(("sessions", f"sessions no step touched fell {m['flaps_unplanned']} times, counted at both ends", False))
@@ -256,7 +268,8 @@ def broken(dataset: Dataset) -> list[dict]:
         wait = (variant.refresh_delay or 0) + dataset.experiment.bgp.refresh if variant and variant.mode.startswith("obgp-rp") else 0
         if (m.get("blocked_s") or 0) > wait + resolution:
             beyond = f", beyond the {wait:g} s refresh pruning waits by design" if wait else ""
-            found.append(("blocked", f"for {m['blocked_s']:g} s a router had a valid path set aside and no route{beyond}, up to {m.get('blocked_max', 0)} prefixes", False))
+            found.append(("blocked", f"for {m['blocked_s']:g} s a router had a valid path set aside and no route{beyond}, up to {m.get('blocked_max', 0)} prefixes",
+                          way_predicted(dataset, key, "blocked")))
         # A run without rest is one problem, each way it showed told inside it.
         restless_ = [f for f in found if f[0] in ("rest-end", "rest-step", "rest-final")]
         if len(restless_) > 1:

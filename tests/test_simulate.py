@@ -118,6 +118,9 @@ def test_exported_counterexamples_show_their_deviation_again(lab_files):
         finding = next(e["finding"] for e in examples if name.endswith(f"-{e['finding']['mode']}-{e['finding']['kind']}"))
         out = simulate.run(simulate.to_instance(t, scenarios.load(name)), seeds=10)
         mode = finding["mode"]
+        if finding["kind"].startswith("transient-"):  # on the way to rest: no expect at the end shows it, the finding does
+            assert out[mode]["findings"].get(finding["kind"], 0) > 0, name
+            continue
         assert out[mode]["failed"] and out[mode]["failed"][-1] > 0, name  # the lab's expect, played by the simulator
         if mode != "bgp" and finding["kind"] != "leaked":  # leaks are measured in every mode, BGP included
             assert out["bgp"]["failed"][-1] == 0, name  # BGP is the reference: it passes
@@ -309,9 +312,12 @@ def test_predictions_sum_the_parts_per_mode_and_say_where_the_simulator_cannot_p
         return [("held", {}), ("expired", {})]
     monkeypatch.setattr(simulate, "to_instances", parts)
     monkeypatch.setattr(simulate, "run", lambda inst, seeds, per_neighbor=False: {
-        "bgp": {"converged": 1, "runs": seeds}, "obgp-rp": {"converged": seeds, "runs": seeds}, "obgp-paper": {"converged": 0, "runs": seeds}})
+        "bgp": {"converged": 1, "runs": seeds, "findings": {"transient-loop": 3}}, "obgp-rp": {"converged": seeds, "runs": seeds},
+        "obgp-paper": {"converged": 0, "runs": seeds}})
     out = simulate.predictions(e, seeds=10, workers=2)
-    assert out["bad-gadget|fill-60"] == {"bgp": {"converged": 2, "runs": 20}, "obgp-rp": {"converged": 20, "runs": 20}, "obgp-rp-pn": {"converged": 20, "runs": 20}}
+    # The way to rest is summed as well: in how many orders a mode looped on the way.
+    assert out["bad-gadget|fill-60"] == {"bgp": {"converged": 2, "runs": 20, "findings": {"transient-loop": 6}},
+                                         "obgp-rp": {"converged": 20, "runs": 20}, "obgp-rp-pn": {"converged": 20, "runs": 20}}
     assert out["noble-eu|fill-60"] == {"unsupported": ["too large here"]}
 
 

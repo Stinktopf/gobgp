@@ -599,9 +599,11 @@ def _simulator(arguments: list[str], stdin: str | None = None, timeout: float = 
 
 def run(inst: dict, seeds: int = 100, per_neighbor: bool = False) -> dict:
     """Plays an instance in every mode over seeds orders of messages: how
-    often each converged, failed each expect, and showed each deviation.
+    often each converged, failed each expect, and showed each deviation,
+    on the way to rest as well.
     With per_neighbor the OBGP modes keep a table per neighbor."""
-    return json.loads(_simulator(["-instance", "-", "-seeds", str(seeds), *(["-per-neighbor"] if per_neighbor else [])], json.dumps(inst)))
+    # The way to rest always: transient loops, holes and blocking are what the lab measures on the way.
+    return json.loads(_simulator(["-instance", "-", "-seeds", str(seeds), "-transient", *(["-per-neighbor"] if per_neighbor else [])], json.dumps(inst)))
 
 
 PREDICTION_SEEDS = 20  # orders of messages per prediction: enough to see a mode that rests only sometimes
@@ -662,6 +664,8 @@ def predictions(experiment, seeds: int = PREDICTION_SEEDS, workers: int = 8) -> 
                 kept = entry.setdefault(mode, {"converged": 0, "runs": 0})
                 kept["converged"] += o["converged"]
                 kept["runs"] += o["runs"]
+                for finding, n in (o.get("findings") or {}).items():  # in how many orders, e.g. transient-loop
+                    kept.setdefault("findings", {})[finding] = kept.get("findings", {}).get(finding, 0) + n
     return result
 
 
@@ -690,7 +694,7 @@ def per_neighbor(mode: str) -> str:
     return mode if mode in ("bgp", "obgp-paper") or mode.endswith("-pn") else f"{mode}-pn"
 
 
-def search(routers: int = 4, seeds: int = 3, family: str = "", transient: bool = False, started=None,
+def search(routers: int = 4, seeds: int = 3, family: str = "", transient: bool = True, started=None,
            tables: bool = False, progress=None) -> list[dict]:
     """The smallest example of every deviation the simulator finds on all
     topologies up to routers, one per number of routers, as cmd/obgp-sim

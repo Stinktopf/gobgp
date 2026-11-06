@@ -661,7 +661,10 @@ def sample(cache: dict) -> dict:
         cache.update(memory_key=key, memory_at=time.monotonic())
     # The next hops that changed, on small tables only: a loop on the way
     # starts with a change of a route. Empty means unchanged.
-    changed_hops = hops_changed(cache, table, key)
+    # With NS-BGP a route sent to a neighbor changes also when the router
+    # sends without receiving, as when a session comes up: read then too, or
+    # the analysis would see a black hole until the next read, up to 5 s on.
+    changed_hops = hops_changed(cache, table, (*key, tx) if NS_BGP else key)
     return {
         "destinations": table.num_destination,
         "paths": table.num_path,

@@ -308,3 +308,26 @@ def test_a_restarted_daemon_tells_its_whole_table(controller, monkeypatch):
     seen["p1"] = "c|"
     clock[0] += 0.1
     assert app.hops_changed(cache, table(2), (2, 2, 5)) == "* p1=c| p2=."
+
+
+@pytest.mark.parametrize("ns_bgp", [False, True])
+def test_with_ns_bgp_routes_sent_without_receiving_are_read_too(controller, monkeypatch, ns_bgp):
+    # A session coming up makes a router send its table for the neighbor, without receiving anything.
+    app, daemon = controller("b", 65002, [], {})
+    monkeypatch.setattr(app, "NS_BGP", ns_bgp)
+    monkeypatch.setattr(app, "daemon", daemon)
+    sent = [10]
+    peer = lambda: type("P", (), {
+        "conf": type("C", (), {"neighbor_address": "10.1.0.1"})(),
+        "state": type("S", (), {"messages": type("M", (), {"received": type("R", (), {"update": 5})(), "sent": type("R", (), {"update": sent[0]})()})(),
+                                "flops": 0, "session_state": app.gobgp_pb2.PeerState.SESSION_STATE_ESTABLISHED})()})()
+    monkeypatch.setattr(app, "peers", lambda: [peer()])
+    monkeypatch.setattr(app, "stub", type("Stub", (), {"GetTable": lambda self, req, timeout: type("T", (), {"num_destination": 2, "num_path": 2})()})())
+    monkeypatch.setattr(app, "memory", lambda: {})
+    keys = []
+    monkeypatch.setattr(app, "hops_changed", lambda cache, table, key: keys.append(key) or "")
+    cache = {"lengths_running": True, "lengths": dict.fromkeys(["path_len_min", "path_len_avg", "path_len_max"], 0)}
+    app.sample(cache)
+    sent[0] = 11
+    app.sample(cache)
+    assert (keys[0] != keys[1]) is ns_bgp

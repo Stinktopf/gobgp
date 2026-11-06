@@ -16,6 +16,8 @@ router, as the paper of NS-BGP forwards. Its next hops are then an Ingress
 per router.
 """
 
+import functools
+
 
 class Ingress(dict):
     """Where an NS-BGP router sends packets: by the eBGP neighbor they came
@@ -37,12 +39,19 @@ def links(routers: dict) -> list[tuple[str, str, int]]:
 
 def shortest(routers: dict) -> dict[str, dict[str, str | None]]:
     """The first IGP hop from a router towards another of its AS, or None.
-    Floyd-Warshall as in the simulator, keeping the first of equal paths."""
-    names = list(routers)
+    Floyd-Warshall as in the simulator, keeping the first of equal paths.
+    Kept for each set of routers and links: the analysis checks forwarding
+    tens of thousands of times a run, while the costs change only with an
+    igp step. Callers only read the answer."""
+    return _shortest(tuple(routers), tuple(links(routers)))
+
+
+@functools.lru_cache(maxsize=64)
+def _shortest(names: tuple[str, ...], edges: tuple[tuple[str, str, int], ...]) -> dict[str, dict[str, str | None]]:
     inf = float("inf")
     dist = {a: {b: (0 if a == b else inf) for b in names} for a in names}
     first = {a: {b: (a if a == b else None) for b in names} for a in names}
-    for a, b, cost in links(routers):
+    for a, b, cost in edges:
         for x, y in ((a, b), (b, a)):
             if cost < dist[x][y]:
                 dist[x][y], first[x][y] = cost, y

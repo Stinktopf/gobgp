@@ -34,6 +34,18 @@ def test_equal_paths_are_broken_as_the_simulator_breaks_them():
     assert forwarding.shortest(routers)["r0"]["r3"] == "r1"
 
 
+def test_the_kept_paths_follow_a_changed_cost():
+    # Kept for the same links, made again when an igp step changes a cost.
+    routers = {r: {"asn": 1, "igp": []} for r in ("r0", "r1", "r2", "r3")}
+    for a, b in (("r0", "r1"), ("r0", "r2"), ("r1", "r3"), ("r2", "r3")):
+        routers[a]["igp"].append({"name": b, "cost": 1})
+        routers[b]["igp"].append({"name": a, "cost": 1})
+    assert forwarding.shortest(routers) is forwarding.shortest(routers)
+    costlier = forwarding.with_igp(routers, {frozenset(("r0", "r1")): 5})
+    assert forwarding.shortest(costlier)["r0"]["r3"] == "r2"
+    assert forwarding.shortest(routers)["r0"]["r3"] == "r1"
+
+
 def test_routes_of_the_routers_become_next_hops():
     tables = {"r0": {"p": {"from": None, "as_path": [], "next_hop": "0.0.0.0"}},
               "r1": {"p": {"from": "r2", "as_path": [65004, 65001], "next_hop": "10.1.0.2"}},

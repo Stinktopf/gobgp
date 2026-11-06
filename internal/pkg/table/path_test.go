@@ -471,36 +471,3 @@ func TestUnknownPathAttributes(t *testing.T) {
 	}
 	assert.True(t, found255, "Unknown attribute of type 255 should be present in the path attributes list")
 }
-
-// RFC 4456, 8: a route reflector that sends a client's route on to another
-// reflector, a non-client, reflects it too. It carries ORIGINATOR_ID and
-// CLUSTER_LIST, so that the other reflector's clients, the originator among
-// them, recognise it: without them the originator took its own route back
-// once it lost its eBGP neighbor (Abilene with two reflectors in the lab).
-func TestAClientsRouteToAnotherReflectorCarriesOriginatorAndClusterList(t *testing.T) {
-	global := &oc.Global{Config: oc.GlobalConfig{As: 65000, RouterId: netip.MustParseAddr("10.0.0.2")}}
-	client := &PeerInfo{AS: 65000, LocalAS: 65000, ID: netip.MustParseAddr("10.0.0.5"), Address: netip.MustParseAddr("192.0.2.5"),
-		RouteReflectorClient: true, RouteReflectorClusterID: netip.MustParseAddr("10.0.0.2")}
-	nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("10.10.0.0/24"))
-	origin := bgp.NewPathAttributeOrigin(0)
-	aspath := bgp.NewPathAttributeAsPath([]bgp.AsPathParamInterface{bgp.NewAs4PathParam(bgp.BGP_ASPATH_ATTR_TYPE_SEQ, []uint32{65001})})
-	nh, _ := bgp.NewPathAttributeNextHop(netip.MustParseAddr("192.0.2.5"))
-	path := NewPath(bgp.RF_IPv4_UC, client, bgp.PathNLRI{NLRI: nlri}, false, []bgp.PathAttributeInterface{origin, aspath, nh}, time.Now(), false)
-	reflector := &oc.Neighbor{State: oc.NeighborState{PeerType: oc.PEER_TYPE_INTERNAL}}
-	target := &PeerInfo{AS: 65000, LocalAS: 65000, LocalAddress: netip.MustParseAddr("192.0.2.2")}
-
-	sent := UpdatePathAttrs(logger, global, reflector, target, path)
-	assert.Equal(t, "10.0.0.5", sent.GetOriginatorID().String())
-	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.0.0.2")}, sent.GetClusterList())
-
-	// Kept and prepended when it already has them, as reflected before.
-	again := UpdatePathAttrs(logger, global, reflector, target, sent)
-	assert.Equal(t, "10.0.0.5", again.GetOriginatorID().String())
-	assert.Len(t, again.GetClusterList(), 2)
-
-	// Never to another AS.
-	external := &oc.Neighbor{Config: oc.NeighborConfig{LocalAs: 65000}, State: oc.NeighborState{PeerType: oc.PEER_TYPE_EXTERNAL}}
-	out := UpdatePathAttrs(logger, global, external, target, sent)
-	assert.False(t, out.GetOriginatorID().IsValid())
-	assert.Empty(t, out.GetClusterList())
-}

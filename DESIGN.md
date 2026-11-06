@@ -207,11 +207,6 @@ route server's neighbors with `rsClient: true`. `ixp` in `lab-features` plays th
 - **Fixes:** soft reset out withdraws newly rejected routes, the API marks the best path again, ties
   break by ORIGINATOR_ID and the shorter CLUSTER_LIST (RFC 4456), and a looped update withdraws the
   peer's route before (RFC 4271).
-- **Reflection between reflectors:** GoBGP set ORIGINATOR_ID and CLUSTER_LIST only towards clients
-  and stripped them towards other reflectors. A client then got its own route back from the other
-  reflector as someone else's and kept it after it lost its eBGP neighbor, in Abilene for seconds. A
-  client's route now carries both towards every iBGP neighbor (RFC 4456, 8). *Proof:* holds, it
-  removes routes that no longer exist.
 
 ### Left out
 

@@ -1,0 +1,47 @@
+{% from "macros.html" import icon, loading, band_toggle %}
+<div id="overview" data-result="{{ result.name }}" class="space-y-4">
+{% set filters_extra %}
+      {# Which charts show: a menu as the variants', with Find and All, on every width. #}
+      <details class="relative" data-menu>
+        <summary class="picker-summary btn cursor-pointer list-none py-1 text-sm [&::-webkit-details-marker]:hidden"><span class="label">Charts</span><span class="tabular-nums" data-chart-count></span>{{ icon("chevron-down") }}</summary>
+        <div class="menu-panel">
+          <div class="flex items-center gap-2 px-2 pb-2">
+            <input type="search" placeholder="Find" aria-label="Find a chart" class="input py-1 text-sm" data-chart-find>
+            <button type="button" class="hit ml-auto text-xs text-uoft-700 hover:underline dark:text-uoft-300" data-chart-all>All</button>
+          </div>
+          <div class="max-h-80 overflow-y-auto" role="group" aria-label="Charts" data-chart-picker></div>
+        </div>
+      </details>
+      {# On a phone: the menu and the export in a row, the choice of the band under them across. #}
+      <span class="ml-auto flex shrink-0 items-center gap-2 max-sm:contents">{{ band_toggle("charts", experiment.runs, class="max-sm:order-last max-sm:col-span-2 max-sm:grid max-sm:basis-full max-sm:grid-cols-3") }}
+      <a class="btn btn-icon size-7 max-sm:hidden" aria-label="CSV" href="/results/{{ result.name }}/series.csv?topology={{ topology }}&scenario={{ scenario }}" data-tip="CSV of these series">{{ icon("download") }}</a></span>
+    {% endset %}
+{% include "partials/result-filters.html" %}
+{% include "partials/result-live.html" %}
+
+  {# A metric over the values of the sweep, or over the size of the topologies. #}
+  {% set sweep = experiment.sweep_of(scenario) %}{% set swept = sweep is not none %}
+  {% if swept or size_series(experiment.topologies) %}
+  {% set firsts = metrics | reject("equalto", "checks") | list %}{% set m = metric if metric in firsts else firsts[0] %}
+  {% set over = sweep.param if swept else "routers" %}
+  <section class="card p-4">
+    <div class="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+      <h3 class="text-sm font-medium">By {{ over }}</h3>
+      <span class="ml-auto">{{ band_toggle("curve", experiment.runs, m in router_metrics) }}</span>
+      <select class="btn px-2 py-1 text-xs" aria-label="Metric"
+              onchange="UI.go('?tab=charts&topology={{ topology }}&scenario={{ scenario | urlencode }}&metric=' + this.value)">
+        {% for key, x in metrics.items() if key != "checks" %}<option value="{{ key }}" {% if key == m %}selected{% endif %}>{{ x[0] }}, {{ x[1] }}</option>{% endfor %}
+      </select>
+    </div>
+    <div data-curve data-src="/results/{{ result.name }}/curve?topology={{ topology }}&scenario={{ scenario | urlencode }}&metric={{ m }}" data-unit="{{ metrics[m][1] }}"></div>
+    <p class="muted mt-2 text-xs">Median of up to {{ experiment.runs }} run{{ "s" if experiment.runs != 1 }}. Whiskers: interval of the median by order statistics, or the router spread.</p>
+  </section>
+  {% endif %}
+
+  {# The charts: the chosen scenario over time. #}
+  <section class="space-y-4">
+    <div data-charts data-src="/results/{{ result.name }}/series?topology={{ topology }}&scenario={{ scenario }}">
+      <div class="card py-10">{{ loading("Loading the series") }}</div>
+    </div>
+  </section>
+</div>

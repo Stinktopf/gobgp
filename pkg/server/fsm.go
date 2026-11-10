@@ -142,6 +142,9 @@ type fsmMsg struct {
 
 type fsmOutgoingMsg struct {
 	Paths []*table.Path
+	// Refresh asks the peer for its routes of these families (RFC 2918),
+	// after the paths, so behind every withdrawal this session carries.
+	Refresh []bgp.Family
 }
 
 const (
@@ -1652,6 +1655,33 @@ func (h *fsmHandler) sendMessageloop(ctx context.Context, conn net.Conn, stateRe
 		return nil
 	}
 
+	sendPaths := func(paths []*table.Path) error {
+		options := &bgp.MarshallingOption{AddPath: fsm.familyMap.Load().(map[bgp.Family]bgp.BGPAddPathMode)}
+		for _, msg := range table.CreateUpdateMsgFromPaths(paths, options) {
+			if err := send(msg); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	fsm.lock.Lock()
+	limit := newMRAI(time.Duration(fsm.pConf.Timers.Config.MinimumAdvertisementInterval*float64(time.Second)), func(f bgp.Family) bool {
+		return fsm.familyMap.Load().(map[bgp.Family]bgp.BGPAddPathMode)[f]&bgp.BGP_ADD_PATH_SEND > 0
+	})
+	fsm.lock.Unlock()
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	defer timer.Stop()
+	var due <-chan time.Time
+	arm := func() {
+		if at := limit.due(); !at.IsZero() {
+			timer.Reset(time.Until(at))
+			due = timer.C
+		} else {
+			due = nil
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -1659,15 +1689,23 @@ func (h *fsmHandler) sendMessageloop(ctx context.Context, conn net.Conn, stateRe
 		case o := <-h.outgoing.Out():
 			switch m := o.(type) {
 			case *fsmOutgoingMsg:
-				options := &bgp.MarshallingOption{AddPath: fsm.familyMap.Load().(map[bgp.Family]bgp.BGPAddPathMode)}
-				for _, msg := range table.CreateUpdateMsgFromPaths(m.Paths, options) {
-					if err := send(msg); err != nil {
+				if err := sendPaths(limit.add(m.Paths, time.Now())); err != nil {
+					return nil
+				}
+				for _, family := range m.Refresh {
+					if err := send(bgp.NewBGPRouteRefreshMessage(family.Afi(), 0, family.Safi())); err != nil {
 						return nil
 					}
 				}
+				arm()
 			default:
 				return nil
 			}
+		case <-due:
+			if err := sendPaths(limit.flush(time.Now())); err != nil {
+				return nil
+			}
+			arm()
 		case <-ticker.C:
 			if err := send(bgp.NewBGPKeepAliveMessage()); err != nil {
 				return nil

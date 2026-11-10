@@ -514,3 +514,11 @@ func TestNewCommunityCountConditionFromApiStruct(t *testing.T) {
 		}
 	}
 }
+
+func TestToPathApiKeepsBest(t *testing.T) {
+	nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	for _, best := range []bool{true, false} {
+		p := &apiutil.Path{Family: bgp.RF_IPv4_UC, Nlri: nlri, Best: best}
+		assert.Equal(t, best, toPathApi(p, false, false, false).Best)
+	}
+}

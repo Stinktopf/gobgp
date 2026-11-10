@@ -1,0 +1,6 @@
+name: fill-60-reach
+description: Announce about 60 prefixes, as fill-60. Where the topology names them, one OBGP table may cost one-table-loses the prefixes of one-table-sources.
+steps:
+  - announce: {rate: 2, for: 30}
+  - wait: 10
+  - expect: {router: one-table-loses, of: one-table-sources, may_fail: [obgp-rp, obgp-sp, obgp-hp, obgp-np, obgp-paper]}

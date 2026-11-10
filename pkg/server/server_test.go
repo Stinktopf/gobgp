@@ -3743,3 +3743,40 @@ func TestRTCDeferralTimerStaleProtection(t *testing.T) {
 	assert.Equal(t, bgp.BGP_FSM_ESTABLISHED, state,
 		"Peer should still be ESTABLISHED after timers")
 }
+
+// A route reflector withdraws a client's route from another reflector once
+// its new best, that reflector's own copy, may not go back to it. Without
+// the withdrawal two reflectors kept each other's copy of a route the
+// client had withdrawn (Abilene with two reflectors in the lab).
+func TestReflectorWithdrawsAClientsRouteWhenItsNewBestMayNotGoBack(t *testing.T) {
+	as := uint32(65000)
+	rib := table.NewTableManager(logger, []bgp.Family{bgp.RF_IPv4_UC})
+	client := newPeerandInfo(t, as, as, "192.168.0.5", rib)
+	client.fsm.pConf.RouteReflector.Config.RouteReflectorClient = true
+	client.peerInfo.RouteReflectorClient = true
+	other := newPeerandInfo(t, as, as, "192.168.0.4", rib) // the other reflector, no client
+
+	nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("10.10.10.0/24"))
+	attrs := func(pref uint32) []bgp.PathAttributeInterface {
+		return []bgp.PathAttributeInterface{bgp.NewPathAttributeAsPath([]bgp.AsPathParamInterface{bgp.NewAs4PathParam(2, []uint32{65001})}),
+			bgp.NewPathAttributeLocalPref(pref)}
+	}
+	// The client's route stays best until it goes: the copy only becomes best by the withdrawal.
+	fromClient := table.NewPath(bgp.RF_IPv4_UC, client.peerInfo, bgp.PathNLRI{NLRI: nlri}, false, attrs(200), time.Now(), false)
+	new, old := process(rib, []*table.Path{fromClient})
+	assert.NotNil(t, filterpath(other, new, old), "a client's route is reflected to the other reflector")
+
+	copied := table.NewPath(bgp.RF_IPv4_UC, other.peerInfo, bgp.PathNLRI{NLRI: nlri}, false, attrs(100), time.Now().Add(time.Second), false)
+	process(rib, []*table.Path{copied}) // the other reflector's copy, not better
+
+	new, old = process(rib, []*table.Path{fromClient.Clone(true)})
+	assert.Equal(t, copied, new)
+	sent := filterpath(other, new, old)
+	if assert.NotNil(t, sent, "what it reflected before is withdrawn") {
+		assert.True(t, sent.IsWithdraw)
+	}
+	toClient := filterpath(client, new, old)
+	if assert.NotNil(t, toClient, "the client gets the other reflector's route instead") {
+		assert.False(t, toClient.IsWithdraw)
+	}
+}

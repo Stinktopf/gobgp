@@ -1,0 +1,115 @@
+roles:
+  origins: [o]
+routers:
+  o:
+    asn: 65001
+    routerId: 10.0.0.1
+    position: {x: 300, y: 560}
+    neighbors:
+      - name: a
+        peerAs: 65002
+        relation: provider
+      - name: c
+        peerAs: 65004
+        relation: provider
+      - name: x
+        peerAs: 65005
+        relation: provider
+  a:
+    asn: 65002
+    routerId: 10.0.0.2
+    position: {x: 240, y: 420}
+    neighbors:
+      - name: o
+        peerAs: 65001
+        relation: customer
+      - name: b
+        peerAs: 65003
+        relation: provider
+      - name: r
+        peerAs: 65010
+        relation: provider
+  b:
+    asn: 65003
+    routerId: 10.0.0.3
+    position: {x: 160, y: 280}
+    neighbors:
+      - name: a
+        peerAs: 65002
+        relation: customer
+      - name: r
+        peerAs: 65010
+        relation: provider
+  c:
+    asn: 65004
+    routerId: 10.0.0.4
+    position: {x: 420, y: 280}
+    neighbors:
+      - name: o
+        peerAs: 65001
+        relation: customer
+      - name: r
+        peerAs: 65010
+        relation: provider
+  x:
+    asn: 65005
+    routerId: 10.0.0.5
+    position: {x: -20, y: 300}
+    neighbors:
+      - name: o
+        peerAs: 65001
+        relation: customer
+      - name: p1
+        peerAs: 65006
+        relation: provider
+  p1:
+    asn: 65006
+    routerId: 10.0.0.6
+    position: {x: 100, y: 0}
+    neighbors:
+      - name: x
+        peerAs: 65005
+        relation: customer
+      - name: r
+        peerAs: 65010
+        relation: customer
+  p2:
+    asn: 65007
+    routerId: 10.0.0.7
+    position: {x: 400, y: 0}
+    neighbors:
+      - name: r
+        peerAs: 65010
+        relation: customer
+  q:
+    asn: 65008
+    routerId: 10.0.0.8
+    position: {x: 560, y: 280}
+    neighbors:
+      - name: r
+        peerAs: 65010
+        relation: provider
+  r:
+    asn: 65010
+    routerId: 10.0.0.9
+    obgp: true
+    position: {x: 300, y: 140}
+    neighbors:
+      - name: a
+        peerAs: 65002
+        relation: customer
+      - name: b
+        peerAs: 65003
+        relation: customer
+      - name: c
+        peerAs: 65004
+        relation: customer
+      - name: p1
+        peerAs: 65006
+        relation: provider
+      - name: p2
+        peerAs: 65007
+        relation: provider
+      - name: q
+        peerAs: 65008
+        relation: customer

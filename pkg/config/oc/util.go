@@ -568,10 +568,11 @@ func NewPeerFromConfigStruct(pconf *Neighbor) *api.Peer {
 		},
 		Timers: &api.Timers{
 			Config: &api.TimersConfig{
-				ConnectRetry:           uint64(timer.Config.ConnectRetry),
-				HoldTime:               uint64(timer.Config.HoldTime),
-				KeepaliveInterval:      uint64(timer.Config.KeepaliveInterval),
-				IdleHoldTimeAfterReset: uint64(timer.Config.IdleHoldTimeAfterReset),
+				ConnectRetry:                 uint64(timer.Config.ConnectRetry),
+				HoldTime:                     uint64(timer.Config.HoldTime),
+				KeepaliveInterval:            uint64(timer.Config.KeepaliveInterval),
+				IdleHoldTimeAfterReset:       uint64(timer.Config.IdleHoldTimeAfterReset),
+				MinimumAdvertisementInterval: uint64(timer.Config.MinimumAdvertisementInterval),
 			},
 			State: &api.TimersState{
 				KeepaliveInterval:  uint64(timer.State.KeepaliveInterval),
@@ -651,10 +652,11 @@ func NewPeerGroupFromConfigStruct(pconf *PeerGroup) *api.PeerGroup {
 		},
 		Timers: &api.Timers{
 			Config: &api.TimersConfig{
-				ConnectRetry:           uint64(timer.Config.ConnectRetry),
-				HoldTime:               uint64(timer.Config.HoldTime),
-				KeepaliveInterval:      uint64(timer.Config.KeepaliveInterval),
-				IdleHoldTimeAfterReset: uint64(timer.Config.IdleHoldTimeAfterReset),
+				ConnectRetry:                 uint64(timer.Config.ConnectRetry),
+				HoldTime:                     uint64(timer.Config.HoldTime),
+				KeepaliveInterval:            uint64(timer.Config.KeepaliveInterval),
+				IdleHoldTimeAfterReset:       uint64(timer.Config.IdleHoldTimeAfterReset),
+				MinimumAdvertisementInterval: uint64(timer.Config.MinimumAdvertisementInterval),
 			},
 			State: &api.TimersState{
 				KeepaliveInterval:  uint64(timer.State.KeepaliveInterval),

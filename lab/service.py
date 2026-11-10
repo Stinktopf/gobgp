@@ -1,0 +1,528 @@
+"""One web server per user configuration, with verified Linux process ownership.
+
+The registry is also written by manual `lab serve` starts. Old detached and
+systemd starts are discovered by UID, checkout and exact command arguments.
+PID reuse is checked with /proc start time. signals use pidfds, never groups.
+"""
+
+import fcntl
+import json
+import os
+import shlex
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from contextlib import contextmanager
+from pathlib import Path
+
+import requests
+
+from . import config
+from . import terminal as ui
+from .config import write_atomic
+
+
+def state_file() -> Path:
+    return config.SETTINGS / "serve.json"
+
+
+def identity(pid: int) -> dict | None:
+    try:
+        proc = Path(f"/proc/{pid}")
+        if proc.stat().st_uid != os.getuid():
+            return None
+        stat = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+        if stat[0] == "Z":
+            return None
+        return {"pid": pid, "start": stat[19], "root": str((proc / "cwd").resolve(strict=True)),
+                "command": (proc / "cmdline").read_bytes().decode().strip("\0").split("\0")}
+    except (OSError, ValueError):
+        return None
+
+
+def matches(state: dict) -> bool:
+    return identity(state["pid"]) == {k: state[k] for k in ("pid", "start", "root", "command")}
+
+
+def save(state: dict) -> None:
+    config.SETTINGS.mkdir(parents=True, exist_ok=True)
+    write_atomic(state_file(), json.dumps(state))
+
+
+def discover() -> dict | None:
+    try:
+        saved = json.loads(state_file().read_text())
+        if matches(saved):
+            if saved["root"] != str(config.ROOT):
+                raise RuntimeError(f"The web server belongs to another checkout: {saved['root']}")
+            return saved
+    except (FileNotFoundError, ValueError, KeyError, TypeError):
+        pass
+    found = [s for s in servers() if s["root"] == str(config.ROOT)]
+    if len(found) > 1:
+        raise RuntimeError("Multiple lab web servers exist in this checkout. Stop the extra manual services first.")
+    if found:
+        save(found[0])
+        return found[0]
+    return None
+
+
+def servers() -> list[dict]:
+    """The lab web servers of this user, of every checkout."""
+    found = []
+    for proc in Path("/proc").glob("[0-9]*"):
+        ident = identity(int(proc.name))
+        if not ident:
+            continue
+        try:
+            argv = (proc / "cmdline").read_bytes().decode().strip("\0").split("\0")
+        except (OSError, UnicodeError):
+            continue
+        # Exclude uv/nohup/shell parents: only the Python entry point owns the listener.
+        if not argv or not Path(argv[0]).name.startswith("python"):
+            continue
+        if len(argv) > 3 and argv[1:3] == ["-m", "lab.cli"] and argv[3] == "serve":
+            args = argv[4:]
+        elif len(argv) > 2 and Path(argv[1]).name == "lab" and argv[2] == "serve":
+            args = argv[3:]
+        else:
+            continue
+        # A server with settings of its own, as the screenshots of scripts/dev start, is another lab.
+        if settings_of(proc) not in (None, str(config.SETTINGS)):
+            continue
+        def option(name, default, args=args):
+            for i, arg in enumerate(args):
+                if arg.startswith(name + "="):
+                    return arg.split("=", 1)[1]
+                if arg == name and i + 1 < len(args):
+                    return args[i + 1]
+            return default
+        found.append({**ident, "port": int(option("--port", 8443)), "host": option("--host", "0.0.0.0"), "http": "--http" in args})
+    return found
+
+
+def settings_of(proc: Path) -> str | None:
+    """The settings folder of a process, as config.SETTINGS takes it, None if unreadable."""
+    try:
+        env = dict(x.split("=", 1) for x in (proc / "environ").read_bytes().decode(errors="replace").split("\0") if "=" in x)
+    except OSError:
+        return None
+    home = env.get("XDG_CONFIG_HOME", str(Path(env.get("HOME") or Path.home()) / ".config"))  # as config.SETTINGS takes it
+    return str(Path(home) / "obgp-lab")
+
+
+@contextmanager
+def register(args):
+    config.SETTINGS.mkdir(parents=True, exist_ok=True)
+    with (config.SETTINGS / "serve.lock").open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("The lab web server is already running.") from None
+        existing = discover()
+        if existing and existing["pid"] != os.getpid():
+            raise RuntimeError("The lab web server is already running.")
+        state = {**identity(os.getpid()), "port": args.port, "host": args.host, "http": args.http}
+        save(state)
+        try:
+            yield
+        finally:
+            if state_file().exists() and json.loads(state_file().read_text()).get("pid") == os.getpid():
+                state_file().unlink()
+
+
+def unit() -> dict:
+    """Recognize the old host installer service only for this user and checkout."""
+    try:
+        result = subprocess.run(["systemctl", "show", "obgp-lab.service", "--property=User,WorkingDirectory,MainPID,LoadState,ExecStart"],
+                                capture_output=True, text=True, timeout=10)
+        values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        import pwd
+        if (values.get("LoadState") == "loaded" and values.get("User") == pwd.getpwuid(os.getuid()).pw_name
+                and values.get("WorkingDirectory") == str(config.ROOT)
+                and any(command in values.get("ExecStart", "") for command in ("lab serve", "lab.cli serve"))):
+            return values
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return {}
+
+
+def privileged(command: list[str], interactive: bool) -> None:
+    if os.getuid() != 0:
+        command = ["sudo", *([] if interactive else ["-n"]), *command]
+    subprocess.run(command, check=True, timeout=90)
+
+
+def control_unit(action: str, interactive: bool) -> None:
+    privileged(["systemctl", action, "obgp-lab.service"], interactive)
+
+
+def configure_unit(settings: dict, interactive: bool) -> None:
+    """Carry saved configuration into a recognized legacy systemd service."""
+    if not unit():
+        return
+    host = "127.0.0.1" if settings.get("http", True) else settings.get("host", "0.0.0.0")
+    args = [sys.executable, "-m", "lab.cli", "serve", "--managed", "--host", host, "--port", str(settings.get("port", 8443))]
+    if settings.get("http", True):
+        args.append("--http")
+    # systemd escaping, not shell quoting (ExecStart does not use a shell).
+    def quote(value):
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$") + '"'
+    directory = "/etc/systemd/system/obgp-lab.service.d"
+    path = f"{Path.home()}/obgp-lab/bin:/usr/local/bin:/usr/bin:/bin"
+    content = "[Service]\nExecStart=\nExecStart=" + " ".join(quote(a) for a in args) + "\nEnvironment=" + quote("PATH=" + path) + "\n"
+    from . import uninstall
+    base = Path.home() / "obgp-lab"
+    uninstall.before_service_change(base)
+    with tempfile.NamedTemporaryFile("w") as file:
+        file.write(content)
+        file.flush()
+        privileged(["install", "-d", directory], interactive)
+        privileged(["install", "-m", "644", file.name, directory + "/lifecycle.conf"], interactive)
+    uninstall.record(base, f"sha256 {uninstall.digest(uninstall.SYSTEMD)} {uninstall.SYSTEMD}")
+    privileged(["systemctl", "daemon-reload"], interactive)
+
+
+def stop(interactive: bool = False) -> None:
+    state = discover()
+    managed = unit()
+    if managed and managed.get("MainPID", "0") != "0":
+        ui.info("Stopping the existing systemd web service.")
+        control_unit("stop", interactive)
+    elif state:
+        ui.info("Stopping the existing lab web server.")
+        # Open the handle before checking identity, closing the PID-reuse race.
+        try:
+            fd = os.pidfd_open(state["pid"])
+        except ProcessLookupError:
+            return
+        try:
+            if matches(state):
+                signal.pidfd_send_signal(fd, signal.SIGTERM)
+        finally:
+            os.close(fd)
+    if state:
+        until = time.monotonic() + 30
+        while matches(state):
+            if time.monotonic() > until:
+                raise RuntimeError("The lab web server did not stop. No process was force-killed.")
+            time.sleep(0.2)
+    state_file().unlink(missing_ok=True)
+
+
+READY_S = 5  # a busy server answers /healthz within this, as it does no work for it
+
+
+def ready(state: dict) -> bool:
+    host = "127.0.0.1" if state["http"] or state["host"] in ("0.0.0.0", "::") else state["host"]
+    try:
+        with requests.Session() as session:
+            session.trust_env = False
+            # A self-signed localhost certificate is expected.
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                base = f"{'http' if state['http'] else 'https'}://{host}:{state['port']}"
+                response = session.get(f"{base}/healthz", verify=False, timeout=READY_S)
+            return response.status_code == 200
+    except requests.RequestException:
+        return False
+
+
+LOG_LIMIT = 10 * 2**20  # beyond this a log moves to <name>.1, replacing the one before
+
+
+def rotate(log: Path) -> None:
+    """Keeps a log that grows for months bounded: the current one and one before."""
+    try:
+        if log.stat().st_size > LOG_LIMIT:
+            log.replace(log.with_name(log.name + ".1"))
+    except FileNotFoundError:
+        pass
+
+
+def browser_host(state: dict) -> str:
+    """The host part of a URL a browser can open, never the wildcard listen address."""
+    if state["http"]:
+        return "localhost"
+    host = state["host"]
+    if host in ("0.0.0.0", "::"):
+        # The address of the default route. A UDP connect sends no packet.
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                probe.connect(("192.0.2.1", 9))
+                host = probe.getsockname()[0]
+        except OSError:
+            host = socket.gethostname()
+    return f"[{host}]" if ":" in host else host
+
+
+def urls(state: dict) -> list[str]:
+    """Where a browser opens the web interface: on this machine first, as under
+    WSL only localhost reaches it from the Windows side, then from others."""
+    scheme, port = "http" if state["http"] else "https", state["port"]
+    lines = [f"Web interface: {scheme}://localhost:{port}"] if state["http"] or state["host"] in ("0.0.0.0", "::", "127.0.0.1") else []
+    if not state["http"] and state["host"] != "127.0.0.1":
+        lines.append(f"{'From other machines' if lines else 'Web interface'}: {scheme}://{browser_host(state)}:{port}")
+    return lines
+
+
+def start(settings: dict, interactive: bool = False) -> dict:
+    state = discover()
+    ui.info(f"Web server log: {config.SETTINGS / 'serve.log'}")
+    if state and not ready(state):
+        # A dead listener with a live Python process is not a healthy service.
+        until = time.monotonic() + 5
+        while matches(state) and time.monotonic() < until and not ready(state):
+            time.sleep(0.2)
+        if not ready(state):
+            ui.warning("Existing web server is not responding. Restarting it.")
+            stop(interactive)
+            state = None
+    process = None
+    if not state:
+        if unit():
+            ui.info("Starting the existing systemd web service. Its log: journalctl -u obgp-lab")
+            control_unit("start", interactive)
+        else:
+            port = settings.get("port", 8443)
+            host = "127.0.0.1" if settings.get("http", True) else settings.get("host", "0.0.0.0")
+            # Never mistake an unrelated listener for our server or kill it.
+            # Connections of the last server waiting to close do not hold the
+            # port, as the server binds it with SO_REUSEADDR too.
+            while True:
+                try:
+                    with socket.socket() as sock:
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        sock.bind((host, port))
+                    break
+                except OSError:
+                    if settings.get("port") or port >= 8543:
+                        raise RuntimeError(f"Cannot bind {host}:{port}. Choose --port in setup.") from None
+                    port += 1
+            ui.info(f"Starting web server on {host}:{port}. Waiting for HTTP readiness (up to 45s).")
+            args = [sys.executable, "-m", "lab.cli", "serve", "--managed", "--host", host, "--port", str(port)]
+            if settings.get("http", True):
+                args.append("--http")
+            rotate(config.SETTINGS / "serve.log")
+            with (config.SETTINGS / "serve.log").open("a") as log:
+                process = subprocess.Popen(args, cwd=config.ROOT, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                           start_new_session=True)
+    else:
+        ui.info("Reusing the running web server.")
+    until = time.monotonic() + 45
+    while time.monotonic() < until:
+        state = discover()
+        if state and ready(state):
+            for line in urls(state):
+                ui.success(line)
+            return state
+        if process and process.poll() is not None:
+            break
+        time.sleep(0.2)
+    raise RuntimeError(f"Web server is not ready. See {config.SETTINGS / 'serve.log'}" + (" or journalctl -u obgp-lab." if unit() else "."))
+
+
+# A line of the user's own crontab starts the web server after a reboot or a
+# crash, without sudo. Only lines with this tag and checkout are ever touched.
+WATCH_TAG = "# obgp-lab watchdog"
+
+
+def stopped_file() -> Path:
+    """There after stop or teardown: the watchdog leaves the web server off until start."""
+    return config.SETTINGS / "web-stopped"
+
+
+def crontab() -> str | None:
+    return os.environ.get("OBGP_CRONTAB") or shutil.which("crontab")
+
+
+def _cron_lines() -> list[str] | None:
+    """The user's crontab, empty without one, None when cron cannot be used."""
+    if not (command := crontab()):
+        return None
+    try:
+        result = subprocess.run([command, "-l"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode:
+        return [] if "no crontab" in result.stderr.lower() else None
+    return result.stdout.splitlines()
+
+
+def _write_cron(lines: list[str]) -> None:
+    subprocess.run([crontab(), "-"], input="".join(line + "\n" for line in lines), text=True, check=True, timeout=30)
+
+
+def watch_lines(root: Path) -> list[str]:
+    # cron knows little of the environment: where settings and minikube live, when moved. The PATH, too long
+    # for a cron line on some hosts, waits in path_file().
+    env = "".join(f"{k}={shlex.quote(os.environ[k])} " for k in ("XDG_CONFIG_HOME", "MINIKUBE_HOME") if os.environ.get(k))
+    command = (f"{env}{shlex.quote(str(root / 'scripts/internal/lifecycle.sh'))} watch "
+               f">> {shlex.quote(str(config.SETTINGS / 'watch.log'))} 2>&1").replace("%", "\\%")  # % ends a cron command
+    return [f"@reboot {command} {WATCH_TAG} {root}", f"*/5 * * * * {command} {WATCH_TAG} {root}"]
+
+
+def path_file() -> Path:
+    """The PATH setup and start saw: the web server the watchdog starts finds the same tools, minikube among them."""
+    return config.SETTINGS / "watch.path"
+
+
+def install_watchdog(root: Path = config.ROOT) -> bool:
+    """Adds or renews the lines of this checkout; False when cron is not available."""
+    if (current := _cron_lines()) is None:
+        return False
+    if os.environ.get("PATH"):
+        path_file().write_text(os.environ["PATH"] + "\n")
+    wanted = [line for line in current if not line.endswith(f"{WATCH_TAG} {root}")] + watch_lines(root)
+    if wanted != current:
+        _write_cron(wanted)
+    return True
+
+
+def remove_watchdog(root: Path = config.ROOT) -> None:
+    if (current := _cron_lines()) is None:
+        return
+    wanted = [line for line in current if not line.endswith(f"{WATCH_TAG} {root}")]
+    if wanted != current:
+        _write_cron(wanted)
+
+
+RESTARTS_PER_HOUR = 3  # after reboots or crashes; beyond this the watchdog gives up: the lab is a guest
+BUSY_WAIT = 30  # seconds a running but slow web server gets to answer the watchdog
+HUNG_AFTER = 15 * 60  # a live web server that answers no check for this long is hung, not busy
+GAVE_UP = "The watchdog gave up."
+
+
+def history_file() -> Path:
+    return config.SETTINGS / "watch.json"
+
+
+def watch_again() -> None:
+    """start.sh after the watchdog gave up: it restarts again, and gives the
+    all clear once the web server answers."""
+
+    try:
+        history = json.loads(history_file().read_text())
+    except (OSError, ValueError):
+        return
+    if reason := history.pop("gave_up", None):
+        history.update(all_clear=reason, restarts=[])
+        write_atomic(history_file(), json.dumps(history))
+
+
+def boot_id() -> str | None:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return None
+
+
+def last_log_line() -> str:
+    try:
+        lines = [line.strip() for line in (config.SETTINGS / "serve.log").read_text(errors="replace").splitlines() if line.strip()]
+    except OSError:
+        return ""
+    return lines[-1][:300] if lines else ""
+
+
+def ended_itself() -> bool:
+    """Whether the web server's log ends with its own last line: else it was killed, by a signal it could not catch."""
+    from .cli import SERVE_END
+
+    return SERVE_END in last_log_line()
+
+
+def watch() -> int:
+    """Called by cron: starts the web server when it is not running, after a
+    reboot or a crash, unless it was stopped on purpose. The queue then
+    resumes interrupted results. A live server that answers late is busy and
+    left alone, only one silent for HUNG_AFTER is restarted. It backs off:
+    after RESTARTS_PER_HOUR restarts within an hour it gives up, and watches
+    on: once the server answers again, by itself or after start.sh, Discord
+    gives the all clear."""
+    rotate(config.SETTINGS / "watch.log")  # cron appends to it every 5 minutes
+    if not (config.SETTINGS / "lifecycle.json").exists():
+        return 0
+    if stopped_file().exists():
+        return 0  # stopped on purpose
+    from . import notify
+    from .results import queued
+
+    with (config.SETTINGS / "lifecycle.lock").open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 0  # setup, update or stop runs: they take care of the web server
+        now = time.time()
+        try:
+            history = json.loads(history_file().read_text())
+        except (OSError, ValueError):
+            history = {}
+        rebooted = bool(history.get("boot")) and history["boot"] != boot_id()
+        restarts = [t for t in history.get("restarts", []) if now - t < 3600]
+        history.update(boot=boot_id(), restarts=restarts)
+        stamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        try:
+            state = discover()
+        except RuntimeError as e:
+            ui.warning(f"{stamp}: {e}. The watchdog leaves it alone.")
+            write_atomic(history_file(), json.dumps(history))
+            return 0
+        if not state and (other := next((s for s in servers() if s["root"] != str(config.ROOT)), None)):
+            ui.warning(f"{stamp}: the web server runs from another checkout, {other['root']}. The watchdog leaves it alone.")
+            write_atomic(history_file(), json.dumps(history))
+            return 0
+        until = time.monotonic() + BUSY_WAIT
+        up = bool(state) and ready(state)
+        while state and not up and time.monotonic() < until and matches(state):
+            time.sleep(1)  # a server busy with a run answers late, it has not ended
+            up = ready(state)
+        if up:
+            history.pop("slow_since", None)
+            if reason := history.pop("gave_up", None) or history.pop("all_clear", None):
+                ui.success(f"{stamp}: the web server answers again, the watchdog watches again.")
+                notify.watchdog_all_clear(reason)
+            write_atomic(history_file(), json.dumps(history))
+            return 0
+        alive = bool(state) and matches(state)
+        if alive:
+            since = history.setdefault("slow_since", now)
+            if now - since < HUNG_AFTER:
+                ui.info(f"{stamp}: the web server lives but answers late, for {now - since:.0f} s. The watchdog leaves it alone.")
+                write_atomic(history_file(), json.dumps(history))
+                return 0
+        else:
+            history.pop("slow_since", None)
+        if history.get("gave_up"):
+            write_atomic(history_file(), json.dumps(history))
+            return 0  # told already, the all clear follows once it answers
+        why = ("The host rebooted" if rebooted else "The web server answered no check for 15 minutes" if alive
+               else "The web server had ended" if ended_itself() else "The web server was killed without a word, from outside or for its memory")
+        if len(restarts) >= RESTARTS_PER_HOUR:
+            reason = f"{why}, the lab started {len(restarts)} times within the last hour already. {GAVE_UP}"
+            history["gave_up"] = reason
+            write_atomic(history_file(), json.dumps(history))
+            ui.error(reason)
+            notify.watchdog_gave_up(reason, last_log_line())
+            return 0
+        history["restarts"] = restarts + [now]
+        history.pop("slow_since", None)
+        write_atomic(history_file(), json.dumps(history))  # before starting, so that a failing start counts
+        ui.info(f"{stamp}: {why.lower()}, starting the web server.")
+        try:
+            os.environ["PATH"] = path_file().read_text().strip() or os.environ.get("PATH", "")
+        except OSError:
+            pass  # set up before the file: cron's PATH and the lab's own tools
+        after = start(json.loads((config.SETTINGS / "lifecycle.json").read_text()))
+        if state and after and after.get("pid") == state.get("pid"):
+            history["restarts"] = restarts  # it answered after all: no restart
+            write_atomic(history_file(), json.dumps(history))
+            return 0
+    notify.lab_restarted(reboot=rebooted, waiting=queued(), error=None if rebooted else last_log_line(),
+                         killed=not rebooted and not alive and not ended_itself())
+    return 0

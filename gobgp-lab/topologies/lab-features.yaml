@@ -1,0 +1,90 @@
+roles:
+  origins: [o]
+routers:
+  o:
+    asn: 65001
+    routerId: 10.0.0.1
+    neighbors:
+      - name: r2
+        peerAs: 65010
+        relation: provider
+      - name: c1
+        peerAs: 65500
+        relation: provider
+  r1:
+    asn: 65010
+    routerId: 10.0.0.11
+    neighbors:
+      - name: r2
+        peerAs: 65010
+        rrClient: true
+      - name: r3
+        peerAs: 65010
+        rrClient: true
+    igp:
+      - {name: r2, cost: 1}
+      - {name: r3, cost: 1}
+  r2:
+    asn: 65010
+    routerId: 10.0.0.12
+    neighbors:
+      - name: r1
+        peerAs: 65010
+      - name: o
+        peerAs: 65001
+        relation: customer
+        med: 10
+    igp:
+      - {name: r1, cost: 1}
+      - {name: r3, cost: 5}
+  r3:
+    asn: 65010
+    routerId: 10.0.0.13
+    neighbors:
+      - name: r1
+        peerAs: 65010
+      - name: c2
+        peerAs: 65500
+        relation: peer
+      - name: x
+        peerAs: 65030
+        relation: sibling
+        tag: 0:65500
+    igp:
+      - {name: r1, cost: 1}
+      - {name: r2, cost: 5}
+  c1:
+    asn: 65021
+    routerId: 10.0.0.21
+    confederation: 65500
+    neighbors:
+      - name: o
+        peerAs: 65001
+        relation: customer
+      - name: c2
+        peerAs: 65022
+  c2:
+    asn: 65022
+    routerId: 10.0.0.22
+    confederation: 65500
+    neighbors:
+      - name: c1
+        peerAs: 65021
+        localPref: 200
+      - name: r3
+        peerAs: 65010
+        relation: peer
+      - name: x
+        peerAs: 65030
+        relation: peer
+  x:
+    asn: 65030
+    routerId: 10.0.0.30
+    leak: true
+    neighbors:
+      - name: r3
+        peerAs: 65010
+        relation: sibling
+      - name: c2
+        peerAs: 65500
+        relation: peer

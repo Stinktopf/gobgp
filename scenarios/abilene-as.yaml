@@ -1,0 +1,13 @@
+name: abilene-as
+description: One prefix from outside enters Abilene as one AS at several borders. The direct entry fails and returns. Every router keeps a route and forwards without loops, but for the paper's code, whose iBGP filter may lose the route or loop once the direct entry fails.
+steps:
+  - announce: {rate: 1, for: 1, lifetime: 86400, jitter: 0, max_active: 1}
+  - until_stable: {timeout: 180}
+  - expect: {router: all, forwarding: true}
+  - down: {link: ext-1-hstnng}
+  - until_stable: {timeout: 180}
+  - expect: {router: all, forwarding: true, prefixes: any, may_fail: [obgp-paper]}
+  - expect: {router: all, may_fail: [obgp-paper]}
+  - up: {link: ext-1-hstnng}
+  - until_stable: {timeout: 180}
+  - expect: {router: all, forwarding: true}

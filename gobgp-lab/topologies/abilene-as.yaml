@@ -1,0 +1,262 @@
+source: sndlib/abilene
+roles:
+  origins: [ext-1]
+  externals: [ext-1, ext-2, ext-3]
+routers:
+  atlam5:
+    asn: 65000
+    routerId: 10.0.0.1
+    location: {lat: 33.75, lon: -84.3833}
+    position: {x: 706, y: 328}
+    neighbors:
+      - name: atlang
+        peerAs: 65000
+      - name: dnvrng
+        peerAs: 65000
+    igp:
+      - {name: atlang, cost: 1}
+  atlang:
+    asn: 65000
+    routerId: 10.0.0.2
+    location: {lat: 34.5, lon: -85.5}
+    position: {x: 685, y: 310}
+    neighbors:
+      - name: dnvrng
+        peerAs: 65000
+      - name: atlam5
+        peerAs: 65000
+        rrClient: true
+      - name: chinng
+        peerAs: 65000
+        rrClient: true
+      - name: hstnng
+        peerAs: 65000
+        rrClient: true
+      - name: iplsng
+        peerAs: 65000
+        rrClient: true
+      - name: kscyng
+        peerAs: 65000
+        rrClient: true
+      - name: losang
+        peerAs: 65000
+        rrClient: true
+      - name: nycmng
+        peerAs: 65000
+        rrClient: true
+      - name: snvang
+        peerAs: 65000
+        rrClient: true
+      - name: sttlng
+        peerAs: 65000
+        rrClient: true
+      - name: washng
+        peerAs: 65000
+        rrClient: true
+    igp:
+      - {name: atlam5, cost: 1}
+      - {name: hstnng, cost: 1}
+      - {name: iplsng, cost: 1}
+      - {name: washng, cost: 1}
+  chinng:
+    asn: 65000
+    routerId: 10.0.0.3
+    location: {lat: 41.8333, lon: -87.6167}
+    position: {x: 646, y: 137}
+    neighbors:
+      - name: atlang
+        peerAs: 65000
+      - name: dnvrng
+        peerAs: 65000
+    igp:
+      - {name: iplsng, cost: 1}
+      - {name: nycmng, cost: 1}
+  dnvrng:
+    asn: 65000
+    routerId: 10.0.0.4
+    location: {lat: 40.75, lon: -105.0}
+    position: {x: 322, y: 162}
+    neighbors:
+      - name: atlang
+        peerAs: 65000
+      - name: atlam5
+        peerAs: 65000
+        rrClient: true
+      - name: chinng
+        peerAs: 65000
+        rrClient: true
+      - name: hstnng
+        peerAs: 65000
+        rrClient: true
+      - name: iplsng
+        peerAs: 65000
+        rrClient: true
+      - name: kscyng
+        peerAs: 65000
+        rrClient: true
+      - name: losang
+        peerAs: 65000
+        rrClient: true
+      - name: nycmng
+        peerAs: 65000
+        rrClient: true
+      - name: snvang
+        peerAs: 65000
+        rrClient: true
+      - name: sttlng
+        peerAs: 65000
+        rrClient: true
+      - name: washng
+        peerAs: 65000
+        rrClient: true
+    igp:
+      - {name: kscyng, cost: 1}
+      - {name: snvang, cost: 1}
+      - {name: sttlng, cost: 1}
+  hstnng:
+    asn: 65000
+    routerId: 10.0.0.5
+    location: {lat: 29.77, lon: -95.5174}
+    position: {x: 499, y: 422}
+    neighbors:
+      - name: atlang
+        peerAs: 65000
+      - name: dnvrng
+        peerAs: 65000
+      - name: ext-1
+        peerAs: 65001
+    igp:
+      - {name: atlang, cost: 1}
+      - {name: kscyng, cost: 1}
+      - {name: losang, cost: 1}
+  iplsng:
+    asn: 65000
+    routerId: 10.0.0.6
+    location: {lat: 39.7806, lon: -86.1595}
+    position: {x: 673, y: 185}
+    neighbors:
+      - name: atlang
+        peerAs: 65000
+      - name: dnvrng
+        peerAs: 65000
+      - name: ext-2
+        peerAs: 65002
+    igp:
+      - {name: atlang, cost: 1}
+      - {name: chinng, cost: 1}
+      - {name: kscyng, cost: 1}
+  kscyng:
+    asn: 65000
+    routerId: 10.0.0.7
+    location: {lat: 38.9617, lon: -96.5967}
+    position: {x: 479, y: 205}
+    neighbors:
+      - name: atlang
+        peerAs: 65000
+      - name: dnvrng
+        peerAs: 65000
+      - name: ext-3
+        peerAs: 65003
+    igp:
+      - {name: dnvrng, cost: 1}
+      - {name: hstnng, cost: 1}
+      - {name: iplsng, cost: 1}
+  losang:
+    asn: 65000
+    routerId: 10.0.0.8
+    location: {lat: 34.05, lon: -118.25}
+    position: {x: 75, y: 321}
+    neighbors:
+      - name: atlang
+        peerAs: 65000
+      - name: dnvrng
+        peerAs: 65000
+    igp:
+      - {name: hstnng, cost: 1}
+      - {name: snvang, cost: 1}
+  nycmng:
+    asn: 65000
+    routerId: 10.0.0.9
+    location: {lat: 40.7833, lon: -73.9667}
+    position: {x: 900, y: 161}
+    neighbors:
+      - name: atlang
+        peerAs: 65000
+      - name: dnvrng
+        peerAs: 65000
+    igp:
+      - {name: chinng, cost: 1}
+      - {name: washng, cost: 1}
+  snvang:
+    asn: 65000
+    routerId: 10.0.0.10
+    location: {lat: 37.3858, lon: -122.0255}
+    position: {x: 5, y: 242}
+    neighbors:
+      - name: atlang
+        peerAs: 65000
+      - name: dnvrng
+        peerAs: 65000
+    igp:
+      - {name: dnvrng, cost: 1}
+      - {name: losang, cost: 1}
+      - {name: sttlng, cost: 1}
+  sttlng:
+    asn: 65000
+    routerId: 10.0.0.11
+    location: {lat: 47.6, lon: -122.3}
+    position: {x: 0, y: 0}
+    neighbors:
+      - name: atlang
+        peerAs: 65000
+      - name: dnvrng
+        peerAs: 65000
+    igp:
+      - {name: dnvrng, cost: 1}
+      - {name: snvang, cost: 1}
+  washng:
+    asn: 65000
+    routerId: 10.0.0.12
+    location: {lat: 38.8973, lon: -77.0268}
+    position: {x: 843, y: 206}
+    neighbors:
+      - name: atlang
+        peerAs: 65000
+      - name: dnvrng
+        peerAs: 65000
+    igp:
+      - {name: atlang, cost: 1}
+      - {name: nycmng, cost: 1}
+  ext-1:
+    asn: 65001
+    routerId: 10.255.0.1
+    position: {x: 503, y: 492}
+    neighbors:
+      - name: hstnng
+        peerAs: 65000
+      - name: ext-2
+        peerAs: 65002
+      - name: ext-3
+        peerAs: 65003
+  ext-2:
+    asn: 65002
+    routerId: 10.255.0.2
+    position: {x: 970, y: 125}
+    neighbors:
+      - name: iplsng
+        peerAs: 65000
+      - name: ext-1
+        peerAs: 65001
+      - name: ext-3
+        peerAs: 65003
+  ext-3:
+    asn: 65003
+    routerId: 10.255.0.3
+    position: {x: 369, y: -70}
+    neighbors:
+      - name: kscyng
+        peerAs: 65000
+      - name: ext-2
+        peerAs: 65002
+      - name: ext-1
+        peerAs: 65001

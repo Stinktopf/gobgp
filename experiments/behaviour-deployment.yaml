@@ -1,0 +1,37 @@
+name: behaviour-deployment
+description: Whether OBGP on a share of the routers stops oscillation, in every mode, the routers drawn anew for every run.
+cluster: {cpus: 25, memory_mb: 206336}
+runs: 10
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: bgp-pn, mode: bgp, per_neighbor: true}
+  - {name: random-rp-25, mode: random-rp, share: 0.25}
+  - {name: random-rp-50, mode: random-rp, share: 0.5}
+  - {name: random-rp-75, mode: random-rp, share: 0.75}
+  - {name: random-rp-pn-25, mode: random-rp, share: 0.25, per_neighbor: true}
+  - {name: random-rp-pn-50, mode: random-rp, share: 0.5, per_neighbor: true}
+  - {name: random-rp-pn-75, mode: random-rp, share: 0.75, per_neighbor: true}
+  - {name: random-sp-25, mode: random-sp, share: 0.25}
+  - {name: random-sp-50, mode: random-sp, share: 0.5}
+  - {name: random-sp-75, mode: random-sp, share: 0.75}
+  - {name: random-sp-pn-25, mode: random-sp, share: 0.25, per_neighbor: true}
+  - {name: random-sp-pn-50, mode: random-sp, share: 0.5, per_neighbor: true}
+  - {name: random-sp-pn-75, mode: random-sp, share: 0.75, per_neighbor: true}
+  - {name: random-hp-25, mode: random-hp, share: 0.25}
+  - {name: random-hp-50, mode: random-hp, share: 0.5}
+  - {name: random-hp-75, mode: random-hp, share: 0.75}
+  - {name: random-hp-pn-25, mode: random-hp, share: 0.25, per_neighbor: true}
+  - {name: random-hp-pn-50, mode: random-hp, share: 0.5, per_neighbor: true}
+  - {name: random-hp-pn-75, mode: random-hp, share: 0.75, per_neighbor: true}
+  - {name: random-np-25, mode: random-np, share: 0.25}
+  - {name: random-np-50, mode: random-np, share: 0.5}
+  - {name: random-np-75, mode: random-np, share: 0.75}
+  - {name: random-np-pn-25, mode: random-np, share: 0.25, per_neighbor: true}
+  - {name: random-np-pn-50, mode: random-np, share: 0.5, per_neighbor: true}
+  - {name: random-np-pn-75, mode: random-np, share: 0.75, per_neighbor: true}
+  - {name: random-paper-25, mode: random-paper, share: 0.25}
+  - {name: random-paper-50, mode: random-paper, share: 0.5}
+  - {name: random-paper-75, mode: random-paper, share: 0.75}
+topologies: [bad-gadget, noble-eu]
+scenarios: [fill-30-rest-120]
+primary: {metric: hold_churn, baseline: bgp}

@@ -219,6 +219,7 @@ func toPathAPI(binNlri []byte, binPattrs [][]byte, anyNlri *api.NLRI, anyPattrs 
 		Pattrs:             anyPattrs,
 		Age:                tspb.New(time.Unix(path.Age, 0)),
 		IsWithdraw:         path.Withdrawal,
+		Best:               path.Best,
 		Family:             &api.Family{Afi: api.Family_Afi(path.Family.Afi()), Safi: api.Family_Safi(path.Family.Safi())},
 		Stale:              path.Stale,
 		IsFromExternal:     path.IsFromExternal,

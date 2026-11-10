@@ -1,0 +1,80 @@
+{% from "macros.html" import state_badge, visibility_tag, progress, page_header, delete_button, icon %}
+{% call page_header("/results", "Results") %}
+  <h1 class="truncate font-mono text-2xl font-semibold tracking-tight">{{ result.name }}</h1>
+  {{ visibility_tag(result) }}
+  {% if status.state != "finished" %}{{ state_badge("queued" if queued and status.state != "running" else status.state) }}{% endif %}
+  <div class="ml-auto flex items-center gap-2">
+    {% set live = status.state == "running" or queued %}
+    {% if source and not live %}
+    <form method="post" action="/experiments/{{ source }}/start">{% if cluster_off %}<input type="hidden" name="start_cluster" value="1">{% endif %}<button class="btn" data-tip="Runs {{ source }} again, as its file is now" data-tip-align="end" data-confirm="Run {{ source }} again?" data-confirm-text="As its file is now.{% if cluster_off %} The cluster is switched off and starts too.{% endif %}" data-confirm-safe>{{ icon("play") }}Run again</button></form>
+    {% endif %}
+    {{ delete_button("/results/" ~ result.name ~ "/delete", result.name, reason="Stop it first." if live else "Make it private first." if result.public else "", text="Its runs and samples are gone for good.") }}
+    {% if live %}
+    <form method="post" action="/results/{{ result.name }}/stop"><button class="btn btn-danger" data-confirm="Stop {{ result.name }}?" data-confirm-text="It can be resumed later.">Stop</button></form>
+    {% elif status.state in ("stopped", "failed") %}
+    <form method="post" action="/results/{{ result.name }}/resume">{% if cluster_off %}<input type="hidden" name="start_cluster" value="1"><button class="btn btn-primary" data-confirm="Start the cluster too?" data-confirm-text="It is switched off. {{ result.name }} goes on once it is up." data-confirm-safe>Resume</button>{% else %}<button class="btn btn-primary">Resume</button>{% endif %}</form>
+    {% endif %}
+  </div>
+{% endcall %}
+<div class="-mt-3 mb-6 flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+  {# Two lines at most, the whole text on hover and in Details. #}
+  <p class="max-w-2xl text-[15px] text-slate-600 line-clamp-2 dark:text-slate-300" title="{{ experiment.description }}">{{ experiment.description }}</p>
+  {% set case = experiment.description | case_of %}{% if case %}{% set seen = case | case_seen %}<a href="{{ case }}" class="text-sm hover:underline" {% if seen %}data-tip="{{ seen }}"{% endif %}>The case in the Simulation →</a>{% endif %}
+  <span class="muted text-sm whitespace-nowrap">Experiment {% if source %}<a href="/experiments/{{ source }}" class="hit inline-block font-mono hover:underline">{{ experiment.name }}</a>{% else %}<span class="font-mono">{{ experiment.name }}</span>{% endif %}{% if result.meta.started_by %}, started by {{ result.meta.started_by }}{% endif %}</span>
+</div>
+{% set m = integrity %}
+{% set retried = problems | selectattr("kind", "equalto", "retried") | list | length %}
+{% set broke = broke_runs | default(0) %}
+{% set unjudged = unjudged_runs | default(0) %}
+{% set unmeasured = problems | selectattr("kind", "equalto", "unmeasured") | list | length %}
+{% set passed = verdict.passed if verdict is defined else none %}
+{% if passed %}<p class="notice notice-ok mb-6">Passed: no errors, every run measured, no failed check or broken property the simulator did not predict.</p>{% endif %}
+{% if (status.state == "failed" and status.error) or status.errors or failed or broke or unjudged or unmeasured or retried or m.slow or m.busy or m.shifting or m.images or m.skipped %}
+<div class="mb-6 space-y-2">
+{# What went wrong, in one red box, a line each. #}
+{% if (status.state == "failed" and status.error) or status.errors or failed or broke or unjudged or unmeasured or retried %}
+<ul class="notice notice-check space-y-0.5" aria-label="Problems">
+{% if passed == false %}<li class="font-semibold">Did not pass.</li>{% endif %}
+{% if status.state == "failed" and status.error %}<li>Failed: {{ status.error }}</li>{% endif %}
+{% if status.errors %}<li>{{ status.errors }} run{{ "s" if status.errors != 1 }} ended in an error. <a class="hit" href="/results/{{ result.name }}?tab=runs#problems">Which and why</a></li>{% endif %}
+{% if failed or broke %}{% set n = failed.values() | sum if failed else 0 %}
+{# One line for both: runs that failed a check, runs that broke a property, e.g. never at rest. #}
+<li>{% if n %}{{ n }} run{{ "s" if n != 1 }} failed a check{% endif %}{% if n and broke %}, {% endif %}{% if broke %}{{ broke }} {% if not n %}run{{ "s" if broke != 1 }} {% endif %}broke a property{% endif %}.
+  <a class="hit" href="/results/{{ result.name }}?tab=runs#problems">Which and why</a></li>
+{% endif %}
+{% if unjudged %}<li>{{ unjudged }} run{{ "s" if unjudged != 1 }} broke a property the simulator does not play, not judged.
+  <a class="hit" href="/results/{{ result.name }}?tab=runs#problems">Which and why</a></li>{% endif %}
+{% if unmeasured %}<li>{{ unmeasured }} run{{ "s" if unmeasured != 1 }} not measured, without a rest value.
+  <a class="hit" href="/results/{{ result.name }}?tab=runs#problems">Which and why</a></li>{% endif %}
+{% if retried %}<li>{{ retried }} run{{ "s" if retried != 1 }} completed only after a failed attempt.
+  <a class="hit" href="/results/{{ result.name }}?tab=runs#problems">Which and why</a></li>{% endif %}
+</ul>
+{% endif %}
+{% if m.slow or m.busy or m.shifting or m.images or m.skipped %}
+{% set details = "/results/" ~ result.name ~ "?tab=quality" %}
+{% set link = '<a href="' ~ details ~ '">Details</a>' %}
+<ul class="notice notice-warn space-y-0.5" aria-label="Limits of the measurements">
+  {% if m.slow or m.busy %}
+  {% set named = (m.busy + m.slow) | map(attribute="variant") | unique | list %}
+  {% set oscillating = (m.busy + m.slow) | selectattr("oscillating") | map(attribute="variant") | unique | list %}
+  <li>{{ "Host at its limit" if m.busy else "Routers sampled slowly" }} during {{ named | join(", ") }}
+    {%- if oscillating %} ({{ "oscillating" if oscillating | length == named | length else oscillating | join(", ") ~ " oscillating" }}){% endif %}:
+    {%- if m.busy %} up to {{ (100 * m.busy[0].cpu) | round | int }} % CPU{% endif %}
+    {%- if m.busy and m.slow %},{% endif %}
+    {%- if m.slow %} sampled down to {{ "%.1f" | format(m.slow[0].hz) }} of {{ m.set | round | int }} Hz{% endif %}. {{ link | safe }}</li>
+  {% endif %}
+  {% if m.shifting %}<li>Others changed their load on the host by up to {{ (100 * m.shifting[0].spread) | round | int }} % of its CPUs. {{ link | safe }}</li>{% endif %}
+  {% if m.images %}<li>Runs of {{ m.images | list | join(", ") }} ran on different images. {{ link | safe }}</li>{% endif %}
+  {% if m.skipped %}<li data-tip="Too large for this host: {{ m.limit }}{% for t, why in m.skipped.items() %}&#10;{{ t }}: {{ why | join(", ") }}{% endfor %}">Skipped as too large for this host: {{ m.skipped | join(", ") }}.</li>{% endif %}
+</ul>
+{% endif %}</div>
+{% endif %}
+{% if status.total and status.done < status.total %}
+<div class="mb-6">
+  <div class="muted mb-1.5 flex justify-between text-sm">
+    <span>{{ status.done }} of {{ status.total }} runs{% if status.errors %}, {{ status.errors }} with errors{% endif %}</span>
+    <span>{% if status.state == "running" and active and active.name == result.name and left_s is not none %}{{ left_s | duration }} left{% endif %}</span>
+  </div>
+  {{ progress(status.done, status.total) }}
+</div>
+{% endif %}

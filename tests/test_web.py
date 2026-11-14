@@ -14,7 +14,27 @@ from lab.web.routes import results as result_pages
 def test_login_is_required(app):
     from fastapi.testclient import TestClient
 
-    assert TestClient(app).get("/topologies", follow_redirects=False).headers["location"] == "/login"
+    assert TestClient(app).get("/topologies", follow_redirects=False).headers["location"] == "/login?next=%2Ftopologies"
+    assert TestClient(app).get("/", follow_redirects=False).headers["location"] == "/login"
+
+
+def test_a_shared_link_opens_after_signing_in_and_only_within_the_lab(app):
+    from fastapi.testclient import TestClient
+
+    from lab.web import auth
+
+    auth.set_password("test-password")
+    c = TestClient(app)
+    to = c.get("/simulation/1/2?mode=bgp", follow_redirects=False).headers["location"]
+    assert to == "/login?next=%2Fsimulation%2F1%2F2%3Fmode%3Dbgp"
+    assert 'name="next" value="/simulation/1/2?mode=bgp"' in c.get(to).text
+    done = c.post("/login", data={"password": "test-password", "next": "/simulation/1/2?mode=bgp"}, follow_redirects=False)
+    assert done.headers["location"] == "/simulation/1/2?mode=bgp"
+    for evil in ("https://example.com/", "//example.com/x", "/\\example.com", "javascript:alert(1)"):
+        out = TestClient(app).post("/login", data={"password": "test-password", "next": evil}, follow_redirects=False)
+        assert out.headers["location"] == "/", evil
+    wrong = TestClient(app).post("/login", data={"password": "nope", "next": "/results"}, follow_redirects=False)
+    assert wrong.headers["location"] == "/login?error=Wrong+password&next=%2Fresults"
 
 
 @pytest.mark.parametrize("path", [
@@ -240,7 +260,7 @@ def test_the_limits_of_the_measurements_are_named(client, monkeypatch):
     monkeypatch.setattr(analysis, "summary", lambda dataset: groups)
     d = type("D", (), {"experiment": type("E", (), {"sampling": type("S", (), {"interval": 0.1})(), "variants": [], "sampling_of": lambda self, v: self.sampling})(), "keys": lambda self: [], "status": {}})()
     s = analysis.integrity(d)
-    assert s["slow"] == [{"topology": "t", "scenario": "s", "variant": "v", "oscillating": False, "hz": 1.2}] and s["low"] == 1.2 and s["high"] == 2.0
+    assert s["slow"] == [{"topology": "t", "scenario": "s", "variant": "v", "oscillating": False, "hz": 1.2, "resolution": 1.667}] and s["low"] == 1.2 and s["high"] == 2.0
     assert s["busy"] == [{"topology": "t", "scenario": "s", "variant": "v", "oscillating": False, "cpu": 0.97}] and s["images"] == {}
     assert s["noise"] is None  # a host of its own
     groups[0]["metrics"]["host_others_mean"] = {"median": 0.04, "max": 0.12}
@@ -282,11 +302,11 @@ def test_the_builder_names_the_topologies_this_host_leaves_out(monkeypatch):
     assert 'class="hidden"' in experiment_pages.host_notes(e)
 
 
-def test_failed_checks_are_counted_per_topology(monkeypatch):
-    groups = [{"topology": "a", "statuses": {"failed": 2}}, {"topology": "a", "statuses": {"completed": 1}},
-              {"topology": "b", "statuses": {"failed": 1}}]
-    monkeypatch.setattr(analysis, "summary", lambda _: groups)
-    assert result_pages.failed_by_topology(None) == {"a": 2, "b": 1}
+def test_runs_are_counted_once_by_their_problems():
+    at = lambda run, **p: {"topology": "t", "variant": "v", "scenario": "s", "run": run, **p}
+    found = [at(1, kind="check", predicted=True), at(1, kind="check", predicted=True), at(2, kind="check", predicted=False)]
+    assert result_pages.runs_of(found, lambda p: p["predicted"] is True) == {("t", "v", "s", 1)}
+    assert len(result_pages.runs_of(found, lambda p: p["kind"] == "check")) == 2
 
 
 def test_the_table_names_its_methods_and_shows_the_ci(client):
@@ -334,9 +354,10 @@ def test_the_dock_sends_the_parts_of_a_waiting_result_when_it_is_opened(client, 
     assert 'hx-get="/partials/dock/parts/ifip-networking-2026"' in dock and "dock-run-completed" not in dock
     parts = client.get("/partials/dock/parts/ifip-networking-2026").text
     # As in the runs of the result: BGP on the bad gadget ends without rest.
-    finished = sum(parts.count(f"dock-run-{s}") for s in ("completed", "allowed", "failed", "unmeasured", "error"))
+    finished = sum(parts.count(f"dock-run-{s}") for s in ("completed", "allowed", "open", "unjudged", "failed", "unmeasured", "error"))
     assert finished == len(ifip.statuses()) > 0
-    assert "dock-run-failed" in parts and "dock-run-completed" in parts  # without rest a run failed, as with a failed check
+    # Without predictions nothing is green: done runs and problems alike are not predictable.
+    assert "dock-run-unjudged" in parts and "dock-run-open" in parts and "dock-run-completed" not in parts
 
 
 def test_one_toggle_chooses_interval_or_router_spread(client):
@@ -458,7 +479,7 @@ def test_a_host_at_its_limit_is_one_line_with_a_link_to_the_details(client, monk
         integrity=limits, result=type("R", (), {"name": "r-1", "meta": {}})(), experiment=type("E", (), {"name": "e", "description": ""})(),
         status={}, failed={}, source=None, problems=[])
     line = " ".join(html.split("Limits of the measurements")[1].split("</li>")[0].split())
-    assert "Host at its limit during bgp, bgp-1hz (oscillating): up to 94 % CPU, sampled down to 2.6 of 10 Hz." in line
+    assert "Host at its limit during bgp and bgp-1hz (oscillating): up to 94 % CPU, 2.6 Hz instead of 10 Hz." in line
     assert "tab=quality" in line
 
 
@@ -470,7 +491,7 @@ def test_every_experiment_saves_unchanged_through_the_builder():
         e = Experiment.load(path)
         v = experiment_pages.builder_values(e)
         form = [(k, str(v[k])) for k in ("name", "description", "runs", "seed", "cpus", "memory_mb", "memory_min_mb", "router_limit_mb", "hold_time",
-                                          "keepalive", "connect_retry", "mrai", "refresh", "interval", "stable_s")]
+                                          "keepalive", "connect_retry", "mrai", "refresh", "procs", "interval", "stable_s", "profile_s")]
         form += [("topologies", t) for t in v["topologies"]] + [("scenarios", s) for s in v["scenarios"]]
         form += [("paired", "on")] if v["paired"] else []
         form += [("graceful_restart", "on")] if v["graceful_restart"] else []
@@ -514,6 +535,37 @@ def test_host_charts_scale_to_their_data_with_a_chart_of_the_gpus(monkeypatch):
     assert 'aria-label="GPU over the last minutes"' in html and "lg:grid-cols-3" in html and "1.0 of 24 GiB" in html
     assert html.count("ml-auto") == 1  # the windows and the badge of the cluster, on the right
     assert html.count("hx-get=\"/partials/lab?host=") == 4 and 'aria-pressed="true"' in html
+
+
+def test_the_live_view_shows_the_run_its_phase_its_routes_and_what_is_wrong():
+    from datetime import datetime, timedelta
+    from types import SimpleNamespace
+
+    e = Experiment.model_validate({"name": "x", "runs": 10, "variants": [{"name": "bgp", "mode": "bgp"}, {"name": "obgp-rp", "mode": "obgp-rp"}],
+                                   "topologies": ["germany50"], "scenarios": ["link-failure"]})
+    # Routes rise, fall after a failure and stay below their peak; the updates stop 5 s before the last sample.
+    live = [{"t": float(t), "destinations": d, "paths": 3 * d, "updates_rx": float(min(t, 15) * 20)}
+            for t, d in enumerate([0, 10, 30, 50, 50, 50, 40, 40, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44])]
+    status = {"state": "running", "total": 40, "done": 13, "errors": 1, "current": "germany50/obgp-rp/link-failure#4",
+              "run_started": (datetime.now(UTC) - timedelta(seconds=90)).isoformat(timespec="seconds"), "phase": "until stable",
+              "attempt": 2, "attempts": 3, "failure": "router r12 did not start", "live": live}
+    r = common.live_run(status, e)
+    assert (r["topology"], r["variant"], r["scenario"], r["repetition"], r["repetitions"]) == ("germany50", "obgp-rp", "link-failure", "4", 10)
+    assert r["tone"] == "rest" and r["quiet_s"] == 5 and r["updates_s"] == 10.0 and r["peak"] == 50 and "chart" not in r
+    active = SimpleNamespace(name="x-1", status=status, experiment=e)
+    html = common.templates.get_template("partials/lab.html").render(active=active, left_s=600, active_ends=None, machine=None)
+    for part in ("germany50, obgp-rp, link-failure, #4 of 10", "Waiting for rest", "quiet for 5 s",
+                 "Attempt 2 of 3.", "Attempt 1: router r12 did not start", "1 run broke off with an error",
+                 ">Destinations</dt>", "Highest in this run: 50", "Run <span class=\"font-medium tabular-nums\">14</span>", "10 min left"):
+        assert part in html, part
+    assert "<svg" not in html.split('aria-label="Running result"')[1].split("</section>")[0]
+    # Waiting for the cluster before the routers sample: violet, no numbers, no problem.
+    waiting = {**status, "phase": "waiting for the cluster: not ready", "live": [], "attempt": 1, "errors": 0}
+    html = common.templates.get_template("partials/lab.html").render(active=SimpleNamespace(name="x-1", status=waiting, experiment=e), left_s=None, machine=None)
+    assert "bg-violet-100" in html and "Destinations</dt>" not in html and "notice-check" not in html and "1 min 30 s" in html
+    # How far a deploy got.
+    deploying = common.live_run({**status, "phase": "deploying", "deploy": {"running": 120, "total": 128, "ready": 30}}, e)
+    assert deploying["phase"] == "Deploying the routers, 120 of 128 running, 30 ready"
 
 
 def test_times_are_marked_best_or_worst_only_beyond_their_resolution(client):
@@ -689,11 +741,12 @@ def test_the_dock_shows_unmeasured_runs_without_measuring_them(lab_files, monkey
     key = RunKey("t", "bgp", "s", 1)
     monkeypatch.setattr(context, "_LOOKS", {})  # looks of other tests at the same result
     monkeypatch.setattr(Dataset, "done_stamps", lambda self: {key: 1})
+    monkeypatch.setattr(Dataset, "keys", lambda self: [key])  # the problems of the result: of this run
+    monkeypatch.setattr(Dataset, "is_done", lambda self, k: True)
     monkeypatch.setattr(Dataset, "run", lambda self, k: {"status": "completed"})
     monkeypatch.setattr(analysis, "known_metrics", lambda dataset: {})
     monkeypatch.setattr(analysis, "run_summary", lambda dataset: (_ for _ in ()).throw(AssertionError("measured for the dock")))
-    assert context.looks(d) == {key: "completed"}
-    assert context._LOOKS == {}  # looked at again once it is measured
+    assert context.looks(d) == {key: "open"}  # done as far as known, and without a prediction not green
     # Measured, but without a rest value: neither done nor failed.
     monkeypatch.setattr(analysis, "known_metrics", lambda dataset: {str(key): {"oscillates": 0, "settle_s": None}})
     assert context.looks(d) == {key: "unmeasured"}
@@ -701,8 +754,8 @@ def test_the_dock_shows_unmeasured_runs_without_measuring_them(lab_files, monkey
     monkeypatch.setattr(context, "_LOOKS", {})
     monkeypatch.setattr(Dataset, "run", lambda self, k: {"status": "completed", "events": [{"name": "final", "held": {}, "stable": False}]})
     monkeypatch.setattr(analysis, "known_metrics", lambda dataset: {str(key): {"oscillates": 0, "settle_s": 4.0}})
-    monkeypatch.setattr(problems, "no_rest_predicted", lambda dataset, k: False)
-    assert context.looks(d) == {key: "failed"}
+    monkeypatch.setattr(problems, "prediction", lambda dataset, k: {"converged": 20, "settled": 20, "runs": 20})
+    assert context.looks(d) == {key: "failed"}  # the simulator always rests: not predicted
 
 
 def test_the_papers_files_are_neither_written_nor_deleted(client):
@@ -774,7 +827,7 @@ def test_the_quality_tab_sets_simulator_and_lab_side_by_side(client, monkeypatch
         return {"cells": cells, "per_variant": {}}
     monkeypatch.setattr(simulate, "agreement", agreement)
     page = client.get("/results/ifip-networking-2026?tab=quality").text
-    assert "Simulator and lab" in page and "36–100 %" in page
+    assert "Simulation and emulation" in page and "36–100 %" in page
     assert 'data-tip="the lab found no rest where the simulator always rested"' in page
 
 
@@ -798,3 +851,89 @@ def test_a_peak_shows_in_a_long_window(client, monkeypatch, tmp_path):
     monkeypatch.setitem(common.templates.env.globals, "host_series", lambda window="5m": h)
     html = common.templates.get_template("partials/lab.html").render(machine=machine, limits=None, max_routers=8, cluster_state={"status": "Running"})
     assert "max 90 %" in html and "the highest second of its span" in html
+
+
+def test_the_list_keeps_a_verdict_until_its_result_changes(client, monkeypatch):
+    from lab import analysis, results
+
+    e = config.Experiment.load(config.path("lab-smoke"))
+    d = results.Dataset.create(e, results.Dataset.new_name(e))
+    (d.path / "status.json").write_text('{"state": "finished"}')
+    made = []
+    monkeypatch.setattr(analysis, "summary_if_known", lambda dataset: [])
+    monkeypatch.setattr(result_pages, "verdict", lambda dataset: made.append(1) or {"passed": True, "reasons": [], "told": []})
+    assert result_pages.known_verdict(d)["passed"] and result_pages.known_verdict(d)["passed"] and len(made) == 1
+    d.update(predictions={})  # e.g. predict_again: judged anew
+    result_pages.known_verdict(d)
+    assert len(made) == 2
+    assert result_pages.size_of(d) == results.folder_size(d.path)
+
+
+def test_agents_read_the_agreement_without_the_cells_where_nothing_showed():
+    from lab.web import agent
+
+    quiet = {"orders": 20, "orders_with": 0, "runs": 6, "runs_with": 0, "signal": None}
+    cell = lambda variant, without, **dev: {"variant": variant, "orders": 20, "orders_without_rest": without, "runs_without_rest": 0,
+                                           "signal": None, "deviations": {"loop": quiet, **dev}}
+    found = {"cells": [cell("a", 0), cell("b", 12), cell("c", 0, unreachable={**quiet, "orders_with": 15})], "per_variant": {"a": {}}}
+    out = agent.short(found)
+    assert [c["variant"] for c in out["cells"]] == ["b", "c"] and out["cells_left_out"] == 1
+    assert out["cells"][0]["deviations"] == {} and list(out["cells"][1]["deviations"]) == ["unreachable"]
+    assert out["per_variant"] == {"a": {}}
+
+
+def test_while_a_search_runs_the_dock_offers_to_run_the_others_next(client, monkeypatch):
+    from lab import simulation
+    from lab.web import app as web
+
+    monkeypatch.setattr(web.jobs, "active", lambda: None)
+    monkeypatch.setattr(web.jobs, "queue", lambda: ["sim:1", "sim:2", "ifip-networking-2026"])
+    monkeypatch.setattr(simulation, "running", lambda: {"id": "1", "routers": 5, "progress": 0.5})
+    monkeypatch.setattr(simulation, "left_s", lambda s: 60)
+    dock = client.get("/partials/dock").text
+    assert 'aria-label="Run the simulator search next"' not in dock  # the waiting search is first already
+    assert 'aria-label="Run ifip-networking-2026 next"' in dock
+    assert "btn-danger" not in dock.split('id="dock-queue"')[1] and "btn-quiet-danger" in dock
+
+
+def test_a_result_that_does_not_wait_cannot_run_next(client):
+    r = client.post("/queue/next", data={"name": "nope"}, follow_redirects=False)
+    assert r.status_code == 409 and "does not wait" in r.text
+
+
+def test_router_colours_have_one_source():
+    # --router-1 to --router-8 in styles.css, light and dark, read by the map of the Simulation and every graph.
+    css = (config.ROOT / "lab/web/styles.css").read_text()
+    for i in range(1, 9):
+        assert len(re.findall(rf"--router-{i}: #[0-9a-f]{{6}};", css)) == 2
+    for script in ("sim-map.js", "graph.js"):
+        source = (config.ROOT / "lab/web/static" / script).read_text()
+        assert "--router-" in source and "#0284c7" not in source
+
+
+def test_a_failed_result_says_failed_at_once_and_what_the_lab_does_meanwhile(client, monkeypatch):
+    import json
+
+    from lab import results
+    from lab.web import app as web
+
+    path = results.PRIVATE / "t-failed"
+    path.mkdir(parents=True)
+    e = Experiment.load(config.path("lab-smoke"))
+    (path / "dataset.json").write_text(json.dumps({"experiment": e.model_dump(mode="json"), "commits": {v.name: "c0ffee" for v in e.variants},
+                                                   "created": "2026-01-01", "versions": {}, "predictions": {}}))
+    dataset = results.Dataset(path)
+    dataset.write_status({"state": "failed", "error": "the Kubernetes API stopped answering", "phase": "removing the routers",
+                          "total": 2, "done": 0, "current": None})
+    monkeypatch.setattr(web.jobs, "queue", lambda: ["t-failed"])  # the runner still holds it while it cleans up
+    header = client.get("/results/t-failed/partials/header", headers={"HX-Request": "true"}).text
+    assert ">failed<" in header.replace(" ", "") or "failed" in header
+    assert "queued" not in header and "The lab is removing the routers." in header
+
+
+def test_the_previews_know_each_router_s_as_as_the_editor_does():
+    # Without the AS, every router counted as one AS: BAD GADGET drew as a square, not a triangle round its origin.
+    from lab.web.context import thumbnails
+    t = {"roles": {"origins": ["a"]}, "routers": {"a": {"asn": 1, "neighbors": [{"name": "b"}]}, "b": {"asn": 2, "confederation": 7, "neighbors": [{"name": "a"}]}}}
+    thumb = thumbnails({"t": t})["t"]
+    assert thumb["routers"]["a"] == {"asn": 1, "neighbors": [{"name": "b"}]} and thumb["routers"]["b"]["confederation"] == 7

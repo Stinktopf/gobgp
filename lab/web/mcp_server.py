@@ -28,8 +28,9 @@ decision code: simulation_searches lists its searches, simulation_search the fin
 simulation_case plays a finding step by step, a page at a time, predict plays one topology and scenario of
 the lab, start_simulation starts a search,
 stop_simulation stops it and simulation_to_lab makes a finding an experiment to start.
+marks reads the stars and notes people and agents left on results, searches and cases, star and add_note set them.
 predict_again judges a result that does not run against a new answer of the simulator,
-agreement sets simulator and lab side by side per cell: only never, sometimes and always compare.
+agreement sets simulator and lab side by side per cell, on rest and on deviations at rest: only never, sometimes and always compare.
 The paper's experiment and its scenarios stay as they are, results are never deleted."""
 
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -56,18 +57,20 @@ def server(control: bool) -> MCPServer:
                agent.log, agent.topologies, agent.scenarios, agent.vocabulary,
                agent.simulation_searches, agent.simulation_search, agent.simulation_case, agent.download):
         s.tool(annotations=READ)(with_reasons(fn))
+    s.tool(name="marks", annotations=READ)(with_reasons(agent.marks_of))
     for name, fn in (("experiment", agent.experiment_of), ("scenario", agent.scenario_of), ("topology", agent.topology_of)):
         s.tool(name=name, annotations=READ)(with_reasons(fn))
     if control:
         s.tool(annotations=READ)(with_reasons(agent.action))
         for name, fn in (("start_experiment", agent.start), ("stop_result", agent.stop), ("resume_result", agent.resume),
-                         ("pause_queue", agent.pause), ("resume_queue", agent.unpause), ("update_lab", agent.update_lab),
+                         ("pause_queue", agent.pause), ("resume_queue", agent.unpause), ("run_next", agent.run_next), ("update_lab", agent.update_lab),
                          ("save_experiment", agent.save_experiment), ("save_scenario", agent.save_scenario),
                          ("start_simulation", agent.start_simulation), ("stop_simulation", agent.stop_simulation),
-                         ("simulation_to_lab", agent.simulation_to_lab), ("predict_again", agent.predict_again)):
+                         ("simulation_to_lab", agent.simulation_to_lab), ("predict_again", agent.predict_again),
+                         ("star", agent.star), ("add_note", agent.add_note), ("edit_note", agent.edit_note)):
             s.tool(name=name, annotations=CONTROL)(with_reasons(fn))
         s.tool(annotations=CONTROL)(with_reasons(agent.predict))  # changes nothing, but takes CPU: no approval, refused beside a result
-        for fn in (agent.delete_experiment, agent.delete_scenario):
+        for fn in (agent.delete_experiment, agent.delete_scenario, agent.delete_note):
             s.tool(annotations=DELETE)(with_reasons(fn))
     return s
 

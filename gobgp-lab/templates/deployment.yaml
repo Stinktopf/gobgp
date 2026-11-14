@@ -1,4 +1,5 @@
 {{- range $name, $r := .Values.routers }}
+{{- if or (not $.Values.deploy) (has $name $.Values.deploy) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -15,15 +16,20 @@ spec:
     spec:
       # Routers are replaced for every run; they need no time to shut down.
       terminationGracePeriodSeconds: 2
+      # No variables for every service of the namespace: hundreds of routers would get thousands each.
+      enableServiceLinks: false
+      # The lab sends every controller its neighbors' pod addresses, kept here across restarts of the container.
+      volumes:
+        - name: state
+          emptyDir: {}
       containers:
         - name: router
           image: "{{ required "the lab sets image.repository" $.Values.image.repository }}:{{ required "the lab sets image.tag" $.Values.image.tag }}"
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/lab
           env:
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
             - name: POD_IP
               valueFrom:
                 fieldRef:
@@ -59,6 +65,11 @@ spec:
               value: {{ required "the lab sets bgp.gracefulRestart" $.Values.bgp.gracefulRestart | quote }}
             - name: MRAI
               value: {{ required "the lab sets bgp.mrai" $.Values.bgp.mrai | quote }}
+            - name: GOBGPD_PROCS
+              value: {{ $.Values.bgp.procs | default 0 | quote }}
+            # The controller reads no advertised counts: counting them walks the table per peer at every scrape.
+            - name: GOBGP_METRICS_ADVERTISED
+              value: "0"
             - name: GOBGP_OPERA_REFRESH_S
               value: {{ required "the lab sets bgp.refresh" $.Values.bgp.refresh | quote }}
             - name: GOBGP_OPERA_REFRESH_DELAY_S
@@ -84,6 +95,8 @@ spec:
             httpGet:
               path: /ready
               port: api
-            periodSeconds: 2
+            periodSeconds: {{ $.Values.probe.periodS | default 2 }}
+            timeoutSeconds: 3
 ---
+{{- end }}
 {{- end }}

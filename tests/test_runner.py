@@ -120,6 +120,7 @@ def engine(lab_files, topology_name="bad-gadget"):
     run.topology = t
     run.waited = []
     run.wait = run.waited.append
+    run.profiled = ""
     return run
 
 
@@ -343,6 +344,19 @@ def test_a_missed_fetch_loses_no_sample_but_a_silent_router_fails(monkeypatch):
     sampler.pool.shutdown()
 
 
+def test_fetches_through_the_api_server_stay_bounded_beyond_100_routers():
+    fetch = lambda n: runner.fetch_interval(n, runner.Sampler.FETCH, runner.Sampler.RATE)  # noqa: E731
+    assert fetch(5) == fetch(100) == 0.5  # as before
+    assert fetch(256) == 1.28 and 256 / fetch(256) == runner.Sampler.RATE
+    # Beyond LARGE routers fewer fetches, which spares the API of a full node.
+    sampler = runner.Sampler(None, [f"r{i}" for i in range(256)], 0.1)
+    assert sampler.fetch_s == 256 / runner.Sampler.RATE_LARGE == 5.12 and sampler.interval == 0.1  # the routers still sample every interval
+    sampler.pool.shutdown()
+    small = runner.Sampler(None, [f"r{i}" for i in range(runner.Sampler.LARGE)], 0.1)
+    assert small.fetch_s == 0.5
+    small.pool.shutdown()
+
+
 def test_samples_wait_on_disk_and_come_out_by_time_then_router(tmp_path):
     class Two:
         def __init__(self):
@@ -484,10 +498,11 @@ def lab_smoke_result(name):
 
 
 class FakeCluster:
-    """A cluster that builds and deploys nothing, and is in trouble as told."""
+    """A cluster that builds and deploys nothing, and is in trouble or not clean as told."""
 
-    def __init__(self, resources, troubles=()):
-        self.resources, self.troubles, self.starts = resources, list(troubles), 0
+    def __init__(self, resources, troubles=(), unclean=(), answers=True, undeploys=True):
+        self.resources, self.troubles, self.unclean, self.starts = resources, list(troubles), list(unclean), 0
+        self.answers, self.undeploys, self.deleted, self.cleaned = answers, undeploys, 0, 0
 
     def build(self, commit):
         return "tag"
@@ -496,7 +511,18 @@ class FakeCluster:
         pass
 
     def undeploy(self):
-        pass
+        if not self.undeploys:
+            raise LabError("kubectl get pods: Unable to connect to the server")
+
+    def clean(self):
+        self.cleaned += 1
+        return self.unclean.pop(0) if self.unclean else None
+
+    def delete(self):
+        self.deleted += 1
+
+    def api_answers(self):
+        return self.answers
 
     def start(self):
         self.starts += 1
@@ -539,43 +565,135 @@ def test_a_sigterm_interrupts_unless_a_person_stopped_it(lab_files, monkeypatch,
     assert bool(d.meta.get("interruptions")) is not stopped_by_hand
 
 
-def test_a_lost_cluster_costs_no_attempt_and_the_run_plays_again(lab_files, monkeypatch):
-    d = lab_smoke_result("t-lost")
-    cluster = FakeCluster(config.Cluster(), troubles=["the container obgp-lab is stopped"])
-    fake_lab(monkeypatch, cluster)
-    recovered = []
-    monkeypatch.setattr(runner, "recover", lambda c, stop, status, why, recoveries: recovered.append(why))
+def flaky(times, error="The connection to the server 192.168.49.2:8443 was refused"):
+    """A run that fails the first `times` times, then completes."""
     calls = []
 
-    class FlakyOnce:
+    class Flaky:
         def __init__(self, *a):
             pass
 
         def execute(self):
             calls.append(1)
-            if len(calls) == 1:
-                raise LabError("The connection to the server 192.168.49.2:8443 was refused")
+            if len(calls) <= times:
+                raise LabError(error)
             return {"status": "completed"}, []
 
-    monkeypatch.setattr(runner, "Run", FlakyOnce)
+    return Flaky, calls
+
+
+def test_a_lost_cluster_costs_no_attempt_and_the_run_plays_again_on_a_clean_cluster(lab_files, monkeypatch):
+    d = lab_smoke_result("t-lost")
+    cluster = FakeCluster(config.Cluster(), troubles=["the container obgp-lab is stopped"])
+    fake_lab(monkeypatch, cluster)
+    run, calls = flaky(1)
+    monkeypatch.setattr(runner, "Run", run)
     runner.run(d, threading.Event())
     first = d.keys()[0]
-    assert recovered == ["the container obgp-lab is stopped"]
+    assert cluster.cleaned == 2  # at the start, and before the run played again
     assert d.run(first)["attempts"] == 1 and "failures" not in d.run(first)
     assert d.status["state"] == "finished" and d.status["errors"] == 0
 
 
-def test_recovery_starts_only_its_own_cluster_and_gives_up_in_time(lab_files, monkeypatch):
-    from lab import results
+def test_the_cluster_lost_twice_ends_the_result_as_failed(lab_files, monkeypatch):
+    d = lab_smoke_result("t-lost-twice")
+    cluster = FakeCluster(config.Cluster(), troubles=["Kubernetes is not ready: refused", "Kubernetes is not ready: refused"])
+    fake_lab(monkeypatch, cluster)
+    run, calls = flaky(5)
+    monkeypatch.setattr(runner, "Run", run)
+    runner.run(d, threading.Event())
+    assert len(calls) == 2 and d.status["state"] == "failed"
+    assert d.status["error"] == "the cluster was lost 2 times in this result, last: Kubernetes is not ready: refused"
+    assert not d.meta.get("interruptions")  # not restarted by the queue
 
+
+def test_a_result_interrupted_by_a_lost_cluster_goes_on_once_only(lab_files, monkeypatch):
+    d = lab_smoke_result("t-lost-resumed")
+
+    def build_fails(commit):
+        raise LabError("docker build: Cannot connect")
+
+    cluster = FakeCluster(config.Cluster(), troubles=["Kubernetes is not ready: refused"])
+    cluster.build = build_fails
+    fake_lab(monkeypatch, cluster)
+    runner.run(d, threading.Event())
+    assert d.status["state"] == "interrupted" and d.meta["interruptions"][-1]["lost"]
+    # The queue restarts it, and the cluster is lost again: it ends for good.
+    cluster.troubles = ["the container obgp-lab is stopped"]
+    runner.run(d, threading.Event())
+    assert d.status["state"] == "failed" and "lost 2 times in this result" in d.status["error"]
+    assert len(d.meta["interruptions"]) == 1
+
+
+def test_a_limit_of_the_host_ends_the_result_as_failed_and_leaves_no_routers(lab_files, monkeypatch):
+    d = lab_smoke_result("t-limit")
+    cluster = FakeCluster(config.Cluster())
+    undeployed = []
+    cluster.undeploy = lambda: undeployed.append(1)
+    fake_lab(monkeypatch, cluster)
+
+    class Limited:
+        def __init__(self, *a):
+            pass
+
+        def execute(self):
+            raise runner.HostLimit("routers of t did not become ready: the node's connection tracking held 170000 of 262144 entries")
+
+    monkeypatch.setattr(runner, "Run", Limited)
+    runner.run(d, threading.Event())
+    assert d.status["state"] == "failed" and "connection tracking" in d.status["error"]
+    assert not d.meta.get("interruptions") and undeployed
+
+
+def test_a_cluster_that_is_not_clean_is_created_anew_once(lab_files, monkeypatch):
+    status = type("S", (), {"update": lambda self, **kw: None})()
+    d = lab_smoke_result("t-clean")
+    fake_lab(monkeypatch, FakeCluster(config.Cluster()))
+    clean = FakeCluster(config.Cluster())
+    runner.prepare(clean, d, threading.Event(), status)
+    assert clean.deleted == 0
+    stale = FakeCluster(config.Cluster(), unclean=["routers of another run stay: 128 pods"])
+    runner.prepare(stale, d, threading.Event(), status)
+    assert stale.deleted == 1 and stale.cleaned == 2
+    broken = FakeCluster(config.Cluster(), unclean=["the Kubernetes API does not answer"] * 2)
+    with pytest.raises(runner.HostLimit, match="not usable even when created anew: the Kubernetes API does not answer"):
+        runner.prepare(broken, d, threading.Event(), status)
+
+
+@pytest.mark.parametrize("trouble, answers, deleted", [
+    (None, True, 0),  # routers that do not go: the next result cleans up
+    ("the container obgp-lab is stopped", False, 0),  # a host that shuts down keeps its cluster
+    ("Kubernetes is not ready: refused", True, 0),  # it answers again
+    ("Kubernetes is not ready: refused", False, 1),
+])
+def test_routers_that_cannot_be_removed_take_the_lab_cluster_with_them_only_when_its_api_is_dead(trouble, answers, deleted):
+    cluster = FakeCluster(config.Cluster(), troubles=[trouble] if trouble else [], answers=answers, undeploys=False)
+    runner.tidy(cluster)
+    assert cluster.deleted == deleted
+
+
+def test_a_silent_api_takes_the_lab_cluster_without_waiting_for_helm_and_the_page_says_so():
+    cluster = FakeCluster(config.Cluster(), troubles=["Kubernetes is not ready: refused"], answers=False)
+    undeployed, phases = [], []
+    cluster.undeploy = lambda: undeployed.append(1)
+    runner.tidy(cluster, type("S", (), {"update": lambda self, **kw: phases.append(kw["phase"])})())
+    assert cluster.deleted == 1 and not undeployed
+    assert phases == ["deleting the lab's cluster, its Kubernetes API does not answer"]
+    healthy, phases = FakeCluster(config.Cluster()), []
+    runner.tidy(healthy, type("S", (), {"update": lambda self, **kw: phases.append(kw["phase"])})())
+    assert healthy.deleted == 0 and phases == ["removing the routers"]
+
+
+def test_recovery_starts_only_its_own_cluster_a_few_times(lab_files, monkeypatch):
     never = type("Stop", (), {"wait": lambda self, s: False})()
     status = type("S", (), {"update": lambda self, **kw: None})()
     cluster = FakeCluster(config.Cluster(), troubles=[None])
-    runner.recover(cluster, never, status, "Docker does not answer", [])
+    runner.recover(cluster, never, status, "Docker does not answer")
     assert cluster.starts == 1
-    with pytest.raises(runner.Cancelled):
-        runner.recover(cluster, never, status, "Docker does not answer", [time.time()] * runner.RECOVERIES_PER_HOUR)
-    assert "within an hour" in results.pause_file().read_text()
+    cluster = FakeCluster(config.Cluster(), troubles=["the container obgp-lab is stopped"] * 10)
+    with pytest.raises(runner.HostLimit, match=f"did not come back after {runner.RECOVER_STARTS} starts"):
+        runner.recover(cluster, never, status, "Docker does not answer")
+    assert cluster.starts == runner.RECOVER_STARTS
 
 
 def test_recovery_waits_while_the_host_shuts_down(lab_files, monkeypatch):
@@ -590,7 +708,7 @@ def test_recovery_waits_while_the_host_shuts_down(lab_files, monkeypatch):
     cluster = FakeCluster(config.Cluster())
     status = type("S", (), {"update": lambda self, **kw: None})()
     with pytest.raises(runner.Cancelled):
-        runner.recover(cluster, Stop(), status, "Docker does not answer", [])
+        runner.recover(cluster, Stop(), status, "Docker does not answer")
     assert cluster.starts == 0
 
 
@@ -616,16 +734,30 @@ def test_old_router_images_are_never_pruned_in_the_docker_of_the_host(monkeypatc
     assert calls == []
 
 
-def test_the_routers_go_away_before_the_run_is_written(lab_files, monkeypatch):
+class Guard:
+    """The guard of a run, lost as told."""
+
+    def __init__(self, why=""):
+        self.why, self.lost = why, threading.Event()
+        if why:
+            self.lost.set()
+
+    def stop(self):
+        pass
+
+
+@pytest.mark.parametrize("lost", [False, True])
+def test_the_routers_go_away_before_the_run_is_written(lab_files, monkeypatch, lost):
     # Routers that oscillate would go on after the run, load the host and grow until their memory limit ends them.
     from collections import deque
 
     order = []
+    guard = Guard("the node's connection tracking held 170000 of 262144 entries" if lost else "")
 
     class Deployed:
         resources = config.Cluster()
 
-        def deploy(self, *a):
+        def deploy(self, *a, **kw):
             order.append("deploy")
 
         def pods(self):
@@ -640,6 +772,10 @@ def test_the_routers_go_away_before_the_run_is_written(lab_files, monkeypatch):
 
         def undeploy(self):
             order.append("undeploy")
+
+        def guard(self, name, total, on_lost, diagnosis=None):
+            order.append("guarded")
+            return guard
 
     class Sampled:
         failed, count = 0, 10
@@ -665,6 +801,7 @@ def test_the_routers_go_away_before_the_run_is_written(lab_files, monkeypatch):
     run = engine(lab_files)
     run.cluster = Deployed()
     run.variant = run.experiment.variants[0]
+    run.diagnosis = None
     run.scenario = type("Scenario", (), {"steps": []})()
     run.steps = lambda steps, position: order.append("steps")
     run.spool = lab_files / "spool"
@@ -672,8 +809,13 @@ def test_the_routers_go_away_before_the_run_is_written(lab_files, monkeypatch):
     run.tag = "tag"
     run.status = type("Status", (), {"samples": deque(), "watched": set(), "update": lambda self, **_: None, "live": lambda self, *a: None})()
     run.final = lambda: order.append("final")
+    if lost:  # a full connection tracking or a silent API during the run ends it, and the result
+        with pytest.raises(runner.HostLimit, match="connection tracking held 170000"):
+            run.execute()
+        assert order == ["deploy", "guarded", "steps", "final", "sampler stopped"]
+        return
     result, rows = run.execute()
-    assert order == ["deploy", "steps", "final", "sampler stopped", "addresses", "rows", "undeploy"]
+    assert order == ["deploy", "guarded", "steps", "final", "sampler stopped", "addresses", "rows", "undeploy"]
     assert result["addresses"] == {"10.0.0.1": "r1"} and list(rows) == [{"t": 0.5}]
 
 
@@ -770,3 +912,80 @@ def test_the_runner_the_run_count_and_the_fit_leave_out_the_same_topologies(lab_
     runner.run(d, threading.Event())
     assert set(played) == {"bad-gadget"} and d.status["total"] == d.experiment.runs_total(here.skipped) == len(played)
     assert d.status["skipped"] == here.skipped and d.status["limit"] == here.limit
+
+
+def test_the_log_names_a_few_routers_and_counts_many():
+    from lab.runner import told
+    assert told({"routers": ["r1", "r2"], "links": [("r1", "r2")]}) == "r1, r2, r1–r2"
+    assert told({"routers": [f"as{i}" for i in range(128)]}) == "128 routers" and told({}) == ""
+
+
+def test_a_router_that_samples_rarely_at_rest_does_not_hide_the_rest():
+    # b samples every 30 s at rest, a every second: rest shows once b's next sample shows no change.
+    rows = {"a": [{"seq": i + 1, "t": float(i), "destinations": 1, "paths": 1, "updates_rx": 5} for i in range(31)],
+            "b": [{"seq": 1, "t": 0.0, "destinations": 1, "paths": 2, "updates_rx": 9},
+                  {"seq": 2, "t": 30.0, "destinations": 1, "paths": 2, "updates_rx": 9}]}
+
+    class Routers:
+        def get(self, router, path, timeout=2):
+            return {"samples": [dict(r) for r in rows[router]], "failures": 0}
+
+    sampler = runner.Sampler(Routers(), ["a", "b"], 1.0)
+    sampler.fetch()
+    assert sampler.last_t == 30.0 and sampler.quiet_since == 0.0  # every second a tick, none a change
+    sampler.pool.shutdown()
+
+
+def test_the_final_check_waits_for_a_busy_router_and_asks_it_again(lab_files):
+    run = engine(lab_files)
+    names = sorted(run.network.routers)
+    first, last = names[0], names[-1]
+    asked = []
+
+    class Busy(Routers):
+        def get(self, router, path, timeout=2):
+            asked.append((router, timeout))
+            if router == first and asked.count((first, timeout)) == 1:
+                raise runner.LabError(f"{router} /routes: Read timed out")
+            return {"10.0.0.0/24": {"router": router}}
+
+    run.routers = Busy({})
+    run.stopped = {last}
+    tables, slowest = run.final_tables()
+    assert list(tables) == names and tables[last] == {} and all(tables[r] for r in names[:-1])
+    assert {t for _, t in asked} == {runner.FINAL_S}
+    assert [r for r, _ in asked].count(first) == 2 and last not in [r for r, _ in asked]
+    assert slowest[0] in names[:-1]
+
+
+def test_the_final_check_gives_up_on_a_router_that_never_answers(lab_files):
+    run = engine(lab_files)
+
+    class Silent(Routers):
+        def get(self, router, path, timeout=2):
+            raise runner.LabError(f"{router} /routes: Read timed out")
+
+    run.routers = Silent({})
+    with pytest.raises(runner.LabError):
+        run.final_tables()
+
+
+def test_a_run_profiles_the_router_with_the_most_neighbors_once_and_keeps_the_profile(lab_files, tmp_path):
+    import base64
+    run = engine(lab_files)
+    run.experiment = run.experiment.model_copy(update={"sampling": run.experiment.sampling.model_copy(update={"profile_s": 30})})
+    run.spool = tmp_path
+    busiest = max(sorted(run.network.routers), key=lambda r: len(run.network.routers[r].get("neighbors", [])))
+    run.profile_cpu()
+    run.profile_cpu()
+    assert [c for c in run.routers.calls if c[1] == "/cpu"] == [(busiest, "/cpu", {"seconds": 30})]
+    run.routers.get = lambda router, path, timeout=2: {"seconds": 30, "taken": 1.0, "profile": base64.b64encode(b"pprof").decode()}
+    run.keep_cpu()
+    assert (tmp_path / f"cpu-{busiest}.pb.gz").read_bytes() == b"pprof"
+
+
+def test_a_run_takes_no_cpu_profile_unless_the_experiment_asks(lab_files):
+    run = engine(lab_files)
+    run.profile_cpu()
+    run.keep_cpu()
+    assert not [c for c in run.routers.calls if c[1] == "/cpu"]

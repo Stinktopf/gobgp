@@ -28,7 +28,7 @@ def controller(monkeypatch):
         monkeypatch.setitem(sys.modules, "controller_app", app)
         spec.loader.exec_module(app)
         daemon = app.Daemon()
-        daemon.addresses = addresses  # in the pod, resolved from the services of the neighbors
+        daemon.addresses = addresses  # in the pod, sent by the lab
         return app, daemon
     return load
 
@@ -261,11 +261,13 @@ def test_next_hops_are_written_as_changes_and_read_on_after_a_change(controller,
     assert app.hops_changed(cache, table(300), (300, 300, 9)) == "* p2=."
 
 
-def test_ns_bgp_samples_the_route_sent_to_each_neighbor(controller, monkeypatch):
+@pytest.mark.parametrize("obgp", ["false", "true"])
+def test_a_table_per_neighbor_samples_the_route_sent_to_each_neighbor(controller, monkeypatch, obgp):
     monkeypatch.setenv("GOBGP_OPERA_EXPORT", "neighbor")
+    monkeypatch.setenv("GOBGP_OPERA_ENABLED", obgp)  # NS-BGP and OBGP per neighbor alike
     neighbors = [{"name": "a", "peerAs": 65001}, {"name": "c", "peerAs": 65003}, {"name": "i", "peerAs": 65002}]
     app, daemon = controller("b", 65002, neighbors, {"a": "10.1.0.1", "c": "10.1.0.3", "i": "10.1.0.9"})
-    assert app.NS_BGP
+    assert app.INGRESS
     monkeypatch.setattr(app, "daemon", daemon)
 
     class Attr:
@@ -287,10 +289,15 @@ def test_ns_bgp_samples_the_route_sent_to_each_neighbor(controller, monkeypatch)
     monkeypatch.setattr(app, "stub", type("Stub", (), {
         "ListPath": staticmethod(lambda r, timeout: answer(held if r["table_type"] == app.GLOBAL else [sent[r["name"]]]))})())
     # The next hop and AS path of the route as held, not as sent: no iBGP neighbor has a table.
-    assert app.hops() == {"p": "c|10.1.0.3|65003;a>c|10.1.0.3|65003;c>a|10.1.0.1|65001"}
+    # a gets the route b uses itself: named after "=", c another one, written out.
+    assert app.hops() == {"p": "c|10.1.0.3|65003;c>a|10.1.0.1|65001;=a"}
     routes = app.routes()["p"]
     assert routes["from"] == "c" and routes["ingress"] == {"a": {"from": "c", "as_path": [65003, 9], "next_hop": "10.1.0.3"},
                                                            "c": {"from": "a", "as_path": [65001, 7, 9], "next_hop": "10.1.0.1"}}
+    # OBGP may send a path it only set aside in its main table: then the route as sent, its own AS taken off.
+    held[1:] = []
+    routes = app.routes()["p"]
+    assert routes["ingress"]["c"] == {"from": "a", "as_path": [65001, 7, 9], "next_hop": "10.1.0.1"}
 
 
 def test_a_restarted_daemon_tells_its_whole_table(controller, monkeypatch):
@@ -311,10 +318,10 @@ def test_a_restarted_daemon_tells_its_whole_table(controller, monkeypatch):
 
 
 @pytest.mark.parametrize("ns_bgp", [False, True])
-def test_with_ns_bgp_routes_sent_without_receiving_are_read_too(controller, monkeypatch, ns_bgp):
+def test_with_ingress_routes_sent_without_receiving_are_read_too(controller, monkeypatch, ns_bgp):
     # A session coming up makes a router send its table for the neighbor, without receiving anything.
     app, daemon = controller("b", 65002, [], {})
-    monkeypatch.setattr(app, "NS_BGP", ns_bgp)
+    monkeypatch.setattr(app, "INGRESS", ns_bgp)
     monkeypatch.setattr(app, "daemon", daemon)
     sent = [10]
     peer = lambda: type("P", (), {
@@ -364,3 +371,104 @@ def test_a_grown_router_keeps_one_heap_profile(controller, monkeypatch):
     app.heap_watch(1500.0)
     app.heap_watch(2000.0)  # one profile only, the first
     assert len(taken) == 1 and app.heap()["rss_mb"] == 1500.0 and app.heap()["profile"] == "cHJvZmlsZQ=="
+
+
+def test_the_lab_tells_the_neighbors_addresses_once_and_a_restart_keeps_them(controller, monkeypatch, tmp_path):
+    from fastapi import HTTPException
+
+    app, _ = controller("b", 65002, [{"name": "a", "peerAs": 65002, "rrClient": True}, {"name": "x", "peerAs": 65001}], {})
+    monkeypatch.setattr(app, "NEIGHBORS_FILE", str(tmp_path / "lab" / "neighbors.json"))
+    with pytest.raises(HTTPException) as missing:
+        app.neighbor_addresses(app.NeighborsRequest(addresses={"a": "10.1.0.2"}))
+    assert missing.value.status_code == 400 and not app.told.is_set()
+    with pytest.raises(HTTPException):
+        app.neighbor_addresses(app.NeighborsRequest(addresses={"a": "10.1.0.2", "x": "a.lab.svc"}))
+    told = {"a": "10.1.0.2", "x": "10.1.0.9"}
+    assert app.neighbor_addresses(app.NeighborsRequest(addresses=told)) == {"told": True}
+    assert app.await_neighbors() == told and app.daemon.addresses == told
+    assert app.neighbor_addresses(app.NeighborsRequest(addresses=dict(told))) == {"told": True}  # told again: the same
+    with pytest.raises(HTTPException) as moved:
+        app.neighbor_addresses(app.NeighborsRequest(addresses={**told, "x": "10.1.0.19"}))
+    assert moved.value.status_code == 409
+    # A restarted container: a new controller in the same pod finds them on the pod's volume.
+    again, _ = controller("b", 65002, [{"name": "a", "peerAs": 65002}, {"name": "x", "peerAs": 65001}], {})
+    monkeypatch.setattr(again, "NEIGHBORS_FILE", str(tmp_path / "lab" / "neighbors.json"))
+    assert again.await_neighbors() == told and again.told.is_set()
+
+
+def test_a_router_without_neighbors_waits_for_nothing(controller):
+    app, _ = controller("b", 65002, [], {})
+    assert app.await_neighbors() == {}
+
+
+def test_a_large_table_tells_its_path_lengths_only_once_it_held_still(controller, monkeypatch):
+    app, daemon = controller("b", 65002, [], {})
+    monkeypatch.setattr(app, "daemon", daemon)
+    monkeypatch.setattr(app, "peers", lambda: [])
+    size = [app.LENGTHS_LARGE + 1]
+    monkeypatch.setattr(app, "stub", type("Stub", (), {"GetTable": lambda self, req, timeout: type("T", (), {"num_destination": 9, "num_path": size[0]})()})())
+    monkeypatch.setattr(app, "memory", lambda: {})
+    monkeypatch.setattr(app, "hops_changed", lambda cache, table, key: "")
+    read = []
+    monkeypatch.setattr(app, "lengths", lambda cache, key: read.append(key) or cache.update(key=key, lengths_running=False, lengths={"path_len_min": 1, "path_len_avg": 2.5, "path_len_max": 4}))
+    monkeypatch.setattr(app.threading, "Thread", lambda target, args, daemon: type("T", (), {"start": lambda self: target(*args)})())
+    clock = [100.0]
+    monkeypatch.setattr(app.time, "monotonic", lambda: clock[0])
+    cache = {}
+    first = app.sample(cache)
+    assert read == [] and first["path_len_avg"] is None  # still changing: unknown, not read
+    clock[0] += app.LENGTHS_STILL_S
+    app.sample(cache)
+    assert len(read) == 1 and app.sample(cache)["path_len_avg"] == 2.5  # held still: read once, then told
+    size[0] += 1
+    assert app.sample(cache)["path_len_avg"] is None and len(read) == 1  # changed again: unknown until still
+    size[0] = 10  # a small table is read at once, as before
+    clock[0] += 10
+    assert app.sample(cache)["path_len_avg"] == 2.5 and len(read) == 2
+
+
+def test_the_metrics_are_read_apart_and_as_often_as_their_cost_allows(controller, monkeypatch):
+    app, daemon = controller("b", 65002, [], {})
+    monkeypatch.setattr(app, "daemon", daemon)
+    monkeypatch.setattr(app, "peers", lambda: [])
+    monkeypatch.setattr(app, "stub", type("Stub", (), {"GetTable": lambda self, req, timeout: type("T", (), {"num_destination": 1, "num_path": 1})()})())
+    monkeypatch.setattr(app, "hops_changed", lambda cache, table, key: "")
+    started = []
+    monkeypatch.setattr(app.threading, "Thread", lambda target, args, daemon: type("T", (), {"start": lambda self: started.append(target)})())
+    clock = [100.0]
+    monkeypatch.setattr(app.time, "monotonic", lambda: clock[0])
+    cache = {"key": (1, 1, 0)}  # the path lengths are known: only the metrics are read
+    assert app.sample(cache)["rss_mb"] is None and started == [app.read_memory]  # the sample does not wait for them
+    clock[0] += 2
+    app.sample(cache)
+    assert len(started) == 1  # one read at a time
+    cache.update(memory_running=False, memory_took=3.0)
+    clock[0] += 2
+    app.sample(cache)
+    assert len(started) == 1  # a read that took 3 s comes every 15 s at most
+    clock[0] += 12
+    app.sample(cache)
+    assert len(started) == 2
+
+
+def test_a_router_takes_one_cpu_profile_when_the_lab_asks(controller, monkeypatch):
+    app, _ = controller("b", 65002, [], {})
+    monkeypatch.setattr(app, "CPU", {})
+    taken = []
+
+    class Answer:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"profile"
+    monkeypatch.setattr(app.urllib.request, "urlopen", lambda url, timeout: taken.append((url, timeout)) or Answer())
+    monkeypatch.setattr(app.threading, "Thread", lambda target, daemon: type("T", (), {"start": lambda self: target()})())
+    assert app.cpu() == {}
+    app.cpu_start({"seconds": 30})
+    app.cpu_start({"seconds": 60})  # one profile only, the first
+    assert taken == [("http://localhost:6060/debug/pprof/profile?seconds=30", 90.0)]
+    assert app.cpu()["seconds"] == 30.0 and app.cpu()["profile"] == "cHJvZmlsZQ=="

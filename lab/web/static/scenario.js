@@ -583,8 +583,8 @@
     cy?.destroy();
     cy = Graph.view($("preview"), network(), { styles: [
       { selector: "node.hit", style: { "background-color": css("--graph-accent"), "underlay-color": css("--graph-accent"),
-        "underlay-opacity": 0.2, "underlay-padding": Graph.px(() => cy, 6), "underlay-shape": "ellipse" } },
-      { selector: "edge.hit", style: { "line-color": css("--graph-accent"), width: Graph.px(() => cy, 4) } },
+        "underlay-opacity": 0.2, "underlay-padding": Graph.px(() => cy, 6), "underlay-shape": "round-rectangle" } },
+      { selector: "edge.hit", style: { "line-color": css("--graph-accent"), "line-fill": "solid", opacity: 1, width: Graph.px(() => cy, 4) } },
       { selector: "node.dim, edge.dim", style: { opacity: 0.4 } },
     ] });
     highlight();
@@ -595,8 +595,11 @@
     cy.elements().removeClass("hit dim");
     const n = selected && find(selected)?.node;
     const hit = n && targetsOf(n);
-    $("targets").textContent = !n ? "Select a step to see what it acts on." : !hit ? "Acts on no router or link." : hit.error ? hit.error :
+    // What the selected step acts on: its routers and links, nothing without a step.
+    $("targets").hidden = !n;
+    $("targets").textContent = !n ? "" : !hit ? "Acts on no router or link." : hit.error ? hit.error :
       [hit.routers.join(", "), hit.links.map((l) => l.join("–")).join(", ")].filter(Boolean).join(", ");
+    $("targets").classList.toggle("font-mono", !!hit && !hit.error);
     $("targets").classList.toggle("error", !!hit?.error);
     if (!hit || hit.error) return;
     cy.elements().addClass("dim");

@@ -194,12 +194,37 @@ def test_every_settings_file_of_the_lab_is_known_and_searches_stay_unless_purged
     named = set()
     for source in Path(__file__).resolve().parents[1].joinpath("lab").rglob("*.py"):
         named |= set(re.findall(r'SETTINGS ?/ ?"([^"]+)"', source.read_text()))
-    unknown = named - uninstall.SETTINGS_FILES - uninstall.SETTINGS_DIRS - {uninstall.SEARCHES}
+    unknown = named - uninstall.SETTINGS_FILES - uninstall.SETTINGS_DIRS - uninstall.KEPT
     assert not unknown, f"uninstall does not know {sorted(unknown)}"
     root, settings, base = installation
     (settings / "tokens.json").write_text("[]")
     (settings / "analysing").mkdir()
     (settings / "simulation" / "searches").mkdir(parents=True)
+    (settings / "marks.json").write_text("{}")
     assert uninstall.cleanup(root, settings, base, no_sudo) == []
     assert not (settings / "tokens.json").exists() and not (settings / "analysing").exists() and (settings / "simulation").exists()
+    assert (settings / "marks.json").exists()
     assert uninstall.cleanup(root, settings, base, no_sudo, purge=True) == [] and not settings.exists()
+
+
+def test_setup_s_neighbour_limits_are_restored_only_while_unchanged(installation, tmp_path, monkeypatch):
+    _, _, base = installation
+    proc = tmp_path / "proc"
+    (proc / "net/ipv4/neigh/default").mkdir(parents=True)
+    for name, value in (("gc_thresh1", 8192), ("gc_thresh2", 32768), ("gc_thresh3", 65536)):
+        (proc / "net/ipv4/neigh/default" / name).write_text(f"{value}\n")
+    conf = tmp_path / "90-obgp-lab-neigh.conf"
+    conf.write_text("set by setup\n")
+    monkeypatch.setattr(uninstall, "PROC", proc)
+    sysctls = (("neigh", conf, "net.ipv4.neigh.default", ("gc_thresh1", "gc_thresh2", "gc_thresh3")),)
+    monkeypatch.setattr(uninstall, "SYSCTLS", sysctls)
+    monkeypatch.setattr(uninstall.shutil, "which", lambda _: None)
+    lines = ["neigh-before 128 512 1024", "neigh-after 8192 32768 65536", f"sha256 {uninstall.digest(conf)} {conf}"]
+    done, kept = [], []
+    uninstall.undo_host(lines, base, done.append, kept)
+    assert done == [["rm", "--", str(conf)], ["sysctl", "-w", "net.ipv4.neigh.default.gc_thresh1=128",
+                    "net.ipv4.neigh.default.gc_thresh2=512", "net.ipv4.neigh.default.gc_thresh3=1024"]] and kept == []
+    (proc / "net/ipv4/neigh/default/gc_thresh3").write_text("131072\n")
+    done, kept = [], []
+    uninstall.undo_host(lines, base, done.append, kept)
+    assert done == [] and kept == ["neigh settings (changed or incomplete installation record)"]

@@ -1,10 +1,12 @@
 package server
 
 import (
+	"net/netip"
 	"slices"
 	"strings"
 
 	"github.com/osrg/gobgp/v4/internal/pkg/table"
+	"github.com/osrg/gobgp/v4/pkg/apiutil"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
 
@@ -190,7 +192,13 @@ func (s *BgpServer) operaExports(nb *peer, f bgp.Family) (paths []*table.Path) {
 	if t == nil {
 		return nil
 	}
-	for _, d := range t.GetDestinations() {
+	return s.operaExportsOf(nb, t.GetDestinations())
+}
+
+// operaExportsOf are the exports of the neighbor's tables to the given
+// destinations only.
+func (s *BgpServer) operaExportsOf(nb *peer, dsts []*table.Destination) (paths []*table.Path) {
+	for _, d := range dsts {
 		if e := d.OperaExport(nb.ID()); e != nil {
 			if p, _, stop := s.prePolicyFilterpath(nb, e, nil); !stop {
 				if p = s.postFilterpath(nb, p); p != nil && !p.IsWithdraw {
@@ -200,6 +208,33 @@ func (s *BgpServer) operaExports(nb *peer, f bgp.Family) (paths []*table.Path) {
 		}
 	}
 	return paths
+}
+
+// operaExactDestinations are the destinations of family that prefixes name
+// exactly, and ok when every prefix is an exact one: a listing of a few
+// prefixes then needs only theirs, not every export of the table.
+func (s *BgpServer) operaExactDestinations(family bgp.Family, prefixes []*apiutil.LookupPrefix) (dsts []*table.Destination, ok bool) {
+	t := s.globalRib.Tables[family]
+	if len(prefixes) == 0 || t == nil || (family != bgp.RF_IPv4_UC && family != bgp.RF_IPv6_UC) {
+		return nil, false
+	}
+	for _, p := range prefixes {
+		if p.LookupOption != apiutil.LOOKUP_EXACT {
+			return nil, false
+		}
+		prefix, err := netip.ParsePrefix(p.Prefix)
+		if err != nil {
+			return nil, false // a single address or an error: the full lookup handles both
+		}
+		nlri, err := bgp.NewIPAddrPrefix(prefix)
+		if err != nil {
+			return nil, false
+		}
+		if d := t.GetDestination(nlri); d != nil {
+			dsts = append(dsts, d)
+		}
+	}
+	return dsts, true
 }
 
 // operaNotifyForward tells the best path watchers, zebra among them, a

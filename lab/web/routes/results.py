@@ -13,10 +13,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from ... import (
     analysis,
     config,
+    marks,
     simulate,
 )
-from ...problems import PROPERTIES, verdict
+from ...problems import PROPERTIES, allowed_predicted, fails, verdict
 from ...problems import grouped as problem_groups
+from ...problems import look as problems_look
+from ...problems import prediction as problems_prediction
 from ...problems import of as problems_of
 from ...results import Dataset, RunKey, folder_size, storage
 from ..common import (
@@ -63,15 +66,19 @@ def result_context(dataset: Dataset, tab: str, topology: str = "", scenario: str
         "topology": topology,
         "scenario": scenario if scenario in scenarios else "",
         "integrity": analysis.integrity(dataset),
-        "failed": failed_by_topology(dataset),
         "problems": (found := problems_of(dataset)),
         "verdict": verdict(dataset, found),
-        # Runs, not problems: a run that broke two properties is one run.
-        "broke_runs": len({(p["topology"], p["variant"], p["scenario"], p["run"]) for p in found
-                           if p["kind"] == "property" and p.get("predicted") is False}),
-        # Broken where the simulator does not play the mode or scenario: told, not judged.
+        "starred": dataset.name in marks.starred("result"),
+        # Runs, not problems: a run that broke two properties is one run. Only what fails a run: the runner marks
+        # every failed check, the simulator may have predicted it.
+        "failed_runs": len(runs_of(found, lambda p: p["kind"] == "check" and fails(p))),
+        "broke_runs": len(runs_of(found, lambda p: p["kind"] == "property" and fails(p))),
+        # Failed or broken only as the simulator predicted: told apart, it does not fail the result.
+        "predicted_runs": len(runs_of(found, lambda p: p["kind"] in ("check", "property") and p.get("predicted") is True)
+                              - runs_of(found, lambda p: p["kind"] in ("check", "property") and p.get("predicted") is not True)),
+        # Failed or broken where the simulator cannot play the mode or scenario: told, not judged.
         "unjudged_runs": len({(p["topology"], p["variant"], p["scenario"], p["run"]) for p in found
-                              if p["kind"] == "property" and p.get("predicted", False) is None}),
+                              if p["kind"] in ("check", "property") and p.get("predicted", False) is None and not p.get("unanswered", False)}),
     }
     if tab == "table":
         context["running"] = status.get("current") if status.get("state") == "running" else None
@@ -118,17 +125,8 @@ def result_context(dataset: Dataset, tab: str, topology: str = "", scenario: str
                 facts = run_facts(dataset, key, run, metrics.get(str(key), {}))
                 found = broke.get(key, [])
                 facts["facts"] = [f"{PROPERTIES[p['cause']]}: {p['message']}" for p in found if p["kind"] in ("property", "unmeasured")] + facts["facts"]
-                if run["status"] == "error":
-                    state = "error"
-                elif run["status"] == "failed" or any(not p.get("predicted") for p in found if p["kind"] != "unmeasured"):
-                    state = "failed"
-                elif any(p["kind"] == "unmeasured" for p in found):
-                    state = "unmeasured"
-                elif found or facts["allowed"]:
-                    state = "allowed"
-                else:
-                    state = "completed"
-                return {"state": state, **facts}
+                predictable = problems_prediction(dataset, key) is not None
+                return {"state": problems_look(run, found, facts["allowed"], predictable), **facts}
             running = str(key) == status.get("current") and status.get("state") == "running"
             return {"state": "running" if running else "pending"}
         context["grid"] = {t: {v.name: {s: [cell(RunKey(t, v.name, s, i)) for i in range(1, experiment.runs + 1)]
@@ -198,7 +196,9 @@ def run_facts(dataset: Dataset, key: RunKey, run: dict, m: dict) -> dict:
     settled = analysis.rested(run, m) is True
     set_hz = 1 / dataset.experiment.sampling_of(key.variant).interval
     # Short lines of label and value, the title already names the state.
-    facts = [f"Rest: after {m['settle_s']:g} s"] if settled else []
+    # A settle time below the resolution, two intervals of the slowest router, says only that much.
+    resolution = 2 / m["sample_hz_min"] if m.get("sample_hz_min") else None
+    facts = [(f"Rest: within {resolution:.2g} s, the resolution" if resolution and m["settle_s"] < resolution else f"Rest: after {m['settle_s']:g} s")] if settled else []
     if m.get("sample_hz") is not None:
         slowest = (m.get("sample_slowest") or [[None]])[0][0]
         facts.append(f"Sampling: {m['sample_hz']:g} of {set_hz:g} Hz, slowest {m['sample_hz_min']:g}"
@@ -206,13 +206,13 @@ def run_facts(dataset: Dataset, key: RunKey, run: dict, m: dict) -> dict:
     if host := run.get("host"):
         facts.append(f"Host CPU: {100 * host['cpu_mean']:.0f} % mean, {100 * host['cpu_max']:.0f} % peak"
                      + (f", others {100 * host['others_mean']:.0f} %" if "others_mean" in host else ""))
-    # Checks the scenario allows this mode to fail, with what went wrong.
+    # Checks the scenario allows this mode to fail, with what went wrong. Predicted only where the simulator failed them too.
     allowed = allowed_failures(run)
     for e in allowed:
         found = problems(e.get("problems", []))
-        facts.append(f"Allowed failure at step {e.get('step')}: " + (found[0] if found else "a check")
+        facts.append(f"Allowed by the scenario at step {e.get('step')}: " + (found[0] if found else "a check")
                      + (f" and {len(found) - 1} more" if len(found) > 1 else ""))
-    return {"settled": settled, "allowed": bool(allowed), "facts": facts}
+    return {"settled": settled, "allowed": bool(allowed) and allowed_predicted(dataset, key, run) is True, "facts": facts}
 
 
 def sampling_table(dataset: Dataset) -> list[dict]:
@@ -253,7 +253,7 @@ def sampling_table(dataset: Dataset) -> list[dict]:
             for r in [row, *runs]:
                 r["resolution"] = 2 / r["slowest"] if r["slowest"] else None
                 # What is at the limit, each on its own: sampling or the host.
-                r["slow"] = r["slowest"] is not None and r["slowest"] < set_hz / 2
+                r["slow"] = r["slowest"] is not None and r["slowest"] < analysis.SLOW_SAMPLING * set_hz
                 r["busy"] = r["cpu_max"] is not None and r["cpu_max"] > analysis.BUSY_HOST
                 r["limit"] = r["slow"] or r["busy"]
                 r["below"] = r["hz"] is not None and r["hz"] < 0.95 * set_hz  # worth naming the rate set
@@ -261,27 +261,50 @@ def sampling_table(dataset: Dataset) -> list[dict]:
     return sorted(rows, key=lambda r: not r["limit"])
 
 
-def failed_by_topology(dataset: Dataset) -> dict[str, int]:
-    """The runs that failed a check, per topology, from the cached summary."""
-    out = defaultdict(int)
+def runs_of(found: list[dict], which) -> set:
+    """The runs with a problem of which."""
+    return {(p["topology"], p["variant"], p["scenario"], p["run"]) for p in found if which(p)}
+
+
+SIZES: dict[str, tuple[tuple, int]] = {}  # per result, its bytes and what they were counted at
+
+
+def size_of(dataset: Dataset) -> int:
+    """The bytes of a result, counted again once a run, its file or its metrics change: walking every file of
+    every result on each look at the list takes long. Caches beside its runs made since show at the next count."""
+    mtime = lambda name: (f := dataset.path / name).exists() and f.stat().st_mtime_ns
     try:
-        for g in analysis.summary(dataset):
-            if n := g["statuses"].get("failed", 0):
-                out[g["topology"]] += n
-    except (OSError, ValueError, KeyError):
-        return {}
-    return dict(out)
+        made_of = (tuple(analysis.stamp(dataset)), mtime("dataset.json"), mtime("status.json"), mtime("analysis.json"))
+    except ValueError:  # a result of an older format, without an experiment to read its runs by: counted each time
+        return folder_size(dataset.path)
+    if (kept := SIZES.get(str(dataset.path))) and kept[0] == made_of:
+        return kept[1]
+    SIZES[str(dataset.path)] = (made_of, size := folder_size(dataset.path))
+    return size
+
+
+VERDICTS: dict[str, tuple[tuple, dict]] = {}  # per result, the verdict and what it was made of
 
 
 def known_verdict(dataset: Dataset) -> dict | None:
     """The verdict of a finished result once its summary is made: the list
-    never waits for an analysis, it shows the verdict once one is made."""
-    if dataset.status.get("state") != "finished" or analysis.summary_if_known(dataset) is None:
+    never waits for an analysis, it shows the verdict once one is made. It is
+    kept until a run, the metrics, the result's file or its state change, e.g.
+    after predict_again, so that the list does not read every run each time."""
+    if dataset.status.get("state") != "finished":
+        return None
+    mtime = lambda name: (f := dataset.path / name).exists() and f.stat().st_mtime_ns
+    made_of = (tuple(analysis.stamp(dataset)), mtime("dataset.json"), mtime("status.json"))
+    if (kept := VERDICTS.get(str(dataset.path))) and kept[0] == made_of:
+        return kept[1]
+    if analysis.summary_if_known(dataset) is None:
         return None
     try:
-        return verdict(dataset)
+        found = verdict(dataset)
     except (OSError, ValueError, KeyError):
         return None
+    VERDICTS[str(dataset.path)] = (made_of, found)
+    return found
 
 
 def series_of(dataset: Dataset, topology: str, scenario: str) -> dict:
@@ -302,12 +325,14 @@ def series_of(dataset: Dataset, topology: str, scenario: str) -> dict:
 @router.get("/results", response_class=HTMLResponse)
 def results(request: Request, show: str = "all", error: str = ""):
     every, older = Dataset.all(), Dataset.older()
-    sizes = {d.name: folder_size(d.path) for d in every + older}
+    sizes = {d.name: size_of(d) for d in every + older}
     used = {public: sum(sizes[d.name] for d in every + older if d.public == public) for public in (True, False)}
     pick = lambda datasets: [d for d in datasets if show == "all" or d.public == (show == "public")]
     verdicts = {d.name: known_verdict(d) for d in every}
+    starred = marks.starred("result")
+    every = sorted(every, key=lambda d: d.name not in starred)  # starred first, each part in its order
     return render(request, "results.html", nav="results", results=pick(every), older=pick(older), show=show, verdicts=verdicts,
-                  sizes=sizes, storage=storage(used), error=error)
+                  sizes=sizes, storage=storage(used), error=error, starred=starred, notes=marks.counts("result"))
 
 
 
@@ -335,7 +360,7 @@ def result(request: Request, name: str, tab: str = "runs", metric: str = "",
     metrics = metrics_of(dataset)
     metric = metric if metric in metrics else next(iter(metrics))
     return render(request, "result.html", nav="results", tab=tab, metric=metric, tabs=TABS, metrics=metrics,
-                  error=error, **result_context(dataset, tab, topology, scenario))
+                  error=error, marks_on={"kind": "result", "name": dataset.name}, **result_context(dataset, tab, topology, scenario))
 
 
 def measuring(dataset: Dataset) -> bool:

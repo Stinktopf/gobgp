@@ -13,7 +13,7 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import config, simulate
+from . import config, marks, simulate
 from .config import write_atomic
 from .results import queue_file, queued
 
@@ -274,10 +274,21 @@ def delete(search_id: str) -> dict:
         raise ValueError(f"Search {search_id} {'runs' if entry['state'] == 'running' else 'waits in the queue'}. Stop it first.")
     _path(search_id).unlink(missing_ok=True)
     shutil.rmtree(folder() / search_id, ignore_errors=True)
+    marks.forget("search", search_id)
     return {"deleted": search_id}
 
 
-GROUPING = 3  # how problems are grouped: a search counted under another grouping is counted again
+def stars(search_id: str) -> set[int]:
+    """The cases of a search with a star, see marks."""
+    return {int(n.split("/")[1]) for n in marks.starred("case") if n.split("/")[0] == search_id and n.split("/")[1].isdigit()}
+
+
+def star(search_id: str, case_id: int, on: bool) -> bool:
+    """Marks a case of a search with a star, or takes it away: a finding stars its case."""
+    return marks.star("case", marks.resolve("case", f"{search_id}/{case_id}"), on)
+
+
+GROUPING = 4  # how problems are grouped: a search counted under another grouping is counted again
 _summaries: dict[Path, tuple[tuple, dict]] = {}  # per file, its summary while the file stays as it is
 
 
@@ -312,7 +323,7 @@ def searches() -> list[dict]:
     return out
 
 
-KINDS = ("unreachable", "black-hole", "loop", "no-convergence", "leaked", "inconsistent-export",
+KINDS = ("unreachable", "black-hole", "loop", "no-convergence", "leaked", "forward-valley", "inconsistent-export",
          "transient-loop", "transient-blocked", "transient-hole")
 
 
@@ -367,7 +378,8 @@ def cases(entry: dict) -> list[dict]:
                                                  "steps": played.get("steps"), "rests": played.get("converged", True)})
     for c in out.values():
         c["modes"] = sorted(c["per_mode"], key=lambda m: _order(MODES, m))
-        c["cause"] = " and ".join(sorted({c["per_mode"][m]["cause"] for m in c["modes"]} - {""}))
+        # Each mode's causes once, a cause two modes share named once.
+        c["cause"] = " and ".join(sorted({x for m in c["modes"] for x in c["per_mode"][m]["cause"].split(" and ")} - {""}))
         c["proof"] = proof(c["kind"], c["in_model"], c["modes"])
         # How long a case plays: the most messages of its modes, so that long runners show in the list.
         steps = [p["steps"] for p in c["per_mode"].values() if p.get("steps") is not None]
@@ -377,8 +389,9 @@ def cases(entry: dict) -> list[dict]:
 
 def cause(e: dict, mode: str) -> str:
     """What stops a route reaching a router that lacks it at rest, from the
-    network and the mode's result: an export or import filter on the
-    session, a community, a relation between the routers, or no offer at all. Cases of different causes are
+    network and the mode's result: a link down, an export or import filter on the
+    session, an offer through the router's own AS or confederation, a community,
+    a relation between the routers, or no offer at all. Cases of different causes are
     different problems. Empty where the result does not tell it."""
     if e["finding"]["kind"] not in ("unreachable", "black-hole"):
         return ""
@@ -391,6 +404,16 @@ def cause(e: dict, mode: str) -> str:
     asn = lambda r: (inst.get("asns") or [])[as_of(r)] if as_of(r) < len(inst.get("asns") or []) else 65001 + as_of(r)
     # A community 0:ASN on a path asks every router not to announce it to that AS.
     tagged = {x.get("tag") for x in inst.get("sessions") or [] if x.get("tag")}
+    # Events change sessions on the way: at rest a link is down, a filter on, as the last event on it left it.
+    down, denied = set(), {}
+    for ev in inst.get("events") or []:
+        pair = (ev.get("from", 0), ev.get("to", 0))
+        if ev.get("kind") in ("down", "up"):
+            (down.add if ev["kind"] == "down" else down.discard)(frozenset(pair))
+        elif ev.get("kind") in ("deny-export", "deny-import"):
+            denied[(ev["kind"], *pair)] = bool(ev.get("value"))
+    # A router's AS, and its confederation's: a path through either does not reach it.
+    confed = lambda r: next((c["id"] for c in inst.get("confeds") or [] if as_of(r) in c["members"]), None)
     found = set()
     for h in e["finding"].get("routers") or []:
         for a, b in inst.get("links") or []:
@@ -399,10 +422,14 @@ def cause(e: dict, mode: str) -> str:
                 continue
             # The session from x to h: x's export filter and h's import filter, as the simulator keys them.
             out, offer = sessions.get((x, h), {}), exported[x] if x < len(exported) else None
-            if out.get("deny_export") or (out.get("deny_via") and offer and out["deny_via"] in offer):
+            if frozenset((x, h)) in down:
+                found.add("the link is down")
+            elif out.get("deny_export") or denied.get(("deny-export", x, h)) or (out.get("deny_via") and offer and out["deny_via"] in offer):
                 found.add("an export filter drops the offer")
-            elif out.get("deny_import"):
+            elif out.get("deny_import") or denied.get(("deny-import", x, h)):
                 found.add("an import filter drops the offer")
+            elif offer and (asn(h) in offer or confed(h) in offer):
+                found.add("the offer runs through its own AS")
             elif f"0:{asn(h)}" in tagged:
                 found.add("a community withholds the offer")
             elif frozenset((x, h)) in related or out.get("partial_transit") or x in (inst.get("leakers") or []):
@@ -504,22 +531,33 @@ def trace(search_id: str, finding_id: int, mode: str) -> dict:
         raise ValueError(f"Modes are {', '.join(MODES)}.")
     inst = finding(search_id, finding_id)["instance"]
     kept = folder() / search_id / f"{finding_id}-{mode}.json"
-    if (cached := _kept(kept)) is not None:
+    if (cached := _kept(kept, mode)) is not None:
         return cached
     with _REPLAY:
-        if (cached := _kept(kept)) is not None:  # played while this one waited
+        if (cached := _kept(kept, mode)) is not None:  # played while this one waited
             return cached
         played = _cut(simulate.trace(inst, mode))
         played.pop("instance", None)  # the finding has it
+        played["format"] = TRACE_FORMAT
         _put(kept, played)
         return played
 
 
-def _kept(kept: Path) -> dict | None:
+# 2: with a table per neighbor, each router's steps hold what each table keeps.
+# 3: a route server's offers are what it sends its clients.
+TRACE_FORMAT = 3
+
+
+def _kept(kept: Path, mode: str) -> dict | None:
     """A replay kept beside its search, None if there is none or it was kept
-    before the trace said where packets go next: then it is played again."""
+    before the trace said where packets go next or when each message was
+    sent, or in an older format (TRACE_FORMAT): then it is played again."""
     cached = _read(kept)
-    if cached is None or not all("forward" in r for st in cached.get("steps", [])[:1] for r in st["routers"]):
+    first = cached.get("steps", [])[:1] if cached else []
+    if cached is None or not all("forward" in r for st in first for r in st["routers"]) \
+            or any("sent" not in st for st in first):  # every step carries it, events too
+        return None
+    if cached.get("format", 1) < TRACE_FORMAT:
         return None
     if len(cached.get("steps", [])) > SHOWN_STEPS and not cached.get("cut"):
         _put(kept, cached := _cut(cached))  # kept whole before: shortened once
@@ -582,7 +620,7 @@ def to_lab(search_id: str, case_id: int) -> str:
 
 # Per kind of deviation, the properties of a lab run that show it; a failed check of the case counts as well.
 SHOWN_BY = {"unreachable": ("reach",), "black-hole": ("holes", "holes-alone"), "loop": ("loops",),
-            "no-convergence": ("rest-end", "rest-step", "rest-final"), "leaked": ("policy", "policy-alone"), "inconsistent-export": (),
+            "no-convergence": ("rest-end", "rest-step", "rest-final"), "leaked": ("policy", "policy-alone"), "forward-valley": (), "inconsistent-export": (),
             "transient-loop": ("loops-way",), "transient-blocked": ("blocked",), "transient-hole": ("holes-way",)}
 
 

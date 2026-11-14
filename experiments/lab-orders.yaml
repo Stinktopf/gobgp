@@ -1,0 +1,12 @@
+name: lab-orders
+description: Whether a delay on one link brings the lab to the orders of messages the simulator finds a case in. Here the import-filter case, which equal link delays make rare.
+cluster: {cpus: 8, memory_mb: 62976}
+runs: 10
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp-rp, mode: obgp-rp}
+  - {name: obgp-hp, mode: obgp-hp}
+  - {name: obgp-hp-pn, mode: obgp-hp, per_neighbor: true}
+  - {name: obgp-paper, mode: obgp-paper}
+topologies: [sim-import-filter-obgp-hp-unreachable]
+scenarios: [sim-import-filter-obgp-hp-unreachable, orders-import-filter-r0-r2, orders-import-filter-r0-r1]

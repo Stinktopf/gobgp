@@ -53,10 +53,13 @@
   <script src="{{ static('htmx.min.js') }}" defer></script>
   <script src="{{ static('idiomorph-ext.min.js') }}" defer></script>
   <script src="{{ static('ui.js') }}"></script>
+  <script src="{{ static('marks.js') }}" defer></script>
   <script src="{{ static('Sortable.min.js') }}" defer></script>
   {% block head %}{% endblock %}
 </head>
 <body hx-ext="morph" class="min-h-screen bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100">
+  {# The object of the page that notes go on, if any: a result, a search or a case. #}
+  {% set here = marks_on if marks_on is defined and marks_on else {"kind": "page", "name": request.url.path} if request is defined else none %}{% set here_open = (marks_of(here.kind, here.name).notes | rejectattr("done") | list | length) if here else 0 %}
   {# The first page of a browser session: the bad gadget. The origin announces, BGP oscillates between direct routes and detours, OBGP settles. Once, skippable. #}
   <div id="intro" aria-hidden="true">
     <svg viewBox="0 0 300 210" class="intro-graph"><line x1="150" y1="118" x2="150" y2="28" class="intro-edge"/><line x1="150" y1="118" x2="62" y2="180" class="intro-edge"/><line x1="150" y1="118" x2="238" y2="180" class="intro-edge"/><line x1="150" y1="28" x2="62" y2="180" class="intro-edge"/><line x1="62" y1="180" x2="238" y2="180" class="intro-edge"/><line x1="238" y1="180" x2="150" y2="28" class="intro-edge"/><path d="M150,28 L238,180 L62,180 Z" pathLength="1" class="intro-spin"/><path d="M150,118 L150,28" pathLength="1" class="intro-route intro-spoke" style="--i:0"/><path d="M150,118 L62,180" pathLength="1" class="intro-route intro-spoke" style="--i:1"/><path d="M150,118 L238,180" pathLength="1" class="intro-route intro-spoke" style="--i:2"/><circle cx="150" cy="28" r="6" class="intro-node" style="--i:0"/><circle cx="62" cy="180" r="6" class="intro-node" style="--i:1"/><circle cx="238" cy="180" r="6" class="intro-node" style="--i:2"/><g transform="rotate(45 150 118)"><rect x="143" y="111" width="14" height="14" class="intro-origin"/></g></svg>
@@ -80,6 +83,8 @@
       </nav>
       <div class="ml-auto flex shrink-0 items-center gap-3 text-sm">
         <span class="hidden font-mono text-xs text-slate-500 lg:inline dark:text-slate-400">{{ host }}</span>
+        <button type="button" class="nav-link relative" data-notes-toggle aria-controls="notes" aria-expanded="false" aria-label="Notes" data-tip="{{ ('Notes, ' ~ here_open ~ ' open on this page') if here_open else 'Notes' }}" data-tip-align="end">
+          <svg class="icon" aria-hidden="true"><use href="{{ static('icons.svg') }}#note"/></svg><span class="notes-badge" data-notes-badge {% if not here_open %}hidden{% endif %}>{{ here_open }}</span></button>
         <button type="button" id="theme" class="nav-link" data-tip="Switch to dark" data-tip-align="end" aria-label="Switch to dark">
           <svg class="icon" aria-hidden="true"><use href="{{ static('icons.svg') }}#theme-dark"/></svg></button>
         <a href="/settings{{ '#version' if update_ready }}" class="nav-link relative" data-tip="{{ 'Settings, an agent waits for you' if agents_waiting else 'Settings, an update of the lab is ready' if update_ready else 'Settings' }}" data-tip-align="end" aria-label="Settings" {% if nav == "settings" %}aria-current="page"{% endif %}>{% if update_ready or agents_waiting %}<span class="absolute top-1 right-1 size-2 rounded-full bg-uoft-600 ring-2 ring-white dark:bg-uoft-300 dark:ring-slate-900"></span>{% endif %}
@@ -91,7 +96,8 @@
     </div>
   </header>
   {% endblock %}
-  <main class="mx-auto max-w-6xl px-4 py-6 sm:py-8">
+  <aside id="notes" class="notes-drawer" hidden aria-label="Notes" data-kind="{{ here.kind if here else '' }}" data-name="{{ here.name if here else '' }}"></aside>
+  <main class="relative mx-auto max-w-6xl px-4 py-6 sm:py-8">
     {% block content %}{% endblock %}
   </main>
   {% block dock %}

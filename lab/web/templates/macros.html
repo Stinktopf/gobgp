@@ -1,13 +1,15 @@
 {% macro state_badge(state) -%}
 {% set styles = {
   "running": "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300",
-  "queued": "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
+  "queued": "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200",
+  "passed": "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   "finished": "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   "interrupted": "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
   "stopped": "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
   "failed": "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
+  "did not pass": "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
 } %}
-<span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium {{ styles.get(state, styles['queued']) }}">
+<span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap {{ styles.get(state, styles['stopped']) }}">
   {%- if state == "running" %}<span class="size-1.5 animate-pulse rounded-full bg-sky-500"></span>{% endif %}{{ state }}
 </span>
 {%- endmacro %}
@@ -25,17 +27,19 @@
 {%- endmacro %}
 
 {# How a run stands, in words. #}
-{# A run that failed a check or broke a property, rest included, is failed alike; one the simulator foretold is allowed. #}
-{% set run_states = {"completed": "Done", "failed": "Failed a check or broke a property",
+{# A failed check or broken property, rest included, is judged against the simulator: predicted, not predicted, or
+   not predictable where it cannot play the mode or scenario. #}
+{% set run_states = {"completed": "Done", "failed": "Not predicted",
                      "error": "Broke off with an error", "running": "Running now", "pending": "Waits its turn",
-                     "allowed": "Failed as predicted", "unmeasured": "Not measured"} %}
+                     "allowed": "Predicted", "unjudged": "Problem, no prediction", "open": "Done, no prediction",
+                     "unmeasured": "Not measured"} %}
 {% macro run_state(state) %}{{ run_states.get(state, state) }}{% endmacro %}
 
 {# A run's state as a dot: done, failed (a check or a property), allowed (failed as the simulator predicted), error. #}
 {% macro run_dot(state) -%}
 {% set styles = {
   "completed": "border-transparent bg-emerald-500", "allowed": "border-emerald-500",
-  "failed": "border-rose-600",
+  "failed": "border-rose-600", "unjudged": "border-amber-500", "open": "border-transparent bg-slate-400 dark:bg-slate-500",
   "unmeasured": "border-slate-400 dark:border-slate-500",
   "error": "border-transparent bg-rose-500", "running": "border-transparent animate-pulse bg-sky-500",
   "pending": "border-transparent bg-slate-200 dark:bg-slate-700",
@@ -45,6 +49,14 @@
 
 {% macro icon(name, class="") -%}
 <svg class="icon {{ class }}" aria-hidden="true"><use href="{{ static('icons.svg') }}#{{ name }}"/></svg>
+{%- endmacro %}
+
+{# A star on a result, search or case: first in its list, for everyone of the lab. back: the page to return to. #}
+{% macro star_button(kind, name, starred, back, where="its list", class="") -%}
+<form method="post" action="/marks/{{ kind }}/star" class="inline-flex {{ class }}" onclick="event.stopPropagation()">
+  <input type="hidden" name="name" value="{{ name }}"><input type="hidden" name="on" value="{{ 'false' if starred else 'true' }}"><input type="hidden" name="back" value="{{ back }}">
+  <button class="star-toggle{{ ' is-starred' if starred }}" data-tip="{{ 'Remove the star' if starred else 'Star: first in ' ~ where ~ ', for everyone' }}" aria-label="{{ 'Remove the star' if starred else 'Star' }}" aria-pressed="{{ 'true' if starred else 'false' }}">{{ icon("star") }}</button>
+</form>
 {%- endmacro %}
 
 {# An icon-only button; tip names the action. #}
@@ -190,7 +202,7 @@
 {% set asleep = cs.status == "Stopped" and not cs.manual_off %}
 {% set badge = "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300" if cs.busy else "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" if cs.status == "Running" else "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300" if cs.status == "Stopped" else "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300" %}
 {% if asleep %}{% set badge = "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300" %}{% endif %}
-        <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium {{ badge }}" role="status" aria-live="polite">
+        <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium {{ badge }}" role="status" aria-live="polite" {% if asleep %}data-tip="New jobs wake the cluster"{% endif %}>
           <span class="size-1.5 rounded-full bg-current {% if cs.busy %}animate-pulse{% endif %}" aria-hidden="true"></span>
           {% if cs.busy %}{{ {"start": "Starting…", "apply": "Applying changes…", "stop": "Stopping…", "idle-stop": "Going idle…"}.get(cs.action, "Working…") }}{% else %}{{ "Idle" if asleep else (cs.status or "Checking") }}{% endif %}
         </span>

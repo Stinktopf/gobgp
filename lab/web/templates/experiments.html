@@ -58,8 +58,8 @@
         <td class="max-w-72">
           <a href="/experiments/{{ x.name }}" class="item-name">{{ e.name }}</a>
           {% if e.description %}<span class="item-note">{{ e.description }}</span>{% endif %}
-          {% if x.too_large %}<span class="block text-xs text-rose-700 dark:text-rose-300" data-tip="Too large for this host: {{ x.limit }}{% for t, why in x.skips.items() %}&#10;{{ t }}: {{ why | join(", ") }}{% endfor %}">Too large for this host</span>
-          {% elif x.skips %}<span class="block text-xs text-rose-700 dark:text-rose-300" data-tip="Too large for this host: {{ x.limit }}{% for t, why in x.skips.items() %}&#10;{{ t }}: {{ why | join(", ") }}{% endfor %}">Skips {{ x.skips | first if x.skips | length == 1 else "%d topologies" % x.skips | length }} on this host</span>{% endif %}
+          {% if x.too_large %}<span class="muted block text-xs" data-tip="Too large for this host: {{ x.limit }}{% for t, why in x.skips.items() %}&#10;{{ t }}: {{ why | join(", ") }}{% endfor %}">Too large for this host</span>
+          {% elif x.skips %}<span class="muted block text-xs" data-tip="Too large for this host: {{ x.limit }}{% for t, why in x.skips.items() %}&#10;{{ t }}: {{ why | join(", ") }}{% endfor %}">Skips {{ x.skips | first if x.skips | length == 1 else "%d topologies" % x.skips | length }} on this host</span>{% endif %}
         </td>
         <td class="muted hidden font-mono text-xs whitespace-nowrap xl:table-cell" data-tip="{{ e.topologies | join(', ') }}">{{ e.topologies | listing }}</td>
         <td class="num muted hidden sm:table-cell" data-tip="Scenarios&#10;{{ e.scenarios | join('\n') }}">{{ e.scenarios | length }}</td>

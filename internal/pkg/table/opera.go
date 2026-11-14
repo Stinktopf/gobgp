@@ -90,6 +90,10 @@ type OperaOptions struct {
 	// opera_neighbor.go, with OBGP off one BGP table each (NS-BGP).
 	// GOBGP_OPERA_EXPORT "neighbor".
 	PerNeighbor bool
+	// PlainRefresh offers no Enhanced Route Refresh (RFC 7313): the router
+	// then asks every interval, as with a neighbor that lacks it, and MRAI
+	// holds back refresh answers too. GOBGP_OPERA_ENHANCED_REFRESH "off".
+	PlainRefresh bool
 }
 
 var operaOptions atomic.Pointer[OperaOptions]
@@ -107,6 +111,7 @@ func init() {
 // leaves confederation members out of the order (IgnoreConfedHops).
 // GOBGP_OPERA_RS "admit" lets a route server select as OBGP (RouteServerAdmits).
 // GOBGP_OPERA_EXPORT "neighbor" keeps a table per neighbor (PerNeighbor).
+// GOBGP_OPERA_ENHANCED_REFRESH "off" offers no Enhanced Route Refresh (PlainRefresh).
 func InitOperaFromEnv() OperaOptions {
 	enabled := strings.ToLower(os.Getenv("GOBGP_OPERA_ENABLED"))
 	o := OperaOptions{
@@ -133,6 +138,10 @@ func InitOperaFromEnv() OperaOptions {
 	if s, err := strconv.ParseFloat(os.Getenv("GOBGP_OPERA_REFRESH_DELAY_S"), 64); err == nil && s >= 0 {
 		o.RefreshDelay = time.Duration(s * float64(time.Second))
 	}
+	switch strings.ToLower(os.Getenv("GOBGP_OPERA_ENHANCED_REFRESH")) {
+	case "off", "false", "0":
+		o.PlainRefresh = true
+	}
 	SetOperaOptions(o)
 	return o
 }
@@ -144,6 +153,13 @@ func SetOperaOptions(o OperaOptions) {
 
 func GetOperaOptions() OperaOptions {
 	return *operaOptions.Load()
+}
+
+// OperaEnhancedRefresh tells whether the router offers Enhanced Route
+// Refresh: with OBGP on, unless PlainRefresh.
+func OperaEnhancedRefresh() bool {
+	o := operaOptions.Load()
+	return o.Enabled && !o.PlainRefresh
 }
 
 func IsOperaEnabled() bool {
@@ -176,6 +192,35 @@ func (dest *Destination) OperaWaiting() []*PeerInfo {
 		out = append(out, v.dest.operaWaitingOwn()...)
 	}
 	return out
+}
+
+// OperaRedundant tells whether path p, received again, changes nothing, so
+// that it needs neither the decision nor the tables per neighbor: OBGP is
+// on, the destination holds a valid path from the same source and path ID
+// with the same attributes, admitted in the main table, set aside or pruned
+// in no table, and no table waits for a route refresh. A route refresh
+// resends every path of a neighbor, most of them unchanged; a path set
+// aside must still come back. The caller asks before it updates the table.
+func (dest *Destination) OperaRedundant(p *Path) bool {
+	if dest == nil || !IsOperaEnabled() || !isOperaValid(p) || p.IsLocal() || p.IsStale() || p.IsRejected() {
+		return false
+	}
+	i := slices.IndexFunc(dest.knownPathList, p.EqualBySourceAndPathID)
+	if i < 0 {
+		return false
+	}
+	held := dest.knownPathList[i]
+	if !isOperaValid(held) || held.IsStale() || held.IsRejected() || !held.Equal(p) {
+		return false
+	}
+	k := operaKey(p)
+	aside := func(d *Destination) bool {
+		return slices.ContainsFunc(slices.Concat(d.operaSuppressed(), d.operaPruned()), func(q *Path) bool { return operaKey(q) == k })
+	}
+	if aside(dest) || slices.ContainsFunc(dest.operaViewList(), func(v *operaView) bool { return aside(v.dest) }) {
+		return false
+	}
+	return len(dest.OperaWaiting()) == 0
 }
 
 func (dest *Destination) operaWaitingOwn() []*PeerInfo {

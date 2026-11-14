@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 from contextlib import asynccontextmanager
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.gzip import GZipMiddleware
@@ -15,6 +16,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.routing import Route
 
 from .. import config as lab_config
+from .. import marks
 from . import auth, common
 from .cluster_control import ClusterControl
 from .common import jobs
@@ -45,6 +47,7 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        marks.migrate()  # stars of cases from where they were kept before
         async with mcp.running():
             yield
 
@@ -64,9 +67,18 @@ def create_app() -> FastAPI:
         settings = auth.load()
         if not request.url.path.startswith(PUBLIC_PATHS + TOKEN_PATHS):
             if not settings or not auth.valid(request.cookies.get(auth.COOKIE), settings):
+                # After signing in, the page asked for: a shared link opens where it points.
+                asked = request.url.path + (f"?{request.url.query}" if request.url.query else "")
                 if request.headers.get("HX-Request"):
-                    return Response(status_code=401, headers={"HX-Redirect": "/login"})
-                return RedirectResponse("/login", 303)
+                    page = urlsplit(request.headers.get("HX-Current-URL", ""))
+                    asked = page.path + (f"?{page.query}" if page.query else "")
+                # Only a page to look at: a form that was sent cannot be sent again by a redirect.
+                if request.method != "GET" and not request.headers.get("HX-Request"):
+                    asked = "/"
+                login = "/login" if asked in ("", "/") else f"/login?{urlencode({'next': asked})}"
+                if request.headers.get("HX-Request"):
+                    return Response(status_code=401, headers={"HX-Redirect": login})
+                return RedirectResponse(login, 303)
             # Forms may only be posted from the lab itself.
             origin = request.headers.get("origin")
             if request.method == "POST" and origin and origin.split("://")[-1] != request.url.netloc:

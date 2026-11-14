@@ -30,14 +30,26 @@ The same on both sides:
                             not a more specific prefix
   down, up, restart         every eBGP link the step takes down, of routers,
                             regions and cuts too, a silent failure once the
-                            hold timer ends it, a restart down and back up,
-                            not gracefully; up brings back what is down
+                            hold timer ends it; up brings back what is down.
+                            A restart starts with a fresh table, its
+                            sessions down at once. The links of one step
+                            change in any order, as sessions come back
+  graceful restart          a graceful restart and a silent failure keep
+                            the routes stale until the End-of-RIB after the
+                            session is back, or until the restart time ends
+                            where the steps' times tell it
   degrade                   nothing: the simulator plays every delay, TCP
                             keeps the order, while the sessions hold
+  MRAI                      an update waiting on a session to another AS
+                            gives way to a newer one or a withdrawal of its
+                            path ID: the coalescing, not the timer
   set_preference, set_export, set_import, prepend, igp, expect
                             the targets the runner chooses, random ones too,
                             with the seed and position of the run
-  parallel, repeat          at the same moment, repetitions unrolled. Steps at
+  parallel, repeat          at the same moment: the first that sends at the
+                            moment of the step, the others at any point
+                            among its messages, in any order where each
+                            adds one event. Repetitions unrolled. Steps at
                             any point are drawn one after another: the
                             simulator plays more orders than the lab can,
                             never fewer
@@ -84,13 +96,14 @@ class Unsupported(ValueError):
 
 # Lab to simulator
 
-def to_instances(topology: dict, scenario, seed: int = DEFAULT_SEED, index: int = 1) -> list[tuple[str, dict]]:
+def to_instances(topology: dict, scenario, seed: int = DEFAULT_SEED, index: int = 1, bgp=None) -> list[tuple[str, dict]]:
     """The instances of the simulator that together play a topology and
     scenario of the lab for its pure modes, each with a label: one per
     origin, as prefixes do not interact, and one per life a prefix can
     have. Random choices as run index of an experiment with seed makes them.
-    Marks of hybrids do not matter in pure modes. Unsupported names what
-    does not map."""
+    bgp, the experiment's settings of the sessions, adds the MRAI and
+    graceful restart, see with_bgp. The mode of each router of a mixed
+    variant comes in with_modes. Unsupported names what does not map."""
     sc = scenario if isinstance(scenario, scenarios.Scenario) else scenarios.parse(scenario)
     origins = [o for o in topology.get("roles", {}).get("origins", []) if o in topology["routers"]]
     problems = [] if origins else ["no origin"]
@@ -100,7 +113,7 @@ def to_instances(topology: dict, scenario, seed: int = DEFAULT_SEED, index: int 
         problems += [r for r in why if r not in problems]
         for life in lives:
             try:
-                inst = to_instance(topology, sc, origin, life, seed, index)
+                inst = to_instance(topology, sc, origin, life, seed, index, bgp)
             except Unsupported as e:
                 problems += [r for r in e.reasons if r not in problems]
                 continue
@@ -108,6 +121,16 @@ def to_instances(topology: dict, scenario, seed: int = DEFAULT_SEED, index: int 
     if problems:
         raise Unsupported(problems)
     return out
+
+
+def expect_keys(scenario) -> list[str]:
+    """The keys of the expect steps of a scenario in the order the simulator
+    counts its checks: the order of the steps, parallel ones by their place,
+    repetitions unrolled. A check of the lab is matched by its key, see
+    analysis.expect_keys, not by its place in time: the checks of a parallel
+    step end in any order."""
+    sc = scenario if isinstance(scenario, scenarios.Scenario) else scenarios.parse(scenario)
+    return [key for key, _, _, step in _timed(sc.steps)[1] if step.kind == "expect"]
 
 
 def draws(scenario) -> bool:
@@ -217,7 +240,7 @@ def _lives(sc, topology: dict, origin: str, seed: int, index: int) -> tuple[list
 
 
 def to_instance(topology: dict, scenario, origin: str | None = None, life: Life | None = None, seed: int = DEFAULT_SEED,
-                run_index: int = 1) -> dict:
+                run_index: int = 1, bgp=None) -> dict:
     """The instance of the simulator, as plain data, for one origin and one
     life of its prefix, or with neither, the strict translation of a
     topology and scenario of the lab: one origin, prefixes held.
@@ -239,8 +262,6 @@ def to_instance(topology: dict, scenario, origin: str | None = None, life: Life 
     sessions, customers, peers, siblings = [], [], [], []
     for name in names:
         r = routers[name]
-        if r.get("obgp") and life is None:
-            problems.append(f"{name}: hybrids, the simulator runs one mode on all routers")
         for n in r.get("neighbors", []):
             other = n["name"]
             if as_of[index[other]] == as_of[index[name]]:
@@ -302,7 +323,7 @@ def to_instance(topology: dict, scenario, origin: str | None = None, life: Life 
         problems.append(f"{len(origins)} origins, the simulator plays one")
     else:
         inst["origin"] = index[origins[0]]
-    events, why = _events(scenario, topology, index, origin or (origins[0] if len(origins) == 1 else None), life, seed, run_index)
+    events, why = _events(scenario, topology, index, origin or (origins[0] if len(origins) == 1 else None), life, seed, run_index, bgp)
     problems += why
     if events and "kind" not in events[0]:
         inst.update(events.pop(0))
@@ -310,7 +331,7 @@ def to_instance(topology: dict, scenario, origin: str | None = None, life: Life 
         inst["events"] = events
     if problems:
         raise Unsupported(problems)
-    return inst
+    return with_bgp(inst, bgp) if bgp is not None else inst
 
 
 def _igp(routers: dict) -> list[tuple[str, str, int]]:
@@ -353,7 +374,7 @@ DELAY_MS = 1000  # degraded links up to this delay keep their sessions under eve
 
 
 def _events(scenario, topology: dict, index: dict, own: str | None = None, life: Life | None = None, seed: int = DEFAULT_SEED,
-            run_index: int = 1) -> tuple[list[dict], list[str]]:
+            run_index: int = 1, bgp=None) -> tuple[list[dict], list[str]]:
     """The events of a scenario for the prefix of the origin own, in the
     order the runner plays the steps, with the targets it chooses: the same
     function and random source. A step right after until_stable comes once
@@ -362,15 +383,17 @@ def _events(scenario, topology: dict, index: dict, own: str | None = None, life:
     before the announcement before the origin announces. With a life, the
     prefix may expire after a step or go with a partial withdraw, and be
     copied by an originate step. A check of all prefixes holds no claim on
-    one that is gone, as the lab checks the prefixes still announced."""
+    one that is gone, as the lab checks the prefixes still announced. With
+    graceful restart in bgp, the stale routes of a restart and a silent
+    failure, see _Play.stale."""
     sc = scenario if isinstance(scenario, scenarios.Scenario) else scenarios.parse(scenario)
-    return _Play(topology, index, own, life, seed, run_index).play(sc.steps)
+    return _Play(topology, index, own, life, seed, run_index, bgp).play(sc.steps)
 
 
 class _Play:
     """One walk over the steps, as Run.steps in lab/runner.py walks them."""
 
-    def __init__(self, topology: dict, index: dict, own: str | None, life: Life | None, seed: int, run_index: int) -> None:
+    def __init__(self, topology: dict, index: dict, own: str | None, life: Life | None, seed: int, run_index: int, bgp=None) -> None:
         self.routers, self.index, self.own, self.life = topology["routers"], index, own, life
         self.network = scenarios.Network(topology["routers"], topology.get("roles", {}))
         self.origins = tuple(topology.get("roles", {}).get("origins", []))
@@ -381,9 +404,16 @@ class _Play:
         self.down: set[tuple[str, str]] = set()  # links down, by name
         self.copiers: set[str] = set()  # routers announcing copies of the prefix
         self.seen: dict[str, int] = {}  # how often each step played, for repetitions
+        self.graceful = bool(bgp and bgp.graceful_restart)
+        self.bgp = bgp
+        self.times: dict[str, tuple[float, float]] = {}  # the earliest and latest start of each step, by its key
+        self.expiring: dict[tuple[str, str], tuple[float, float]] = {}  # silent failures with stale routes: when they may expire
 
     def play(self, steps: list) -> tuple[list[dict], list[str]]:
+        self.times = {key: (lo, hi) for key, lo, hi, _ in _timed(steps)[1]}
         self.walk(steps, ())
+        for x, y in self.expiring:  # the run may end before or after they expire
+            self.problems.append(f"the stale routes of the silent failure of {x}-{y} expire after the last step, before or after the final check")
         if not self.started:
             self.problems.append("the origin never announces")
         if self.origin:
@@ -394,10 +424,10 @@ class _Play:
         for i, step in enumerate(steps):
             self.step(step, position + (i,))
 
-    def add(self, kind: str, **fields) -> None:
+    def add(self, kind: str, anywhere: bool = False, **fields) -> None:
         """An event at the moment of the step: before the announcement, once quiet, or at any point."""
         e = {"after": BEFORE if not self.started else QUIET, "kind": kind, **fields}
-        if self.started and not self.quiet:
+        if self.started and (not self.quiet or anywhere):
             e["any"] = True
         elif self.started:
             e["bounded"] = True  # until_stable waits at most its timeout, then the runner goes on
@@ -413,33 +443,73 @@ class _Play:
         if kind == "wait":  # the simulator plays every order
             self.quiet = False
             return
-        if kind == "parallel":  # at the same moment, each at any point if not once quiet
-            quiet = self.quiet
+        if kind == "parallel":  # at the same moment: after the first that sends, the others at any point among its messages
+            spans = []
             for j, child in enumerate(a):
-                self.quiet = quiet
+                first = len(self.events)
                 self.step(child, position + (j,))
+                spans.append((first, len(self.events)))
+            # Where every step that acts adds one event, any of them comes first, with the moment of the step.
+            acting = [(x, y) for x, y in spans if y > x and self.events[x]["kind"] != "expect" and self.events[x]["after"] != BEFORE]
+            if len(acting) > 1 and all(y - x == 1 for x, y in acting) and acting[-1][1] - acting[0][0] == len(acting):
+                for x, _ in acting:
+                    self.events[x]["group"] = acting[0][0] + 1
             return
         if kind == "repeat":  # the position leaves out the repetition, as the runner's
             for _ in range(a.times):
                 self.walk(a.steps, position + ("repeat",))
                 self.quiet = False
             return
+        self.key = _key(position, self.seen)  # as _timed and the lab name it, see expect_keys
+        self.expire(where)
         try:
             self.act(kind, a, rng, where)
         except (ValueError, KeyError, IndexError) as e:
             self.problems.append(f"{where}: {e}")
-        if self.life and self.life.expires == _key(position, self.seen) and self.present:
+        if self.life and self.life.expires == self.key and self.present:
             self.quiet = False
             self.add("withdraw")  # it expires at some point after this step
             self.present = False
         # A check, a cost of the IGP or a slower link sends no message: a quiet network stays quiet.
         self.quiet = self.quiet and kind in ("expect", "igp", "degrade")
 
+    def expire(self, where: str) -> None:
+        """Stale routes of a silent failure expire before this step where its
+        earliest start comes after their latest expiry. Where the step may
+        start before or after, the order is not the lab's to know."""
+        lo, hi = self.times.get(self.key, (0.0, 0.0))
+        for link, (first, last) in list(self.expiring.items()):
+            if lo >= last:
+                self.add("expire", anywhere=True, **{"from": self.index[link[0]], "to": self.index[link[1]]})
+                del self.expiring[link]
+            elif hi > first:
+                self.problems.append(f"{where}: the stale routes of the silent failure of {link[0]}-{link[1]} may expire before or after it")
+                del self.expiring[link]
+
+    def stale(self, links: list) -> None:
+        """With graceful restart, a silent failure keeps the routes stale on
+        the ends that find it by their hold timer, until the link is back or
+        the restart time ends: max(30 s, hold time), as the lab configures
+        it, after the failure is found within the hold time."""
+        lo, hi = self.times.get(self.key, (0.0, 0.0))
+        restart = max(30, self.bgp.hold_time)
+        for link in links:
+            self.expiring[link] = (lo + restart, hi + self.bgp.hold_time + restart)
+
     def link(self, a: str, b: str, where: str) -> list[int] | None:
         if str(self.routers[a]["asn"]) == str(self.routers[b]["asn"]):
             self.problems.append(f"{where}: an iBGP session {a}-{b}, the simulator takes eBGP links down only")
             return None
         return [self.index[a], self.index[b]]
+
+    def back(self, x: str, y: str, where: str) -> None:
+        """A link with stale routes comes back: before they expire where its
+        session is surely up again, connect retry after its latest start,
+        before their earliest expiry. Otherwise the order is not known."""
+        _, hi = self.times.get(self.key, (0.0, 0.0))
+        first, _ = self.expiring.pop((x, y))
+        if hi + self.bgp.connect_retry > first:
+            self.problems.append(f"{where}: the session {x}-{y} may come back before or after its stale routes expire")
 
     def links_of(self, router: str) -> list[tuple[str, str]]:
         return [tuple(sorted((router, n["name"]))) for n in self.routers[router].get("neighbors", [])]
@@ -460,23 +530,37 @@ class _Play:
             return
         if kind in ("down", "up", "restart"):
             routers, links = self.network.targets(kind, a, rng)
-            if kind == "restart" and a.graceful:
-                self.problems.append(f"{where}: a graceful restart, the simulator has no stale routes")
+            if kind == "restart" and a.graceful and not self.graceful:
+                self.problems.append(f"{where}: a graceful restart without graceful restart in the experiment")
                 return
             if kind == "up" and not routers and not links:
                 links = sorted(self.down)  # everything
             links = sorted(set(links) | {link for r in routers for link in self.links_of(r)})
             links = [link for link in links if (link in self.down) == (kind == "up")]  # only what changes
+            silent = kind == "down" and a.mode != "session" and self.graceful  # found by the hold timer: stale routes
+            # The links of one step change in an order the lab does not control, sessions come back in any order.
+            group = {"group": len(self.events) + 1} if len(links) > 1 else {}
+            if kind == "restart":  # a fresh table, all sessions down at once, gracefully its peers keep its routes
+                if all(self.link(x, y, where) is not None for x, y in links):
+                    for r in routers:
+                        self.add("restart", **{"from": self.index[r], "value": int(a.graceful)})
             for x, y in links:
+                if kind == "up" and (x, y) in self.expiring:
+                    self.back(x, y, where)
+                if kind == "restart":
+                    continue
                 if (ends := self.link(x, y, where)) is not None:  # all at the moment of the step
-                    self.add("down" if kind == "restart" else kind, **{"from": ends[0], "to": ends[1]})
-                if kind != "restart":
-                    (self.down.add if kind == "down" else self.down.discard)((x, y))
+                    value = {"value": {"cut": 1, "oneway": 2}[a.mode]} if silent else {}  # oneway: y drops the packets of x
+                    self.add(kind, **{"from": ends[0], "to": ends[1]}, **value, **group)
+                (self.down.add if kind == "down" else self.down.discard)((x, y))
+            if silent:
+                self.stale(links)
             if kind == "restart":  # back at any point after
                 self.quiet = False
+                group = {"group": len(self.events) + 1} if len(links) > 1 else {}
                 for x, y in links:
                     if (ends := self.link(x, y, where)) is not None:
-                        self.add("up", **{"from": ends[0], "to": ends[1]})
+                        self.add("up", **{"from": ends[0], "to": ends[1]}, **group)
             return
         if kind == "soft_reset":  # policies apply at once in the simulator
             return
@@ -546,6 +630,7 @@ class _Play:
                 e["consistent"] = True
             if a.may_fail:
                 e["may_fail"] = a.may_fail  # the lab's, which the simulator passes over
+            e["step"] = self.key  # the lab's check it stands for, which the simulator carries
             self.add("expect", **e)
         else:
             self.problems.append(f"{where}: no counterpart in the simulator")
@@ -794,15 +879,17 @@ def _simulator(arguments: list[str], stdin: str | None = None, timeout: float = 
 
 
 def run(inst: dict, seeds: int = 100, per_neighbor: bool = False, guest: bool = False, timeout: float = 3600,
-        both: bool = False) -> dict:
+        both: bool = False, modes: list[str] | None = None) -> dict:
     """Plays an instance in every mode over seeds orders of messages: how
     often each converged, failed each expect, and showed each deviation,
     on the way to rest as well.
     With per_neighbor the OBGP modes keep a table per neighbor, under their
     own names. With both they play with one table and, named -pn, with a
-    table per neighbor, in one pass."""
+    table per neighbor, in one pass. With modes only those, the instance's
+    mixed ones among them, and BGP."""
     # The way to rest always: transient loops, holes and blocking are what the lab measures on the way.
     flags = ["-both-tables"] if both else ["-per-neighbor"] if per_neighbor else []
+    flags += ["-modes", ",".join(modes)] if modes else []
     return json.loads(_simulator(["-instance", "-", "-seeds", str(seeds), "-transient", *flags],
                                  json.dumps(inst), timeout=timeout, guest=guest))
 
@@ -810,27 +897,80 @@ def run(inst: dict, seeds: int = 100, per_neighbor: bool = False, guest: bool = 
 PREDICTION_SEEDS = 20  # orders of messages per prediction: enough to see a mode that rests only sometimes
 
 
-def sim_mode(variant) -> str | None:
-    """The simulator's mode of a variant, None for a mixed one: the simulator runs one mode on all routers."""
+def sim_mode(variant) -> str:
+    """The simulator's mode of a variant. A mixed one is named by its mode,
+    -pn with tables per neighbor, a random one also by its share in percent,
+    e.g. random-rp-pn-50: the instance gives the mode of each router, see
+    router_modes."""
     from . import modes
 
-    if modes.get(variant.mode).inner is not None:
-        return None
+    mode = modes.get(variant.mode)
+    if mode.inner is not None:
+        name = variant.mode + ("-pn" if variant.per_neighbor else "")
+        return name + (f"-{variant.share * 100:g}" if mode.pick == "random" else "")
     if variant.per_neighbor:
         return "bgp-pn" if variant.mode == "bgp" else per_neighbor(variant.mode)
     return variant.mode
 
 
-def _stale(sc) -> str | None:
-    """Why a scenario plays otherwise with graceful restart on: gobgpd then
-    keeps the routes of a peer whose hold timer ended or whose connection
-    broke, the simulator has no stale routes. None where nothing does that."""
-    for step in scenarios.each_step(sc.steps):
-        if step.kind == "down" and step.args.mode != "session":
-            return "a silent failure with graceful restart on, the simulator has no stale routes"
-        if step.kind == "restart":
-            return "a restart with graceful restart on, the simulator has no stale routes"
-    return None
+def mixed(variant) -> bool:
+    """Whether a variant runs a mode per router: hybrids and random ones."""
+    from . import modes
+
+    return modes.get(variant.mode).inner is not None
+
+
+def drawn(variant) -> bool:
+    """Whether a variant draws its routers anew for every run."""
+    from . import modes
+
+    return modes.get(variant.mode).pick == "random"
+
+
+def router_modes(variant, topology: dict, seed: int) -> list[str]:
+    """The simulator's mode of every router of a mixed variant, in the order
+    of the topology, as the runner deploys them in the run of this seed
+    (experiment seed * 1000 + run index, see Run.execute and
+    Cluster.deploy): the pure mode modes.assign gives each router, with
+    tables per neighbor -pn on the OBGP routers but the paper's, and
+    bgp-pn on all where all run BGP (NS-BGP)."""
+    try:
+        assigned = variant.modes_of(topology["routers"], seed)
+    except ValueError as e:
+        raise Unsupported([str(e)]) from None
+    ns_bgp = set(assigned.values()) == {"bgp"}
+    if not variant.per_neighbor:
+        return [assigned[r] for r in topology["routers"]]
+    return ["bgp-pn" if ns_bgp else per_neighbor(assigned[r]) for r in topology["routers"]]
+
+
+def with_modes(inst: dict, variants: list, topology: dict, seed: int) -> dict:
+    """The instance with the mode of each router of the mixed variants, by
+    their simulator's mode, for the run with this seed."""
+    return {**inst, "mixed": {sim_mode(v): router_modes(v, topology, seed) for v in variants}}
+
+
+def with_bgp(inst: dict, bgp) -> dict:
+    """The instance with the settings of an experiment's sessions that the
+    simulator models: an MRAI as coalescing of the updates that wait on a
+    session to another AS, without its timer, and graceful restart: stale
+    routes after a graceful restart or a silent failure."""
+    return {**inst, **({"mrai": True} if bgp.mrai > 0 else {}), **({"graceful_restart": True} if bgp.graceful_restart else {})}
+
+
+def stored(predictions: dict, key, mode: str | None) -> tuple[str, dict]:
+    """The entry of the predictions for a run's mode and its name: per run
+    where the run has its own for the mode, as where the scenario or the
+    variant draws, else per topology and scenario. Without the mode in
+    either, the one of the run first."""
+    run, cell = f"{key.topology}|{key.scenario}#{key.index}", f"{key.topology}|{key.scenario}"
+    for name in (run, cell):
+        if mode in predictions.get(name, {}):
+            return name, predictions[name]
+    for name in (run, cell):
+        if name in predictions:
+            return name, predictions[name]
+    return cell, {}
 
 
 def predictions(experiment, seeds: int = PREDICTION_SEEDS, workers: int = 8, guest: bool = False,
@@ -843,33 +983,56 @@ def predictions(experiment, seeds: int = PREDICTION_SEEDS, workers: int = 8, gue
     just those keys and modes, see more_orders."""
     from concurrent.futures import ThreadPoolExecutor
 
-    wanted = {m for v in experiment.variants if (m := sim_mode(v))}
+    wanted = {sim_mode(v) for v in experiment.variants if not mixed(v)}
     jobs = []
     for t, case in experiment.combinations():
         sc = experiment.scenario_of(case)
+        topology = topologies.load(t)
         # Random targets differ by run: then each run has a prediction of its own.
-        for key, index in ([(f"{t}|{case}#{i}", i) for i in range(1, experiment.runs + 1)] if draws(sc) else [(f"{t}|{case}", 1)]):
-            if only is not None and key not in only:
+        runs = [(f"{t}|{case}#{i}", i) for i in range(1, experiment.runs + 1)]
+        for key, index in (runs if draws(sc) else [(f"{t}|{case}", 1)]):
+            if only is not None and (key not in only or not wanted & only[key]):
                 continue
             try:
-                if experiment.bgp.graceful_restart and (stale := _stale(sc)):
-                    raise Unsupported([stale])
-                parts = to_instances(topologies.load(t), sc, experiment.seed, index)
+                parts = to_instances(topology, sc, experiment.seed, index, experiment.bgp)
             except Unsupported as e:
-                jobs.append((key, None, e.reasons, False))
+                jobs.append((key, None, e.reasons, False, None))
                 continue
             modes = wanted if only is None else wanted & only[key]
             for _, inst in parts:  # both tables in one pass where a -pn mode is wanted, BGP once
-                jobs.append((key, inst, None, any(m.endswith("-pn") and m != "bgp-pn" for m in modes)))
+                jobs.append((key, inst, None, any(m.endswith("-pn") and m != "bgp-pn" for m in modes), None))
+        # Mixed variants with the routers of each run where they are drawn, one pass for all of a key.
+        by_key: dict[tuple[str, int], list] = {}
+        for v in experiment.variants:
+            if mixed(v):
+                for key, index in (runs if draws(sc) or drawn(v) else [(f"{t}|{case}", 1)]):
+                    if only is None or sim_mode(v) in only.get(key, ()):
+                        by_key.setdefault((key, index), []).append(v)
+        for (key, index), variants in by_key.items():
+            names = [sim_mode(v) for v in variants]
+            try:
+                parts = to_instances(topology, sc, experiment.seed, index if draws(sc) else 1, experiment.bgp)
+            except Unsupported as e:
+                jobs.append((key, None, e.reasons, False, names))
+                continue
+            try:
+                parts = [(label, with_modes(inst, variants, topology, experiment.seed * 1000 + index)) for label, inst in parts]
+            except Unsupported as e:
+                jobs.append((key, None, e.reasons, False, names))
+                continue
+            for _, inst in parts:
+                jobs.append((key, inst, None, False, names))
 
     def play(job):
-        key, inst, reasons, pn = job
-        if inst is None:
-            return key, {"unsupported": reasons}
+        key, inst, reasons, pn, names = job
+        if inst is None:  # the reasons of a mixed mode are its own: the pure modes may play
+            return key, {m: {"unsupported": reasons} for m in names} if names else {"unsupported": reasons}
         try:
-            out = run(inst, seeds, guest=guest, timeout=timeout, both=pn)
+            out = run(inst, seeds, guest=guest, timeout=timeout, both=pn, modes=names)
         except (RuntimeError, ValueError, OSError) as e:
-            return key, {"unsupported": [str(e)[-200:]]}
+            return key, {m: {"unsupported": [str(e)[-200:]]} for m in names} if names else {"unsupported": [str(e)[-200:]]}
+        if names:
+            return key, {m: o for m, o in out.items() if m in names}
         return key, {m: o for m, o in out.items() if m in wanted and (only is None or m in only[key])}
 
     result: dict = {}
@@ -880,10 +1043,18 @@ def predictions(experiment, seeds: int = PREDICTION_SEEDS, workers: int = 8, gue
                 entry["unsupported"] = found["unsupported"]
                 continue
             for mode, o in found.items():
+                if "unsupported" in o or "unsupported" in entry.get(mode, {}):  # a part of a mixed mode it cannot play
+                    entry[mode] = {"unsupported": o.get("unsupported") or entry[mode]["unsupported"]}
+                    continue
                 kept = entry.setdefault(mode, {"converged": 0, "settled": 0, "runs": 0})
                 kept["converged"] += o["converged"]
                 kept["settled"] += o.get("settled", o["converged"])
                 kept["runs"] += o["runs"]
+                # Per check of the scenario, in how many orders it failed: a failed check of the lab is then judged too.
+                for i, n in enumerate(o.get("failed") or []):
+                    failed = kept.setdefault("failed", [])
+                    failed.extend([0] * (i + 1 - len(failed)))
+                    failed[i] += n
                 if o.get("endless"):  # orders without rest proven to go on forever
                     kept["endless"] = kept.get("endless", 0) + o["endless"]
                 if "findings" in o:  # looked at the way, also where it found nothing
@@ -913,13 +1084,18 @@ MORE_ORDERS_KEYS = 20  # the most keys played again after a result, so that the 
 
 def differs(dataset) -> dict[str, set[str]]:
     """The predictions a finished run contradicts, per key the modes: the
-    run did not come to rest where the simulator always did, or came to
-    rest where it never did. Played in more orders before the run counts as
-    unforeseen, as 20 orders can miss what shows only in few."""
+    run did not come to rest where the simulator always did, came to rest
+    where it never did, failed a check the simulator never failed, or
+    looped, lost packets or blocked on the way where the simulator never
+    did. Played in more orders before the run counts as unforeseen, as 20
+    orders can miss what shows only in few."""
     from . import analysis, problems
 
     out: dict[str, set[str]] = {}
     metrics = analysis.run_summary(dataset)
+    # Checks and the way to rest the simulator did not predict, as the verdict finds them.
+    unforeseen = {(p["topology"], p["variant"], p["scenario"], p["run"]) for p in problems.of(dataset, metrics)
+                  if p.get("predicted") is False and (p["kind"] == "check" or p.get("cause") in problems.ON_THE_WAY)}
     for key in dataset.keys():
         if not dataset.is_done(key) or (run := dataset.run(key))["status"] == "error":
             continue
@@ -928,11 +1104,12 @@ def differs(dataset) -> dict[str, set[str]]:
             continue
         rested = analysis.rested(run, metrics.get(str(key)))
         always = p["converged"] == p["runs"] and p.get("settled", p["converged"]) == p["runs"]  # at the end and at every step
-        # With an MRAI a run at rest where the simulator never rests is no problem: the simulator has no timers.
-        if rested is False and always or rested is True and p["converged"] == 0 and not dataset.experiment.bgp.mrai:
+        # With an MRAI a run at rest where the simulator never rests is no problem: the simulator coalesces without the timer.
+        if rested is False and always or rested is True and p["converged"] == 0 and not dataset.experiment.bgp.mrai \
+                or (key.topology, key.variant, key.scenario, key.index) in unforeseen:
             variant = next(v for v in dataset.experiment.variants if v.name == key.variant)
-            name = f"{key.topology}|{key.scenario}#{key.index}"
-            out.setdefault(name if name in dataset.meta["predictions"] else f"{key.topology}|{key.scenario}", set()).add(sim_mode(variant))
+            name, _ = stored(dataset.meta["predictions"], key, sim_mode(variant))
+            out.setdefault(name, set()).add(sim_mode(variant))
     return out
 
 
@@ -949,7 +1126,8 @@ def more_orders(dataset, seeds: int = MORE_ORDERS) -> dict[str, set[str]]:
         if "unsupported" in modes:  # a part timed out: the prediction of 20 orders over every part stays
             continue
         for mode, o in modes.items():
-            kept[key][mode] = {**o, "more": True}
+            if "unsupported" not in o:
+                kept[key][mode] = {**o, "more": True}
     dataset.update(predictions=kept)
     return again
 
@@ -1107,62 +1285,78 @@ def predict(topology_name: str, scenario_name: str, seeds: int = 100, tables: bo
 
 def compare(dataset, seeds: int = 100) -> tuple[list[dict], dict[str, list[str]]]:
     """The runs of a result beside the simulator's orders of messages, per
-    topology, scenario and variant of a pure mode: how often the routes came
+    topology, scenario and variant, a mixed one with the routers of each
+    run where it draws them: how often the routes came
     to rest and how often each check failed. A deviation is what the
     simulator rules out: it always converges or always passes a check and
     the lab did not, or never and the lab did. Shares in between depend on
     the order of messages and are not deviations. Topologies and scenarios
     are the lab's files as they are now. Returns the rows and, for what
     cannot be compared, why not."""
-    from . import analysis, modes
+    from . import analysis
 
     metrics = analysis.run_summary(dataset)
     e = dataset.experiment
     rows, skipped = [], {}
     for t, case in e.combinations():
         sc = e.scenario_of(case)
+        topology = topologies.load(t)
         try:  # random targets differ by run: the parts of every run
-            parts = [(f"run {i}, {label}" if draws(sc) else label, inst) for i in (range(1, e.runs + 1) if draws(sc) else [1])
-                     for label, inst in to_instances(topologies.load(t), sc, e.seed, i)]
+            parts = [(f"run {i}, {label}" if draws(sc) else label, inst, i) for i in (range(1, e.runs + 1) if draws(sc) else [1])
+                     for label, inst in to_instances(topology, sc, e.seed, i, e.bgp)]
         except Unsupported as x:
             skipped[f"{t}, {case}"] = x.reasons
             continue
         played = None
         for v in e.variants:
-            if (mode := sim_mode(v)) is None:
-                skipped[v.name] = ["mixed mode, the simulator runs one mode on all routers"]
-                continue
+            mode = sim_mode(v)
             keys = [k for k in dataset.keys() if (k.topology, k.scenario, k.variant) == (t, case, v.name) and dataset.is_done(k)]
             runs = [(k, r) for k in keys if (r := dataset.run(k))["status"] != "error"]
             if not runs:
                 continue
-            # Both tables in one pass: a variant with tables per neighbor is its -pn mode.
-            played = played or [(label, run(inst, seeds, both=True)) for label, inst in parts]
-            sims = [(label, out[mode]) for label, out in played if mode in out]
+            instances = [label for label, _, _ in parts]
+            if mixed(v):  # the routers of every run where the variant draws them
+                each = [(f"run {i}, {label}", inst, i) for i in range(1, e.runs + 1) for label, inst, _ in parts] \
+                    if drawn(v) and not draws(sc) else parts
+                try:
+                    mine = [(label, with_modes(inst, [v], topology, e.seed * 1000 + i)) for label, inst, i in each]
+                except Unsupported as x:
+                    skipped[v.name] = x.reasons
+                    continue
+                sims = [(label, run(inst, seeds, modes=[mode])[mode]) for label, inst in mine]
+                instances = [label for label, _ in mine]
+            else:
+                # Both tables in one pass: a variant with tables per neighbor is its -pn mode.
+                played = played or [(label, run(inst, seeds, both=True)) for label, inst, _ in parts]
+                sims = [(label, out[mode]) for label, out in played if mode in out]
             if not sims:
                 skipped[v.name] = [f"the simulator does not play {mode}"]
                 continue
             # Runs without a rest value tell nothing about rest: they count neither way.
             rest = [r["status"] != "timeout" and analysis.rested(r, metrics.get(str(k))) for k, r in runs]
             n, measured, rested = len(runs), sum(x is not None for x in rest), sum(x is True for x in rest)
-            checks = [[ev for ev in r["events"] if ev["name"] == "expect"] for _, r in runs]
-            count = min((len(c) for c in checks), default=0)
-            lab_failed = [sum(not c[i]["passed"] for c in checks) for i in range(count)]
+            # Each check of the lab by the key of its step, in the order the simulator counts them.
+            keys = expect_keys(sc)
+            checks = [{k: ev for ev, k in analysis.expect_keys(r["events"])} for _, r in runs]
+            count = len(keys)
+            lab_failed = [sum(keys[i] in c and not c[keys[i]]["passed"] for c in checks) for i in range(count)]
+            lab_ran = [sum(keys[i] in c for c in checks) for i in range(count)]
             sim_failed = [max(o["failed"][i] for _, o in sims if i < len(o["failed"])) for i in range(count)]
             always = lambda i, sims=sims: any(i < len(o["failed"]) and o["failed"][i] == o["runs"] for _, o in sims)
-            converged = min(o["converged"] for _, o in sims)
+            # Rest as the lab's: at every step that waits for it and at the end.
+            converged = min(o.get("settled", o["converged"]) for _, o in sims)
             deviations = []
-            if all(o["converged"] == o["runs"] for _, o in sims) and rested < measured:
+            if all(o.get("settled", o["converged"]) == o["runs"] for _, o in sims) and rested < measured:
                 deviations.append(f"did not come to rest in {measured - rested} of {measured} measured runs, the simulator always converges")
             if converged == 0 and rested:
                 deviations.append(f"came to rest in {rested} of {measured} measured runs, the simulator never converges")
             for i in range(count):
                 if not any(i < len(o["failed"]) and o["failed"][i] for _, o in sims) and lab_failed[i]:
-                    deviations.append(f"check {i + 1} failed in {lab_failed[i]} of {n} runs, the simulator never fails it")
-                if always(i) and lab_failed[i] < n:
-                    deviations.append(f"check {i + 1} passed in {n - lab_failed[i]} of {n} runs, the simulator always fails it")
+                    deviations.append(f"check {i + 1} failed in {lab_failed[i]} of {lab_ran[i]} runs, the simulator never fails it")
+                if always(i) and lab_failed[i] < lab_ran[i]:
+                    deviations.append(f"check {i + 1} passed in {lab_ran[i] - lab_failed[i]} of {lab_ran[i]} runs, the simulator always fails it")
             rows.append({"topology": t, "scenario": case, "variant": v.name, "runs": n, "measured": measured, "rested": rested, "seeds": seeds,
-                         "converged": converged, "instances": [label for label, _ in parts],
+                         "converged": converged, "instances": instances,
                          "lab_failed": lab_failed, "sim_failed": sim_failed, "deviations": deviations})
     return rows, skipped
 
@@ -1172,48 +1366,117 @@ def _without_rest(found: int, of: int) -> str:
     return "never" if found == 0 else "always" if found == of else "sometimes"
 
 
+# Deviations at rest both sides tell alike, beside rest: the simulator's names, see internal/pkg/obgpsim/oracle.go.
+# Those on the way do not compare: the lab sees them only beyond two sampling intervals, the simulator every message.
+AT_REST = ("unreachable", "loop", "black-hole", "leaked")
+
+
+def _lab_deviations(final: dict, reference: dict | None) -> dict[str, bool | None]:
+    """Which deviations a run at rest showed, by its final check, None where it cannot tell: fewer routes than
+    the BGP run of its seed at rest, packets that loop or end without a route, a path that is not valley-free."""
+    fewer = None if reference is None else any(h < reference["held"].get(r, 0) for r, h in final["held"].items())
+    return {"unreachable": fewer, "loop": bool(final.get("loops")), "black-hole": bool(final.get("holed")),
+            "leaked": None if "valleys" not in final else any(final["valleys"].values())}
+
+
 def agreement(dataset) -> dict:
     """Simulator and lab side by side on rest, per topology, scenario and
     variant: in how many orders the simulator found no rest, in how many
     measured runs the lab did, with the exact 95 % interval of that share.
+    Rest is the same on both sides: at every step that waits for it and at
+    the end, the simulator's settled and the lab's rested. Of the orders
+    without rest, endless repeat an earlier state, a proof that they never
+    rest, busy were still busy at the bound or at a step, without a proof.
     Shares of orders and of runs do not compare, their schedulers differ:
     only never, sometimes and always do. A contradiction at an extreme is a
     signal: the lab without rest where the simulator always rested, or at
-    rest where it never did (not with an MRAI, the simulator has no timers).
+    rest where it never did (not with an MRAI, the simulator coalesces
+    without its timer).
     Per mode the cells are counted by both answers. Cells without a
-    prediction are counted as not translated, with why."""
+    prediction are counted as not translated, with why.
+    Beside rest, per deviation at rest (AT_REST), the same answers on both
+    sides: in how many orders that came to rest the simulator showed it, in
+    how many runs at rest the lab did, with the same signal at the extremes.
+    A lost route counts against BGP in the same order and in the run of the
+    same seed. The simulator looks for leaks only where routers leak by
+    their policy: elsewhere it has no answer on them."""
     from . import analysis, problems
+    from .results import RunKey
 
     metrics = analysis.run_summary(dataset)
     e = dataset.experiment
-    stored = dataset.meta.get("predictions") or {}
+    kept = dataset.meta.get("predictions") or {}
     cells: dict[tuple, dict] = {}
+    # The BGP run of the same seed a variant compares with, as problems.broken takes it, where it came to rest.
+    references = [v.name for v in e.variants if v.mode == "bgp" and not v.per_neighbor]
+    rate = lambda name: e.sampling_of(name).interval
+    reference = lambda name: name if name in references else next((b for b in references if rate(b) == rate(name)), references[0] if references else None)
+
+    def usable(key) -> dict | None:
+        if not dataset.is_done(key) or (run := dataset.run(key))["status"] == "error":
+            return None
+        final = analysis.final_of(run)
+        return final if final and final.get("stable") is not False and analysis.rested(run, metrics.get(str(key))) else None
+
+    leaky: dict[str, bool] = {}
+
+    def leaks(topology: str) -> bool:
+        if topology not in leaky:
+            try:
+                leaky[topology] = any(r.get("leak") for r in (topologies.load(topology).get("routers") or {}).values())
+            except (OSError, ValueError, KeyError):
+                leaky[topology] = False
+        return leaky[topology]
     for key in dataset.keys():
         if not dataset.is_done(key) or (run := dataset.run(key))["status"] == "error":
             continue
         variant = next(v for v in e.variants if v.name == key.variant)
         c = cells.setdefault((key.topology, key.scenario, key.variant), {
             "topology": key.topology, "scenario": key.scenario, "variant": key.variant, "mode": sim_mode(variant),
-            "orders": 0, "orders_without_rest": 0, "endless": 0, "measured": 0, "runs_without_rest": 0, "why_not": None, "seen": set()})
+            "orders": 0, "orders_without_rest": 0, "endless": 0, "busy": 0, "measured": 0, "runs_without_rest": 0, "why_not": None, "seen": set(),
+            "deviations": {d: {"orders": 0, "orders_with": 0, "runs": 0, "runs_with": 0} for d in AT_REST}})
         rested = analysis.rested(run, metrics.get(str(key)))
         if rested is not None:
             c["measured"] += 1
             c["runs_without_rest"] += rested is False
+        final = analysis.final_of(run)
+        if rested and final and final.get("stable") is not False:
+            bgp = reference(key.variant)
+            ref = usable(RunKey(key.topology, bgp, key.scenario, key.index)) if bgp and bgp != key.variant else None
+            for d, shown in _lab_deviations(final, ref).items():
+                if shown is not None and not (d == "unreachable" and key.variant == bgp):
+                    c["deviations"][d]["runs"] += 1
+                    c["deviations"][d]["runs_with"] += shown
         p = problems.prediction(dataset, key)
+        name, found = stored(kept, key, c["mode"])
         if p is None:
-            found = stored.get(f"{key.topology}|{key.scenario}#{key.index}") or stored.get(f"{key.topology}|{key.scenario}") or {}
-            c["why_not"] = ("mixed mode, the simulator runs one mode on all routers" if c["mode"] is None
-                            else "; ".join(found.get("unsupported") or []) or "no prediction")
+            c["why_not"] = "; ".join(found.get("unsupported") or found.get(c["mode"], {}).get("unsupported") or []) or "no prediction"
             continue
-        name = f"#{key.index}" if f"{key.topology}|{key.scenario}#{key.index}" in stored else ""
         if name not in c["seen"]:  # a prediction per run where targets are drawn, else one per cell
             c["seen"].add(name)
             c["orders"] += p["runs"]
-            c["orders_without_rest"] += p["runs"] - p["converged"]
+            c["orders_without_rest"] += p["runs"] - p.get("settled", p["converged"])
             c["endless"] += p.get("endless", 0)
+            c["busy"] += p["runs"] - p.get("settled", p["converged"]) - p.get("endless", 0)
+            if "findings" in p:  # a prediction from before it kept them answers on rest only
+                for d in AT_REST:
+                    if d == "leaked" and not leaks(key.topology):
+                        continue
+                    c["deviations"][d]["orders"] += p["converged"]
+                    c["deviations"][d]["orders_with"] += min(p["findings"].get(d, 0), p["converged"])
     out, per_mode = [], {}
     for c in cells.values():
         c.pop("seen")
+        for d, x in c["deviations"].items():
+            x["interval"] = [round(v, 4) for v in analysis.clopper_pearson(x["runs_with"], x["runs"])] if x["runs"] else None
+            x["simulator"] = _without_rest(x["orders_with"], x["orders"]) if x["orders"] else None
+            x["lab"] = _without_rest(x["runs_with"], x["runs"]) if x["runs"] else None
+            x["signal"] = None
+            if x["simulator"] and x["lab"]:
+                if x["simulator"] == "never" and x["runs_with"]:
+                    x["signal"] = f"the lab showed {d} where the simulator never did"
+                elif x["simulator"] == "always" and x["runs_with"] < x["runs"]:
+                    x["signal"] = f"the lab did not show {d} where the simulator always did"
         translated = c["orders"] > 0
         if translated:
             c["why_not"] = None
@@ -1225,7 +1488,8 @@ def agreement(dataset) -> dict:
             if c["simulator"] == "never" and c["runs_without_rest"]:
                 c["signal"] = "the lab found no rest where the simulator always rested"
             elif c["simulator"] == "always" and c["runs_without_rest"] < c["measured"] and not e.bgp.mrai:
-                c["signal"] = "the lab came to rest where the simulator never rested"
+                c["signal"] = "the lab came to rest where the simulator never rested" + (
+                    f", {c['busy']} of its orders only still busy at the bound, not shown to go on forever" if c["busy"] else "")
         out.append(c)
         m = per_mode.setdefault(c["variant"], {"mode": c["mode"], "cells": 0, "not_translated": 0, "signals": 0, "answers": {}})
         m["cells"] += 1
@@ -1235,4 +1499,11 @@ def agreement(dataset) -> dict:
         pair = f"simulator {c['simulator']}, lab {c['lab'] or 'not measured'}"
         m["answers"][pair] = m["answers"].get(pair, 0) + 1
         m["signals"] += c["signal"] is not None
+        for d, x in c["deviations"].items():
+            if x["simulator"] and x["lab"]:
+                kept_ = m.setdefault("deviations", {}).setdefault(d, {"cells": 0, "signals": 0, "answers": {}})
+                kept_["cells"] += 1
+                kept_["signals"] += x["signal"] is not None
+                pair = f"simulator {x['simulator']}, lab {x['lab']}"
+                kept_["answers"][pair] = kept_["answers"].get(pair, 0) + 1
     return {"cells": out, "per_variant": per_mode}

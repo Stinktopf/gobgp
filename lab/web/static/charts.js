@@ -72,10 +72,8 @@
     const waiting = shownVariants.filter(([v]) => !ran(v)).map(([v]) => v);
     if (waiting.length) {
       const all = waiting.length === shownVariants.length;
-      root.append(el("p", "notice notice-warn mb-3",
-        all ? "No run of this scenario is done yet. The charts appear once one is, after a reload."
-          : `No run done yet for ${waiting.join(", ")}. Their lines appear once one is, after a reload.`));
-      if (all) return;
+      if (all) return root.append(el("p", "empty-state", "No run of this scenario is done yet."));
+      root.append(el("p", "notice notice-warn mb-3", `No run done yet for ${waiting.join(", ")}. Their lines appear once one is, after a reload.`));
     }
     // One legend for all charts, keyed with the line of each variant.
     const legend = el("div", "mb-3 flex flex-wrap gap-4 text-sm text-slate-600 dark:text-slate-300");
@@ -91,9 +89,9 @@
 
     const gridEl = el("div", "grid gap-4 md:grid-cols-2");
     root.append(gridEl);
-    if (!list.length) gridEl.append(el("p", "card py-10 text-center text-sm text-slate-400 md:col-span-2", "Choose charts above."));
-    const missing = [], note = el("p", "muted text-xs");
-    root.append(note);
+    if (!list.length) gridEl.append(el("p", "empty-state md:col-span-2", "No chart chosen."));
+    // Older runs lack some series: one muted line in the place of their cards, after the others.
+    const missing = [], note = el("p", "empty-state md:col-span-2");
     for (const [metric, title, unit, log] of list) {
       const card = el("div", "card relative p-4");
       const head = el("div", "mb-2 flex items-baseline gap-2");
@@ -107,10 +105,9 @@
       }
       const series = data.metrics[metric];
       if (!data.variants.some((v) => series[v].median.some((x) => x != null))) {
-        // Older runs lack some series: named once under the charts, no empty card each.
         card.remove();
         missing.push(title);
-        note.textContent = `Not recorded by these runs: ${missing.join(", ")}.`;
+        note.textContent = `Not recorded: ${missing.join(", ")}.`;
         continue;
       }
       const plot = el("div");
@@ -247,6 +244,7 @@
       chart.over.addEventListener("pointerleave", () => { hovered = null; tooltip.classList.add("hidden"); });
       charts.push([chart, plot]);
     }
+    if (missing.length) gridEl.append(note);
     const observer = new ResizeObserver(() => charts.forEach(([c, p]) => c.setSize({ width: p.clientWidth, height: 180 })));
     observer.observe(gridEl);
     shown.set(root, { charts, observer });
@@ -476,7 +474,7 @@
     }
     const shownVariants = data.variants.map((v, i) => [v, i]).filter(([v]) => !hidden.has(v));
     if (!data.x.length || !shownVariants.some(([v]) => data.series[v].median.some((x) => x != null))) {
-      root.replaceChildren(el("p", "py-10 text-center text-sm text-slate-400", "No run done yet."));
+      root.replaceChildren(el("p", "empty-state", "No run done yet."));
       return;
     }
     const color = (i) => css(`--series-${(i % 8) + 1}`);

@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"runtime"
@@ -66,6 +67,7 @@ func main() {
 	tunnel := flag.Bool("tunnel", false, "forward inside an AS over tunnels to the exit, as MPLS")
 	perNeighbor := flag.Bool("per-neighbor", false, "OBGP with a table per eBGP neighbor, as GOBGP_OPERA_EXPORT=neighbor, bgp-pn (NS-BGP) always has them")
 	both := flag.Bool("both-tables", false, "play the OBGP modes with one table and, named -pn, with a table per eBGP neighbor, in one pass")
+	playOnly := flag.String("modes", "", "with -instance: play only these modes, comma-separated, pure ones or the instance's mixed ones; BGP always plays as the reference")
 	trace := flag.String("trace", "", "with -instance: play it once in this mode, its own seed, and print every message")
 	progress := flag.Bool("progress", false, "report on stderr how far the search is: \"progress done total\", networks weighed by their links")
 	workers := flag.Int("workers", 0, "processes that search at once, each takes the next network once free, 0 for half the cores, at most 32")
@@ -76,6 +78,11 @@ func main() {
 	obgpsim.PerNeighbor = *perNeighbor
 	if *both {
 		modes = obgpsim.BothTables
+	}
+	for _, m := range strings.Split(*playOnly, ",") {
+		if m != "" {
+			onlyModes = append(onlyModes, obgpsim.Mode(m))
+		}
 	}
 	if *trace != "" {
 		if err := traceOne(*instance, obgpsim.Mode(*trace)); err != nil {
@@ -232,7 +239,10 @@ func load(file string) (obgpsim.Instance, error) {
 	if err != nil {
 		return inst, err
 	}
-	return inst, json.Unmarshal(data, &inst)
+	if err := json.Unmarshal(data, &inst); err != nil {
+		return inst, err
+	}
+	return inst, inst.Validate()
 }
 
 var asJSON *bool
@@ -243,17 +253,20 @@ const SlowNetwork = 60 * time.Second
 // modes are those a search or a play checks, every one by default, see -both-tables.
 var modes []obgpsim.Mode
 
+// onlyModes are the modes a play checks where -modes names them, BGP always.
+var onlyModes []obgpsim.Mode
+
 // traceOne plays one instance once in one mode, with the seed it carries.
 func traceOne(file string, mode obgpsim.Mode) error {
 	if file == "" {
 		return fmt.Errorf("-trace needs -instance")
 	}
-	if !slices.Contains(obgpsim.BothTables, mode) {
-		return fmt.Errorf("unknown mode %s, known: %v", mode, obgpsim.BothTables)
-	}
 	inst, err := load(file)
 	if err != nil {
 		return err
+	}
+	if _, mixed := inst.Mixed[mode]; !mixed && !slices.Contains(obgpsim.BothTables, mode) {
+		return fmt.Errorf("unknown mode %s, known: %v and the instance's mixed modes", mode, obgpsim.BothTables)
 	}
 	obgpsim.Transient = true
 	if *asJSON {
@@ -273,14 +286,28 @@ func play(file string, seeds int) error {
 	if err != nil {
 		return err
 	}
+	played := modes
+	for _, m := range onlyModes {
+		if _, mixed := inst.Mixed[m]; !mixed && !slices.Contains(obgpsim.BothTables, m) {
+			return fmt.Errorf("unknown mode %s, known: %v and the instance's mixed modes", m, obgpsim.BothTables)
+		}
+	}
+	if len(onlyModes) > 0 {
+		played = onlyModes
+	} else if len(inst.Mixed) > 0 { // the pure modes, then the mixed ones of the instance
+		if played == nil {
+			played = obgpsim.Modes
+		}
+		played = slices.Concat(played, slices.Sorted(maps.Keys(inst.Mixed)))
+	}
 	out := map[obgpsim.Mode]*outcome{}
 	for seed := 1; seed <= seeds; seed++ {
 		inst.Seed = int64(seed)
-		results, findings := obgpsim.Check(&inst, modes...)
+		results, findings := obgpsim.Check(&inst, played...)
 		for m, r := range results {
 			o := out[m]
 			if o == nil {
-				o = &outcome{Failed: make([]int, len(r.Checks)), Findings: map[string]int{}}
+				o = &outcome{Failed: []int{}, Findings: map[string]int{}}
 				out[m] = o
 			}
 			o.Runs++
@@ -294,6 +321,9 @@ func play(file string, seeds int) error {
 				}
 			}
 			failed := false
+			for len(o.Failed) < len(r.Checks) { // an order may end before a check that another reaches
+				o.Failed = append(o.Failed, 0)
+			}
 			for i, c := range r.Checks {
 				if !c.Passed {
 					o.Failed[i]++

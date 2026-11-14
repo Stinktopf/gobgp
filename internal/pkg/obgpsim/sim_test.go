@@ -153,6 +153,35 @@ func TestALeakedPathIsNotValleyFree(t *testing.T) {
 	assert.NotContains(t, findings, Finding{OBGPHard, "leaked", []int{2}, "these routers use a path that is not valley-free"})
 }
 
+// Router 3 uses the path through its customer 1, but its packets go to its
+// customer 2, which forwards them to its peer 1: up after a peer, a valley
+// on the way of the packets that the path does not have.
+func TestPacketsAgainstTheRelationsAreAForwardValley(t *testing.T) {
+	inst := Instance{Routers: 4, Links: [][2]int{{0, 1}, {1, 2}, {2, 3}, {1, 3}},
+		Customers: [][2]int{{1, 0}, {3, 2}, {3, 1}}, Peers: [][2]int{{1, 2}}, Seed: 1}
+	r := Result{
+		Best:    [][]uint32{{}, {AS(0)}, {AS(1), AS(0)}, {AS(1), AS(0)}},
+		NextHop: []int{0, 0, 1, 2},
+	}
+	assert.Equal(t, []int{3}, forwardValleys(&inst, r, nil))
+	assert.Empty(t, forwardValleys(&inst, r, []int{3})) // a leak by policy
+	r.NextHop[3] = 1
+	assert.Empty(t, forwardValleys(&inst, r, nil))
+	rel := relations(&inst)
+	assert.True(t, valleyFree(rel, []int{2, 1, 0}))
+	assert.False(t, valleyFree(rel, []int{3, 2, 1, 0}))
+}
+
+// Without leaks BGP forwards on the paths it sends: no forward valley.
+func TestBGPHasNoForwardValley(t *testing.T) {
+	inst := Instance{Routers: 3, Links: [][2]int{{0, 1}, {0, 2}, {1, 2}},
+		Customers: [][2]int{{0, 1}, {2, 1}}, Peers: [][2]int{{0, 2}}, Seed: 1}
+	_, findings := Check(&inst)
+	for _, f := range findings {
+		assert.NotEqual(t, "forward-valley", f.Kind)
+	}
+}
+
 func TestTheSearchIsExhaustiveForSmallNetworks(t *testing.T) {
 	assert.Len(t, Topologies(3), 4)  // three paths and the triangle
 	assert.Len(t, Topologies(4), 38) // the connected labeled graphs of four nodes
@@ -294,6 +323,24 @@ func TestEventsAtAnyPointAndBeforeTheAnnouncement(t *testing.T) {
 	r := Run(&inst, BGP, MaxSteps)
 	assert.Equal(t, 1, r.Steps) // 0 to 1 only: nothing ever crossed to 2
 	assert.Nil(t, r.Best[2])
+}
+
+// A session that goes down loses its messages and their send times: a
+// message delivered after it comes back was sent after it went down.
+func TestASessionDownForgetsTheSendTimesOfItsMessages(t *testing.T) {
+	for seed := int64(1); seed <= 40; seed++ {
+		inst := Instance{Routers: 4, Links: [][2]int{{0, 1}, {1, 2}, {2, 3}, {3, 0}}, Seed: seed,
+			Events: []Event{{After: 1 << 30, Any: true, Kind: "down", From: 1, To: 2}, {After: 1 << 30, Any: true, Kind: "up", From: 1, To: 2}}}
+		_, steps := Record(&inst, BGP)
+		down := 0
+		for k, s := range steps {
+			if s.Kind == "event" && s.Event.Kind == "down" {
+				down = k + 1 // the replay counts from 1
+			} else if s.Kind != "event" && down > 0 && (s.From == 1 && s.To == 2 || s.From == 2 && s.To == 1) {
+				assert.Greater(t, s.Sent, down, "seed %d, step %d", seed, k+1)
+			}
+		}
+	}
 }
 
 // An aggregate keeps its AS_SET over several hops, one hop long, and all
@@ -524,7 +571,9 @@ func familyNamed(name string) Family {
 
 // With a table per neighbor, a router that admitted a short peer route
 // first still sends its providers a customer route: a network that loses a
-// route under Gao-Rexford with one route per AS does not.
+// route under Gao-Rexford with one route per AS does not. It forwards by
+// ingress: its provider's packets take the customer route it sent the
+// provider, not its own peer route, so no forward valley either.
 func TestATablePerNeighborKeepsGaoRexfordRoutes(t *testing.T) {
 	Transient = true
 	defer func() { Transient, PerNeighbor = false, false }()
@@ -536,7 +585,11 @@ func TestATablePerNeighborKeepsGaoRexfordRoutes(t *testing.T) {
 		PerNeighbor = true
 		results, findings := Check(&inst, OBGP)
 		assert.Empty(t, findings)
-		assert.True(t, results[OBGP].Converged)
+		r := results[OBGP]
+		assert.Equal(t, []uint32{AS(1), AS(2), AS(0)}, r.Best[3]) // through customer 1 and its customer 2
+		assert.Equal(t, 0, r.NextHop[1])                          // 1's own packets take its peer route
+		assert.Equal(t, 2, r.Ingress[1][3].NextHop)               // those of its provider 3 the customer route
+		assert.True(t, r.Converged)
 		return
 	}
 	t.Fatal("no network loses a route under Gao-Rexford")
@@ -556,6 +609,8 @@ func TestATablePerNeighborWithoutFiltersIsTheMainTable(t *testing.T) {
 					one := Run(&inst, m, MaxSteps)
 					PerNeighbor = true
 					per := Run(&inst, m, MaxSteps)
+					// The same messages and tables. Forwarding by ingress may loop on the way where one table does not, or the other way round.
+					per.Ingress, per.Transient, per.Looped, per.Holes = nil, one.Transient, one.Looped, one.Holes
 					if !assert.Equal(t, one, per, "%s %v %s", name, inst.Links, m) {
 						return
 					}
@@ -613,6 +668,236 @@ func TestATraceExplainsWhereAndWhyPacketsGo(t *testing.T) {
 		}
 		if m == BGPPN {
 			assert.NotEmpty(t, last[3].Ingress)
+		}
+	}
+}
+
+// A mixed mode with the same mode on every router plays as that mode: the
+// per-router settings change nothing where all routers share them.
+func TestAMixedModeOfOneModePlaysAsThatMode(t *testing.T) {
+	Transient = true
+	defer func() { Transient = false }()
+	for _, f := range Families {
+		all := Instances(f, 4, []int64{1, 2})
+		for k := 0; k < len(all); k += max(1, len(all)/40) {
+			inst := all[k]
+			for _, m := range BothTables {
+				mixed := inst
+				mixed.Mixed = map[Mode][]Mode{"same": slices.Repeat([]Mode{m}, inst.Routers)}
+				want, wantSteps := Record(&inst, m)
+				got, gotSteps := Record(&mixed, "same")
+				got.Mode = m
+				assert.Equal(t, want, got, "%s %s %v", f.Name, m, inst.Links)
+				assert.Equal(t, wantSteps, gotSteps, "%s %s %v", f.Name, m, inst.Links)
+			}
+		}
+	}
+}
+
+// In a mixed mode each router decides by its own mode: an OBGP router
+// exports its worst admitted path, a BGP router beside it its best.
+func TestAMixedModeDecidesPerRouter(t *testing.T) {
+	inst := triangle()
+	inst.Mixed = map[Mode][]Mode{"half": {BGP, OBGPNP, BGP}}
+	results, _ := Check(&inst, "half")
+	assert.Equal(t, []uint32{AS(2), AS(0)}, results["half"].Exported[1])
+	assert.Equal(t, []uint32{AS(0)}, results["half"].Exported[2])
+	assert.Equal(t, []uint32{AS(0)}, results[BGP].Exported[1])
+	inst.Mixed["half"] = []Mode{BGP, BGP, BGP}
+	assert.Error(t, (&Instance{Routers: 2, Mixed: map[Mode][]Mode{"x": {BGPPN, BGP}}}).Validate())
+	assert.NoError(t, inst.Validate())
+}
+
+// With an MRAI an update still on a session gives way to a newer update or
+// withdrawal of its path ID, which goes behind the others. Refresh requests
+// and withdrawals wait for nothing, nor do sessions inside an AS.
+func TestAnMRAICoalescesTheUpdatesOfAPathIDOnASession(t *testing.T) {
+	update := func(id uint32, as uint32) message { return message{id: id, route: route{path: []uint32{as}}} }
+	sends := []message{update(0, 1), {refresh: true}, update(0, 2), {id: 1, withdraw: true}, update(1, 3), {id: 0, withdraw: true}}
+	queued := func(mrai bool, as []int) []message {
+		n := &network{inst: &Instance{Routers: 2, AS: as, MRAI: mrai}, queues: map[session][]message{}, sentAt: map[session][]int{}, sends: map[session]int{}}
+		for k, m := range sends {
+			n.cur = k + 1
+			n.send(session{0, 1}, m)
+		}
+		assert.Len(t, n.sentAt[session{0, 1}], len(n.queues[session{0, 1}]))
+		return n.queues[session{0, 1}]
+	}
+	assert.Equal(t, []message{sends[1], sends[3], sends[4], sends[5]}, queued(true, nil))
+	assert.Equal(t, sends, queued(false, nil))
+	assert.Equal(t, sends, queued(true, []int{0, 0})) // iBGP
+}
+
+// An MRAI coalesces: over many networks fewer messages are delivered. Not
+// in every order, as the orders drawn differ once a message gives way.
+func TestAnMRAIDeliversFewerMessagesOverall(t *testing.T) {
+	without, with := 0, 0
+	for _, f := range Families {
+		for _, inst := range Instances(f, 4, []int64{1, 2})[:20] {
+			mrai := inst
+			mrai.MRAI = true
+			a, b := Run(&inst, BGP, MaxSteps), Run(&mrai, BGP, MaxSteps)
+			if a.Converged && b.Converged {
+				without, with = without+a.Steps, with+b.Steps
+			}
+		}
+	}
+	assert.Less(t, with, without)
+}
+
+// Graceful restart, on a line 0-1-2 from origin 0: router 1 restarts
+// gracefully, router 2 keeps its route stale until 1 is back and has sent
+// its routes. Without graceful restart 2 loses it at once.
+func TestAGracefulRestartKeepsTheRoutesStaleUntilTheRouterIsBack(t *testing.T) {
+	quiet := 1 << 30
+	inst := Instance{Routers: 3, Links: [][2]int{{0, 1}, {1, 2}}, Events: []Event{
+		{After: quiet, Kind: "restart", From: 1, Value: 1},
+		{After: quiet, Kind: "expect", Routers: []int{2}},
+		{After: quiet, Kind: "expect", Routers: []int{1}, Prefixes: "none"},
+		{After: quiet, Kind: "up", From: 0, To: 1, Any: true},
+		{After: quiet, Kind: "up", From: 1, To: 2, Any: true},
+		{After: quiet, Kind: "expect", Routers: []int{1, 2}},
+	}}
+	for seed := range int64(20) {
+		inst.Seed, inst.GracefulRestart = seed, true
+		for _, m := range Modes {
+			r, steps := Record(&inst, m)
+			assert.True(t, r.Converged, m)
+			assert.Equal(t, []Verdict{{Passed: true}, {Passed: true}, {Passed: true}}, r.Checks, m)
+			last := steps[len(steps)-1].Routers[2].In
+			assert.False(t, slices.ContainsFunc(last, func(x Received) bool { return x.Stale }), m) // sent again: no longer stale
+			assert.True(t, slices.ContainsFunc(steps, func(s Step) bool { return s.Kind == "end-of-rib" }), m)
+		}
+		inst.GracefulRestart = false
+		r := Run(&inst, BGP, MaxSteps)
+		assert.False(t, r.Checks[0].Passed) // its peers drop its routes
+		assert.True(t, r.Checks[2].Passed)
+	}
+}
+
+// A silent failure with graceful restart: both ends keep the routes
+// stale. Routes not sent again after the link is back go with the
+// End-of-RIB, and they go once the restart time ends with the link down.
+func TestASilentFailureKeepsTheRoutesStaleUntilEndOfRIBOrExpiry(t *testing.T) {
+	quiet := 1 << 30
+	line := func(events ...Event) Instance {
+		return Instance{Routers: 3, Links: [][2]int{{0, 1}, {1, 2}}, GracefulRestart: true, Seed: 1, Events: events}
+	}
+	held := Event{After: quiet, Kind: "expect", Routers: []int{2}}
+	gone := Event{After: quiet, Kind: "expect", Routers: []int{2}, Prefixes: "none"}
+	cut := Event{After: quiet, Kind: "down", From: 1, To: 2, Value: 1}
+	// Back after the origin withdrew: 1 sends nothing again, its End-of-RIB removes the stale route.
+	inst := line(cut, held, Event{After: quiet, Kind: "withdraw"}, held, Event{After: quiet, Kind: "up", From: 1, To: 2}, gone)
+	for _, m := range Modes {
+		r := Run(&inst, m, MaxSteps)
+		assert.Equal(t, []Verdict{{Passed: true}, {Passed: true}, {Passed: true}}, r.Checks, m)
+	}
+	// Never back: the restart time ends.
+	inst = line(cut, held, Event{After: quiet, Kind: "expire", From: 1, To: 2}, gone)
+	assert.Equal(t, []Verdict{{Passed: true}, {Passed: true}}, Run(&inst, BGP, MaxSteps).Checks)
+	// One way, 2 dropping the packets of 1: 2 keeps 1's routes, 1 gets 2's notification and drops 2's.
+	inst = line(Event{After: quiet, Kind: "down", From: 1, To: 2, Value: 2}, held)
+	assert.True(t, Run(&inst, BGP, MaxSteps).Checks[0].Passed)
+	inst = line(Event{After: quiet, Kind: "down", From: 2, To: 1, Value: 2}, gone)
+	assert.True(t, Run(&inst, BGP, MaxSteps).Checks[0].Passed)
+	// Without graceful restart a silent failure loses the routes at once, as before.
+	inst = line(cut, gone)
+	inst.GracefulRestart = false
+	assert.True(t, Run(&inst, BGP, MaxSteps).Checks[0].Passed)
+}
+
+// What a router offers is its full path, a confederation segment too, and
+// with a table per neighbor a filter set by an event gives the filter's
+// reason, as with one table.
+func TestTheOutputNamesFullPathsAndTheFiltersReason(t *testing.T) {
+	inst := triangle()
+	inst.Events = []Event{{After: 1 << 30, Kind: "deny-export", From: 0, To: 2, Value: 1}}
+	for _, m := range []Mode{OBGP, OBGPPN} {
+		_, steps := Record(&inst, m)
+		out := steps[len(steps)-1].Routers[0].Out
+		i := slices.IndexFunc(out, func(s Sent) bool { return s.To == 2 })
+		assert.Equal(t, notFilter, out[i].Not, m)
+	}
+	confed := Instance{Routers: 3, AS: []int{0, 1, 2}, Links: [][2]int{{0, 1}, {1, 2}}, Confeds: []Confed{{Members: []int{1, 2}, ID: 64999}}, Seed: 1}
+	r, steps := Record(&confed, BGP)
+	assert.Equal(t, []uint32{AS(1), AS(0)}, r.Exported[2])
+	assert.Equal(t, []uint32{AS(1), AS(0)}, steps[len(steps)-1].Routers[2].Exported)
+	assert.Equal(t, [][]uint32{{AS(1), AS(0)}}, steps[len(steps)-1].Routers[2].Admitted)
+}
+
+// The sessions of a restart come back in an order the lab does not control:
+// with a group each of them comes first in some order, the timing stays in
+// place. Without one they come as listed.
+func TestEventsOfAGroupComeInAnyOrder(t *testing.T) {
+	quiet := 1 << 30
+	inst := Instance{Routers: 4, Links: [][2]int{{0, 1}, {1, 2}, {1, 3}}, Events: []Event{
+		{After: quiet, Kind: "restart", From: 1},
+		{After: quiet, Kind: "up", From: 0, To: 1, Bounded: true, Group: 2},
+		{After: quiet, Kind: "up", From: 1, To: 2, Bounded: true, Group: 2},
+		{After: quiet, Kind: "up", From: 1, To: 3, Bounded: true, Group: 2},
+		{After: quiet, Kind: "expect", Routers: []int{2, 3}},
+	}}
+	firsts := func() map[int]int {
+		seen := map[int]int{}
+		for seed := range int64(30) {
+			inst.Seed = seed
+			r, steps := Record(&inst, BGP)
+			assert.True(t, r.Checks[0].Passed)
+			for _, s := range steps {
+				if s.Kind == "event" && s.Event.Kind == "up" {
+					assert.True(t, s.Event.Bounded)
+					seen[s.Event.From+s.Event.To]++
+					break
+				}
+			}
+		}
+		return seen
+	}
+	assert.Len(t, firsts(), 3)
+	for i := range inst.Events {
+		inst.Events[i].Group = 0
+	}
+	assert.Equal(t, map[int]int{1: 30}, firsts())
+}
+
+// In a mixed mode only the routers with a table per neighbor forward by
+// ingress: router 1 sends its provider's packets on the customer route it
+// sent it, the BGP routers on their best route.
+func TestInAMixedModeOnlyRoutersWithTablesForwardByIngress(t *testing.T) {
+	inst := Instance{Routers: 4, Links: [][2]int{{0, 1}, {0, 2}, {1, 2}, {1, 3}},
+		Customers: [][2]int{{2, 0}, {1, 2}, {3, 1}}, Peers: [][2]int{{0, 1}}, Seed: 2,
+		Mixed: map[Mode][]Mode{"mix": {BGP, OBGP + "-pn", BGP, BGP}}}
+	results, findings := Check(&inst, "mix")
+	r := results["mix"]
+	assert.True(t, r.Converged)
+	assert.Len(t, r.Ingress, 4)
+	assert.Nil(t, r.Ingress[0])
+	assert.NotNil(t, r.Ingress[1])
+	for _, f := range findings {
+		assert.NotContains(t, []string{"loop", "black-hole", "forward-valley"}, f.Kind)
+	}
+}
+
+// TestRouteServerOfferMatchesWhatItSends: the trace states, at the step an update is queued, the offer
+// of its sender towards its receiver. A route server offers by its own rules, so the trace must too.
+func TestRouteServerOfferMatchesWhatItSends(t *testing.T) {
+	inst := Instance{Routers: 4, Links: [][2]int{{0, 1}, {0, 2}, {1, 2}, {1, 3}}, RouteServers: []int{1},
+		Sessions: []Session{{From: 1, To: 3, DenyVia: 65003}}, Seed: 1}
+	for _, mode := range []Mode{OBGP, OBGPPaper, BGP} {
+		_, steps := Record(&inst, mode)
+		for _, s := range steps {
+			if s.Kind != "update" || s.Sent == 0 || s.From != 1 {
+				continue
+			}
+			found := false
+			for _, o := range steps[s.Sent-1].Routers[s.From].Out {
+				if o.To == s.To && o.Path != nil {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%v: route server 1 sends %v to %d at step %d, its offer there says nothing", mode, s.Path, s.To, s.Sent)
+			}
 		}
 	}
 }

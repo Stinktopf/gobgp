@@ -133,6 +133,9 @@ def test_ns_bgp_routes_and_samples_name_the_route_of_each_neighbor():
     assert runner.check_forwarding(triangle(), {"p"}, tables, addresses, ["r1", "r2"]) == []
     assert analysis.hop_of("r1", "r2|10.1.0.2|65003;r2>r0|10.1.0.0|65001", addresses) == {None: ("r2", 65003), "r2": ("r0", 65001)}
     assert analysis.hop_of("r0", ".;r1>.", addresses) == {None: ("r0", None), "r1": ("r0", None)}
+    # The neighbors sent the route the router uses itself come once, after "=", as they mean the same.
+    assert analysis.hop_of("r1", "r2|10.1.0.2|65003;r2>r0|10.1.0.0|65001;=r0,r3", addresses) == \
+        analysis.hop_of("r1", "r2|10.1.0.2|65003;r2>r0|10.1.0.0|65001;r0>r2|10.1.0.2|65003;r3>r2|10.1.0.2|65003", addresses)
     assert analysis.hop_of("r1", "r2|10.1.0.2", addresses) == "r2"
 
 
@@ -149,3 +152,16 @@ def test_ns_bgp_forwards_packets_of_route_server_clients_on_the_route_to_the_rou
     assert forwarding.check(routers, hops, ["c"]) == []
     hops["a"] = Ingress({None: ("o", 65001)})
     assert forwarding.check(routers, hops, ["c"]) == ["forwarding from c ends at a router without a route"]
+
+
+def test_in_a_mixed_mode_a_router_with_one_table_forwards_on_its_best_route():
+    # r1 has tables per neighbor and forwards by ingress, r2 one table: packets from r1 follow r2's best route.
+    routers = {"r0": {"asn": 65001, "neighbors": [{"name": "r1"}, {"name": "r2"}]},
+               "r1": {"asn": 65002, "neighbors": [{"name": "r0"}, {"name": "r2"}, {"name": "r3"}]},
+               "r2": {"asn": 65003, "neighbors": [{"name": "r0"}, {"name": "r1"}]},
+               "r3": {"asn": 65004, "neighbors": [{"name": "r1"}]}}
+    hops = {"r0": "r0", "r1": forwarding.Ingress({None: ("r0", 65001), "r3": ("r2", 65003)}), "r2": "r0", "r3": "r1"}
+    assert forwarding.check(routers, hops) == []
+    hops["r2"] = None
+    assert forwarding.check(routers, hops) == ["forwarding from r3 ends at a router without a route"]
+

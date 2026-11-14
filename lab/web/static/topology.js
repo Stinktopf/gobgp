@@ -62,8 +62,9 @@
     return [
       ...Graph.style(() => cy, { node: 13, label: 11 }),
       { selector: "node.from", style: { "underlay-color": css("--graph-accent"), "underlay-padding": Graph.px(() => cy, 7), "underlay-opacity": 0.4 } },
-      { selector: "node.problem", style: { "underlay-color": css("--graph-problem"), "underlay-padding": Graph.px(() => cy, 7), "underlay-opacity": 0.35 } },
-      { selector: "edge.problem", style: { "line-color": css("--graph-problem") } },
+      // A problem in rose, as on the Simulation's map: the router's border and a glow around it.
+      { selector: "node.problem", style: { "border-color": css("--graph-problem"), "underlay-color": css("--graph-problem"), "underlay-padding": Graph.px(() => cy, 7), "underlay-opacity": 0.35 } },
+      { selector: "edge.problem", style: { "line-color": css("--graph-problem"), "line-fill": "solid", opacity: 1 } },
     ];
   }
 
@@ -646,6 +647,8 @@
         d.append(el("dt", "label", label), el("dd", "mt-0.5 text-lg font-medium tabular-nums", value));
         stats.append(d);
       }
+      // How to edit, in a tooltip on the counts instead of a line of text.
+      stats.dataset.tip = "A click on a router or session edits it. Shift-click or Shift-drag selects several routers";
       panel.append(stats);
       // OBGP in hybrids, for whole roles at once.
       const hybrid = el("div", "space-y-2 border-t border-slate-100 pt-4 dark:border-white/5");
@@ -683,7 +686,7 @@
       // The marks every topology may have, and the roles this one has: one list with the previews.
       const legend = Graph.legend(cy, { always: true });
       legend.classList.add("border-t", "border-slate-100", "pt-4", "dark:border-white/5");
-      panel.append(legend, el("p", "muted text-xs", "Select a router or session to edit it. Shift-click or Shift-drag selects several routers."));
+      panel.append(legend);
     }
   }
 

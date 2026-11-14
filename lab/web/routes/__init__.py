@@ -5,6 +5,7 @@ from . import (
     experiments,
     groups,
     login,
+    marks,
     queue,
     results,
     scenarios,
@@ -13,4 +14,4 @@ from . import (
     topologies,
 )
 
-routers = [m.router for m in (api, login, settings, queue, experiments, results, groups, scenarios, topologies, simulation)]
+routers = [m.router for m in (api, login, settings, queue, experiments, results, groups, scenarios, topologies, simulation, marks)]

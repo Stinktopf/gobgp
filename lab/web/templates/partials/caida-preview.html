@@ -18,7 +18,7 @@
   <span class="rounded-md bg-slate-100 px-2 py-1 dark:bg-white/5" data-tip="{{ tip }}"><span class="font-medium tabular-nums">{{ value }}</span> <span class="muted">{{ label }}</span></span>
   {% endfor %}
 </div>
-{% if not p.fits %}<p class="mt-2 text-xs text-rose-700 dark:text-rose-300">{{ "{:,}".format(p.routers) }} routers do not fit this host, at most {{ p.most }}.</p>{% endif %}
+{% if not p.fits %}<p class="notice notice-warn mt-2">{{ "{:,}".format(p.routers) }} routers do not fit this host, at most {{ p.most }}.</p>{% endif %}
 {% if p.asked %}<span class="block text-xs text-rose-700 dark:text-rose-300">CAIDA has no data of {{ p.asked }}, so the nearest month is used.</span>{% endif %}
 <div class="mt-3 rounded-lg border border-slate-200 dark:border-white/10" data-members>
   <input type="search" name="member" placeholder="Find an AS among {{ '{:,}'.format(p.routers) }}" aria-label="Find an AS of the part"

@@ -637,6 +637,9 @@ func TestOperaOptionsFromEnv(t *testing.T) {
 	o := InitOperaFromEnv()
 	assert.Equal(t, 2*time.Second, o.RefreshInterval)
 	assert.Equal(t, 500*time.Millisecond, o.RefreshDelay)
+	assert.False(t, o.PlainRefresh)
+	t.Setenv("GOBGP_OPERA_ENHANCED_REFRESH", "off")
+	assert.True(t, InitOperaFromEnv().PlainRefresh)
 }
 
 func TestOperaNoPruningKeepsSupersets(t *testing.T) {
@@ -980,4 +983,31 @@ func TestOperaRouteServerIsTransparent(t *testing.T) {
 			assert.Len(t, tm.GetExportPathList(GLOBAL_RIB_NAME, 0, []bgp.Family{bgp.RF_IPv4_UC}), 1)
 		}
 	}
+}
+
+func TestOperaRedundantPathChangesNothing(t *testing.T) {
+	withOperaOptions(t, OperaOptions{Enabled: true, Pruning: PruneRefresh})
+	d := newOperaDestination()
+	d.Calculate(logger, operaPath("1.1.1.1", []uint32{1, 9}, false))
+	d.Calculate(logger, operaPath("2.2.2.2", []uint32{2, 5, 9}, false))
+
+	// The admitted path again, as a route refresh resends it: nothing to do.
+	assert.True(t, d.OperaRedundant(operaPath("1.1.1.1", []uint32{1, 9}, false)))
+	// Changed attributes, a path set aside, a new source or a withdrawal still count.
+	assert.False(t, d.OperaRedundant(operaPathMed("1.1.1.1", []uint32{1, 9}, false, 5)))
+	assert.False(t, d.OperaRedundant(operaPath("2.2.2.2", []uint32{2, 5, 9}, false)))
+	assert.False(t, d.OperaRedundant(operaPath("3.3.3.3", []uint32{3, 9}, false)))
+	assert.False(t, d.OperaRedundant(operaPath("1.1.1.1", []uint32{1, 9}, true)))
+
+	// Set aside in a neighbor's table, it must come back there.
+	held := d.knownPathList[0]
+	v := newOperaView(d.nlri, 1)
+	v.dest.opera = &operaState{suppressed: []*Path{held.Clone(false)}}
+	d.views = map[string]*operaView{"a": v}
+	assert.False(t, d.OperaRedundant(operaPath("1.1.1.1", []uint32{1, 9}, false)))
+	d.views = nil
+
+	// BGP decides as GoBGP always did.
+	withOperaOptions(t, OperaOptions{Enabled: false})
+	assert.False(t, d.OperaRedundant(operaPath("1.1.1.1", []uint32{1, 9}, false)))
 }

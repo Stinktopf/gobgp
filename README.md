@@ -21,7 +21,7 @@ so that under the assumptions of its proof it cannot. BGP messages stay as they 
 
 - **Router:** gobgpd with OBGP, every part switchable back to the paper's code.
 - **Lab:** BGP and OBGP on real routers in Kubernetes, from topology to statistics.
-- **Agents:** AI assistants operate the lab over MCP, with a person approving each change.
+- **Agents:** AI assistants operate the lab over MCP. By default a person approves each change.
 - **Simulator:** gobgpd's decision code on every small network, to find where OBGP deviates from BGP, replayed step by step in the lab's Simulation area.
 
 ## How it works
@@ -34,7 +34,8 @@ Paths are ordered by AS path length, ties broken by ASN.
 - **Re-admission:** once no valid path is left, set-aside paths come back as their neighbors answer a route refresh.
 - **Per neighbor (optional):** a table per eBGP neighbor, each exporting the worst path that neighbor may get.
 - **iBGP:** paths from the own AS skip the import filter but count for the threshold.
-- **Forwarding:** the FIB gets GoBGP's usual best path, loop-free once routes are at rest.
+- **Forwarding:** the FIB gets GoBGP's usual best path, loop-free once routes are at rest. With a table per
+  neighbor lab and simulator check forwarding per ingress, as with NS-BGP: gobgpd installs no FIB per table.
 
 What it costs: [Limitations](docs/router.md#limitations).
 
@@ -81,6 +82,24 @@ git clone https://github.com/Stinktopf/gobgp.git && cd gobgp/scripts && ./setup.
 - **Agents:** [docs/agents.md](docs/agents.md)
 
 ## Simulator
+
+The simulator plays one prefix through every connected network of up to five routers, with gobgpd's own
+decision and export code. It covers families of policies and events, such as Gao-Rexford relations, route
+reflection, confederations, route servers, communities and filters, and runs each network in many orders of
+messages. For every deviation from BGP, or of BGP itself, it keeps the smallest network: no rest, loops,
+black holes, lost routes.
+
+In the lab's Simulation area each finding plays step by step on one map: the routes of every router, the
+messages on their way and, in a bubble, why a router decides as it does. *Play in the lab* turns it into an
+experiment for the routers, and the result compares both sides case by case.
+
+<p align="center">
+  <picture>
+    <source srcset="assets/readme/simulator-dark.png" media="(prefers-color-scheme: dark)">
+    <img src="assets/readme/simulator-light.png" alt="DISAGREE in the simulator: r1 and r2 prefer each other's route, packets circle between them" width="640">
+  </picture>
+  <br><sub>DISAGREE in the simulator: r1 and r2 prefer each other's route, and packets circle between them.</sub>
+</p>
 
 What it found: [DESIGN.md](DESIGN.md#what-the-router-supports). Running it: [docs/simulator.md](docs/simulator.md).
 

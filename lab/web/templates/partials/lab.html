@@ -1,53 +1,63 @@
 {% from "macros.html" import cluster_badge, icon %}
 {% if active %}
 {% set s = active.status %}
-{% set live = s.live or [] %}
-{% set parts = (s.current or "").replace("#", "/").split("/") %}
+{% set r = live_run(s, active.experiment) %}
 {% set run = s.done + 1 if s.done < s.total else s.total %}
-{# The running result, as the highlight of the page: a head, the numbers in one row, the chart, the progress. #}
-<section class="mb-6 rounded-2xl bg-uoft-700 p-6 text-white shadow-sm dark:bg-uoft-800">
+{% set tones = {"wait": "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200",
+                "setup": "bg-uoft-50 text-uoft-800 dark:bg-uoft-950 dark:text-uoft-200",
+                "rest": "bg-uoft-50 text-uoft-800 dark:bg-uoft-950 dark:text-uoft-200",
+                "step": "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200"} %}
+{# The running result, compact: its name, the run with its phase, the routers' numbers once they sample, the progress. #}
+<section class="card mb-6 p-5" aria-label="Running result">
   <div class="flex items-start gap-4">
     <div class="min-w-0 flex-1">
-      <div class="flex items-center gap-2 text-xs font-medium tracking-wide text-white/70 uppercase">
-        <span class="relative flex size-2"><span class="absolute inline-flex size-full animate-ping rounded-full bg-white/60"></span><span class="relative inline-flex size-2 rounded-full bg-white"></span></span>
-        Running
-      </div>
-      <a href="/results/{{ active.name }}" class="mt-1.5 block truncate font-mono text-lg font-medium hover:underline">{{ active.name }}</a>
-      {% if active.experiment.description %}<p class="mt-0.5 truncate text-sm text-white/70" data-tip="{{ active.experiment.description }}">{{ active.experiment.description }}</p>{% endif %}
+      <div class="label flex items-center gap-2"><span class="size-2 animate-pulse rounded-full bg-sky-500" aria-hidden="true"></span>{{ "Stopping" if active.stopping else "Running" }}</div>
+      <a href="/results/{{ active.name }}" class="mt-1 block truncate font-mono text-lg font-medium text-uoft-700 hover:underline dark:text-uoft-300"{% if active.experiment.description %} data-tip="{{ active.experiment.description }}"{% endif %}>{{ active.name }}</a>
     </div>
+    {% if active.stopping %}
+    <span class="muted py-1.5 text-sm whitespace-nowrap" data-tip="It ends its current phase, then stops. Its runs are kept." data-tip-align="end">Stopping…</span>
+    {% else %}
     <form method="post" action="/results/{{ active.name }}/stop">
-      <button class="rounded-lg bg-white/15 px-3 py-1.5 text-sm font-medium transition hover:bg-white/25" data-confirm="Stop {{ active.name }}?" data-confirm-text="It can be resumed later.">Stop</button>
+      <button class="btn btn-danger" data-confirm="Stop {{ active.name }}?" data-confirm-text="It can be resumed later.">Stop</button>
     </form>
+    {% endif %}
   </div>
 
-  {% set paths = live | map(attribute="paths") | list %}
-  <dl class="mt-6 grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
-    {% for label, value, unit, tip, line in [
-         ("Run", run, "of " ~ s.total, None, None),
-         ("Prefixes", live[-1].destinations | compact if live else "–", "", "Prefixes a router knows, on average", "bg-white"),
-         ("Paths", live[-1].paths | compact if live else "–", "", "Paths a router admits, on average", "bg-white/45"),
-         ("Left", left_s | duration if left_s is not none else "–", "", None, None)] %}
-    <div class="min-w-0" {% if tip %}data-tip="{{ tip }}"{% endif %}>
-      <dt class="flex items-center gap-1.5 text-xs text-white/70">{% if line %}<span class="h-0.5 w-3 rounded {{ line }}"></span>{% endif %}{{ label }}</dt>
-      <dd class="mt-1 flex items-baseline gap-1.5"><span class="text-3xl leading-none font-semibold tracking-tight tabular-nums">{{ value }}</span>{% if unit %}<span class="text-sm whitespace-nowrap text-white/60">{{ unit }}</span>{% endif %}</dd>
+  {# The run in one line: topology, variant, scenario and repetition, then its phase and how long it has run. #}
+  <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm">
+    {% if r.topology %}<span class="font-mono" data-tip="Topology, variant, scenario and repetition of this cell">{{ r.topology }}, {{ r.variant }}, {{ r.scenario }}, #{{ r.repetition }}{% if r.repetitions %} of {{ r.repetitions }}{% endif %}</span>{% endif %}
+    <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium {{ tones[r.tone] }}" data-tip="{{ {'wait': 'The runner waits before it goes on', 'setup': 'Before the scenario', 'rest': 'The step until_stable: no change for the quiet time', 'step': 'The step of the scenario playing now'}[r.tone] }}">{{ r.phase }}</span>
+    {% if r.tone == "rest" and r.quiet_s is not none %}<span class="muted text-xs tabular-nums" data-tip="No change of destinations, paths or updates for this long{% if r.rest_s %}&#10;Rest after {{ r.rest_s | round | int }} s{% endif %}">quiet for {{ r.quiet_s | duration }}</span>
+    {% elif r.elapsed_s is not none %}<span class="muted text-xs tabular-nums" data-tip="Since the run started, deployment included">{{ r.elapsed_s | duration }}</span>{% endif %}
+  </div>
+
+  {% if r.problems %}
+  <div class="mt-3 space-y-1">{% for title, why in r.problems %}<p class="notice notice-check truncate" data-tip="{{ why }}"><span class="font-medium">{{ title }}.</span> {{ why }}</p>{% endfor %}</div>
+  {% endif %}
+
+  {# The latest means of the routers, once they sample. #}
+  {% if r.destinations is not none %}
+  <dl class="mt-4 grid grid-cols-3 gap-x-6">
+    {% for label, value, unit, tip in [
+         ("Destinations", r.destinations | compact, "", "Prefixes a router reaches, on average" ~ (("&#10;Highest in this run: " ~ (r.peak | compact)) if r.peak is not none else "")),
+         ("Paths", r.paths | compact if r.paths is not none else "–", "", "Paths a router admits, on average"),
+         ("Updates", ("%.1f" | format(r.updates_s)) if r.updates_s is not none and r.updates_s < 10 else (r.updates_s | compact if r.updates_s is not none else "–"), "/s", "Updates a router receives per second, on average over the last 10 s")] %}
+    <div class="min-w-0" data-tip="{{ tip | safe }}">
+      <dt class="label">{{ label }}</dt>
+      <dd class="mt-1 flex items-baseline gap-1"><span class="text-xl leading-none font-semibold tracking-tight whitespace-nowrap tabular-nums">{{ value }}</span>{% if unit and value != "–" %}<span class="muted text-sm">{{ unit }}</span>{% endif %}</dd>
     </div>
     {% endfor %}
   </dl>
+  {% endif %}
 
-  {% set top = ([1] + paths) | max %}
-  <svg viewBox="0 0 320 64" preserveAspectRatio="none" class="mt-5 h-16 w-full rounded-lg bg-white/10" aria-label="Prefixes and paths over the last minute">
-    <polyline points="{{ sparkline(paths, top) }}" fill="none" stroke="rgb(255 255 255 / 0.45)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
-    <polyline points="{{ sparkline(live | map(attribute='destinations') | list, top) }}" fill="none" stroke="#ffffff" stroke-width="2" vector-effect="non-scaling-stroke"/>
-  </svg>
-
-  <div class="mt-5 h-1.5 overflow-hidden rounded-full bg-white/15" role="progressbar" aria-valuemin="0" aria-valuemax="{{ s.total }}" aria-valuenow="{{ s.done }}">
-    <div class="h-full rounded-full bg-white transition-all" style="width: {{ (100 * s.done / s.total) if s.total else 0 }}%"></div>
+  {# The result: runs done, time left and when it ends. #}
+  <div class="mt-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-sm">
+    <span>Run <span class="font-medium tabular-nums">{{ run }}</span> <span class="muted">of {{ s.total }}</span></span>
+    <span class="muted tabular-nums">{% if left_s is not none %}{{ left_s | duration }} left{% if active_ends %}, ends {{ active_ends | clock }}{% endif %}{% endif %}</span>
   </div>
-  <div class="mt-2 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-sm text-white/75">
-    {% if parts | length == 4 %}<span class="font-mono break-all" data-tip="Topology, variant, scenario, run">{{ parts[0] }}, {{ parts[1] }}, {{ parts[2] }}, #{{ parts[3] }}</span>{% endif %}
-    <span>{{ s.phase or "" }}</span>
+  <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800" role="progressbar" aria-label="Runs done" aria-valuemin="0" aria-valuemax="{{ s.total }}" aria-valuenow="{{ s.done }}">
+    <div class="h-full rounded-full bg-uoft-700 transition-all dark:bg-uoft-400" style="width: {{ (100 * s.done / s.total) if s.total else 0 }}%"></div>
   </div>
-  {% if s.attempt and s.attempt > 1 %}<p class="mt-2 rounded-lg bg-white/10 px-3 py-2 text-sm text-white/85">Attempt {{ s.attempt }} of {{ s.attempts }}, {{ s.failure }}</p>{% endif %}
 </section>
 {% endif %}
 {% set m = machine %}

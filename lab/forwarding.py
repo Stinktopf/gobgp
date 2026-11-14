@@ -9,18 +9,19 @@ IGP runs: the costs of the topology are the IGP. Ties between equally
 cheap paths are broken as the simulator breaks them, by the order of the
 routers and links in the topology.
 
-NS-BGP (bgp-pn) forwards by ingress: a router sends a packet from an eBGP
-neighbor on the route it sends that neighbor, and inside an AS through a
-tunnel to the exit, the router of the route's next AS beside its border
-router, as the paper of NS-BGP forwards. Its next hops are then an Ingress
-per router.
+A router with a table per neighbor, NS-BGP (bgp-pn) and OBGP (-pn) alike,
+forwards by ingress: it sends a packet from an eBGP neighbor on the route
+it sends that neighbor, and inside an AS through a tunnel to the exit, the
+router of the route's next AS beside its border router, as the paper of
+NS-BGP forwards. Its next hops are then an Ingress. In a mixed mode the
+routers with one table forward on their best route, whoever sent the packet.
 """
 
 import functools
 
 
 class Ingress(dict):
-    """Where an NS-BGP router sends packets: by the eBGP neighbor they came
+    """Where a router with a table per neighbor sends packets: by the eBGP neighbor they came
     from, None for its own, each the router its route leads to and the first
     AS of the route, None for none."""
 
@@ -77,11 +78,11 @@ def exit_of(routers: dict, border: str, asn: int | None) -> str | None:
 def check(routers: dict, next_hops: dict, starts: list[str] | None = None) -> list[str]:
     """The problems of forwarding one prefix from the starts, all routers if
     none: next_hops gives for every router the router its best route leads
-    to, itself for the origin, None for no route, or with NS-BGP an Ingress.
+    to, itself for the origin, None for no route, or with a table per neighbor an Ingress.
     Loops and black holes, as the simulator names them."""
     igp = shortest(routers)
     asn = {name: str(r.get("asn")) for name, r in routers.items()}
-    by_ingress = any(isinstance(v, Ingress) for v in next_hops.values())
+    by_ingress = lambda name: isinstance(next_hops.get(name), Ingress)
 
     # Packets of a route server's clients come straight from them, sent on
     # the route the router sends the route server, as the simulator has it.
@@ -95,7 +96,7 @@ def check(routers: dict, next_hops: dict, starts: list[str] | None = None) -> li
             if came not in v:
                 came = next((rs for rs in v if rs is not None and came in clients.get(rs, ())), came)
             return v.get(came) or (None, None)
-        return (None, None) if by_ingress and came is not None else (v, None)
+        return v, None  # one table: its best route, whoever sent the packet
 
     loops, holes = {}, []
     for start in starts if starts is not None else routers:
@@ -115,16 +116,16 @@ def check(routers: dict, next_hops: dict, starts: list[str] | None = None) -> li
                 loops[tuple(cycle)] = cycle
                 break
             seen.append(state)
-            nxt, came = hop, (at if by_ingress else None)
+            nxt, came = hop, at
             if hop in asn and asn[hop] == asn[at]:
-                if by_ingress:  # the tunnel ends at the exit, or at the origin if it is in this AS
+                if by_ingress(at):  # the tunnel ends at the exit, or at the origin if it is in this AS
                     nxt, came = (exit_of(routers, hop, first), hop) if first is not None else (hop, None)
                 else:
                     nxt, came = igp[at][hop], None
-            if nxt is None or not by_ingress and next_hops.get(nxt) is None:
+            if nxt is None or not by_ingress(nxt) and next_hops.get(nxt) is None:
                 holes.append(start)
                 break
-            state = (nxt, came)
+            state = (nxt, came if by_ingress(nxt) else None)
     problems = [f"forwarding loops between {', '.join(c)}" for c in loops.values()]
     if holes:
         problems.append(f"forwarding from {', '.join(holes)} ends at a router without a route")

@@ -3939,3 +3939,38 @@ func TestNewSingleAsPathMatch(t *testing.T) {
 	r = NewSingleAsPathMatch("^65100$")
 	assert.Equal(t, r.mode, ONLY)
 }
+
+// A neighbor set answers as net.IPNet.Contains did, also after a change.
+func TestNeighborSetContainsAsIPNet(t *testing.T) {
+	entries := []string{"10.0.0.1", "10.1.0.0/16", "2001:db8::1", "2001:db8:1::/48", "::ffff:10.2.0.0/112", "192.0.2.7/32"}
+	addrs := []string{"10.0.0.1", "10.0.0.2", "10.1.200.3", "10.2.0.9", "::ffff:10.0.0.1", "::ffff:10.1.0.1", "2001:db8::1", "2001:db8::2", "2001:db8:1::5", "192.0.2.7", "192.0.2.8"}
+	old := func(s *NeighborSet, a netip.Addr) bool {
+		for _, n := range s.list {
+			if n.Contains(a.AsSlice()) {
+				return true
+			}
+		}
+		return false
+	}
+	check := func(s *NeighborSet) {
+		for _, x := range addrs {
+			a := netip.MustParseAddr(x)
+			assert.Equal(t, old(s, a), s.contains(a), x)
+		}
+	}
+	s, err := NewNeighborSet(oc.NeighborSet{NeighborSetName: "n", NeighborInfoList: entries})
+	require.NoError(t, err)
+	check(s)
+	assert.True(t, s.contains(netip.MustParseAddr("::ffff:10.0.0.1")))
+
+	part, _ := NewNeighborSet(oc.NeighborSet{NeighborSetName: "n", NeighborInfoList: entries[:2]})
+	require.NoError(t, s.Remove(part))
+	check(s)
+	assert.False(t, s.contains(netip.MustParseAddr("10.0.0.1")))
+	require.NoError(t, s.Append(part))
+	check(s)
+	assert.True(t, s.contains(netip.MustParseAddr("10.1.0.1")))
+	require.NoError(t, s.Replace(part))
+	check(s)
+	assert.False(t, s.contains(netip.MustParseAddr("2001:db8::1")))
+}

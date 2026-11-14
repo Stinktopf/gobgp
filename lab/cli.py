@@ -51,7 +51,7 @@ def main() -> None:
     p.add_argument("--family", default="", help="export, search: only this family of policies")
     p.add_argument("--overwrite", action="store_true", help="export: replace sim-* topologies and scenarios")
     p.add_argument("--transient", action=argparse.BooleanOptionalAction, default=True, help="search: also loops, blocking and lost routes on the way to rest")
-    p.add_argument("--tables", action="store_true", help="search: OBGP with a table per neighbor, modes named -pn")
+    p.add_argument("--tables", action="store_true", help="predict, search: OBGP with a table per neighbor, modes named -pn")
     p.add_argument("--target", default="FuzzSoft", help="fuzz: FuzzInModel, FuzzIBGP or FuzzSoft")
     p.add_argument("--hours", type=float, default=1, help="fuzz: how long")
     p.add_argument("--parallel", type=int, default=4, help="fuzz: cores, few on a shared server")
@@ -211,7 +211,7 @@ def _run(dataset: Dataset) -> int:
         format="%(asctime)s %(levelname)s %(message)s",
         handlers=[logging.StreamHandler(), logging.FileHandler(dataset.path / "lab.log")],
     )
-    log.info("result %s", dataset.path)
+    log.info("result %s", dataset.name)
     stop = cluster.STOP  # also ends a long build or cluster start
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
@@ -715,9 +715,15 @@ def cmd_simulate(args) -> int:
             sim = f"{c['orders_without_rest']} of {c['orders']} orders without rest" if c["orders"] else f"not translated: {c['why_not']}"
             print(f"{c['topology']}, {c['scenario']}, {c['variant']}: simulator {sim}, lab {lab}"
                   + (f"\n  signal: {c['signal']}" if c["signal"] else ""))
+            for d, x in c["deviations"].items():  # only where one side showed it
+                if x["simulator"] and x["lab"] and (x["orders_with"] or x["runs_with"]):
+                    print(f"  {d}: simulator {x['orders_with']} of {x['orders']} orders at rest, lab {x['runs_with']} of {x['runs']} runs at rest"
+                          + (f"\n  signal: {x['signal']}" if x["signal"] else ""))
         for variant, m in found["per_variant"].items():
             answers = ", ".join(f"{pair} {n}" for pair, n in sorted(m["answers"].items()))
             print(f"{variant}: {m['cells']} cells, {m['not_translated']} not translated, {m['signals']} signals; {answers}")
+            for d, x in (m.get("deviations") or {}).items():
+                print(f"  {d}: {x['cells']} cells, {x['signals']} signals; " + ", ".join(f"{pair} {n}" for pair, n in sorted(x["answers"].items())))
         return 0
     if args.action == "compare":
         if not args.topology:
@@ -741,7 +747,7 @@ def cmd_simulate(args) -> int:
             print("predict needs a topology and a scenario", file=sys.stderr)
             return 2
         try:
-            out = simulate.predict(args.topology, args.scenario, args.seeds)
+            out = simulate.predict(args.topology, args.scenario, args.seeds, tables=args.tables)
         except simulate.Unsupported as e:
             print("The simulator cannot play this exactly:", *(f"  {r}" for r in e.reasons), sep="\n", file=sys.stderr)
             return 1

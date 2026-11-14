@@ -124,11 +124,11 @@
         {# The row sets the height, the drawing fills its box: a tall drawing would stretch the row. #}
         <div class="relative w-28 shrink-0 bg-slate-50/60 max-sm:min-h-24 sm:h-36 sm:w-full dark:bg-slate-950/40">
           <svg class="thumb absolute inset-0 size-full" data-topology="{{ t.name }}" aria-hidden="true"></svg>
+          <span class="thumb-placeholder">{{ icon("connect") }}</span>
         </div>
         <div class="flex min-w-0 flex-1 flex-col gap-1.5 p-4 max-sm:gap-1 max-sm:p-3">
           <div class="flex items-center justify-between gap-2 max-sm:flex-col max-sm:items-start max-sm:gap-1">
-            <span class="min-w-0 max-w-full truncate font-mono font-medium max-sm:whitespace-normal max-sm:[overflow-wrap:anywhere]" data-tip="{{ t.name }}">{{ t.name }}</span>
-            {% if t.source %}<span class="tag shrink-0">{{ t.source }}</span>{% endif %}
+            <span class="min-w-0 max-w-full truncate font-mono font-medium max-sm:whitespace-normal max-sm:[overflow-wrap:anywhere]" data-tip="{{ t.name }}{{ ', from ' ~ t.source if t.source }}">{{ t.name }}</span>
           </div>
           <p class="muted text-xs tabular-nums">{{ t.routers }} routers, {{ t.links }} links{% if t.preferences %}, {{ t.preferences }} preferences{% endif %}</p>
           <p class="muted mt-auto pt-1 text-xs" data-tip="{{ t.used | join(', ') }}">Used by {{ t.used | listing(40) or "no experiment" }}</p>
@@ -138,7 +138,7 @@
     </div>
   </section>
   {% else %}
-  <p class="muted py-10 text-center text-sm">No topologies yet.</p>
+  <p class="empty-state">No topologies yet.</p>
   {% endfor %}
   <div class="group-new" data-group-new>
     <div class="group-head"><span class="group-new-hint">{{ icon("add") }}Drop here for a new group</span><input data-new-name class="group-new-name input py-1" placeholder="Name of the new group, Enter to keep" aria-label="Name of the new group"></div>

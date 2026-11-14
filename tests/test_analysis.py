@@ -78,7 +78,7 @@ def test_failed_checks_list_every_failed_expect():
             {"name": "expect", "passed": True, "step": "1", "t": 1.0},
             {"name": "expect", "passed": key.variant == "obgp", "step": "2", "t": 2.0, "routers": ["fulda"], "problems": ["fulda holds 2 prefixes"]}]}
     assert analysis.failed_checks(Fake(), "t") == [{"topology": "t", "scenario": "s", "variant": "bgp", "run": 1, "step": "2", "t": 2.0,
-                                                    "routers": ["fulda"], "problems": ["fulda holds 2 prefixes"]}]
+                                                    "routers": ["fulda"], "problems": ["fulda holds 2 prefixes"], "key": "2#0"}]
     assert len(analysis.failed_checks(Fake())) == 2
 
 
@@ -97,6 +97,11 @@ def test_busy_routers_stand_by_their_latest_sample():
     assert ticks[0.1][1]["t"] == 0.0 and ticks[3.0][1]["t"] == 0.2  # b by its latest sample
     late = analysis.ticks([s(0.0, "a"), s(0.0, "b"), s(analysis.STALE_S + 1, "a")], run)
     assert list(late) == [0.0]  # b silent for longer than STALE_S: left out
+    # b samples only every 30 s: its sample stands while its next one shows no change, never across a change.
+    quiet = analysis.ticks([s(0.0, "a"), s(0.0, "b"), s(15.0, "a"), s(30.0, "a"), {**s(30.0, "b"), "paths": 0.0}], run)
+    assert list(quiet) == [0.0, 15.0, 30.0] and quiet[15.0][1]["t"] == 0.0
+    moved = analysis.ticks([s(0.0, "a"), s(0.0, "b"), s(15.0, "a"), s(30.0, "a"), s(30.0, "b")], run)
+    assert list(moved) == [0.0, 30.0]  # b changed somewhere in its gap: 15 s is left out
 
 
 def test_a_seldom_answering_router_shows_its_true_rate_in_the_replay(lab_files, monkeypatch):
@@ -109,6 +114,23 @@ def test_a_seldom_answering_router_shows_its_true_rate_in_the_replay(lab_files, 
     monkeypatch.setattr(Dataset, "samples", lambda self, key: samples)
     churn = analysis.replay(d, RunKey("t", "v", "s", 1))["routers"]["a"]["churn"]
     assert max(churn) == 10.0  # 50 updates in 5 s, not 50 in a tenth
+
+
+def test_the_replay_gives_the_updates_per_direction_of_a_link(lab_files, monkeypatch):
+    run = {"events": [], "watched": ["a", "b"], "status": "completed", "measurements": []}
+    # a gets 10 updates a second from b, b gets none from a.
+    samples = [{"t": float(t), "router": r, "paths": 1, "destinations": 1, "updates_rx": n, "peers_rx": f"{peer}={n}"}
+               for t in range(3) for r, peer, n in (("a", "b", 10 * t), ("b", "a", 0))]
+    d = object.__new__(Dataset)
+    monkeypatch.setattr(Dataset, "run", lambda self, key: run)
+    monkeypatch.setattr(Dataset, "samples", lambda self, key: samples)
+    replay = analysis.replay(d, RunKey("t", "v", "s", 1))
+    assert replay["directed"] == {"b>a": [0.0, 10.0, 10.0]}  # from b to a, a direction without updates left out
+    assert "links" not in replay
+    # Many routers: one line per link, both directions added.
+    monkeypatch.setattr(analysis, "LANES", 1)
+    replay = analysis.replay(d, RunKey("t", "v", "s", 1))
+    assert replay["links"] == {"a|b": [0.0, 10.0, 10.0]} and "directed" not in replay
 
 
 def test_the_wilcoxon_test_is_exact():
@@ -174,11 +196,29 @@ def test_settling_after_the_last_step_counts_from_the_end_of_a_series():
     assert out["settle_end_s"] is None  # no rest, no time to it
 
 
+def test_updates_at_rest_count_from_the_time_the_routes_came_to_rest():
+    # A withdrawal whose tail lasts longer than the quiet time: no update at rest, as the routes rest from then.
+    _, quiet = _tail_run(12, 18)
+    out, _ = _tail_run(10 + quiet + 3, 10 + 6 * quiet)
+    assert out["settle_s"] == quiet + 3 and out["hold_churn"] == 0
+    # Never at rest: one update a second from the quiet time on.
+    out, _ = _tail_run(99, 10 + 3 * quiet)
+    assert out["hold_churn"] == 1
+
+
 def test_routes_still_changing_need_three_quiet_times_to_count_as_oscillating():
     out, quiet = _tail_run(99, 18)
     assert out["oscillates"] is None  # a slow exploration may still end
     out, _ = _tail_run(99, 10 + 3 * quiet)
     assert out["oscillates"] == 1
+
+
+def test_routes_settled_for_the_quiet_time_rest_as_settle_s_says():
+    # The last change one quiet time less one interval before the end: settled, so not still changing either.
+    out, quiet = _tail_run(38, 40)
+    assert quiet == 3 and out["settle_s"] == 28.0 and out["oscillates"] == 0
+    out, _ = _tail_run(39, 40)  # one second later it is too short for rest and still changes at the end
+    assert out["settle_s"] is None and out["oscillates"] == 1
 
 
 def test_an_event_before_the_announcement_is_no_reference():
@@ -319,6 +359,22 @@ def test_loops_on_the_way_are_timed_from_the_next_hops_sampled_on_change():
     # The origin o delivers its own prefix.
     assert analysis.loops_on_the_way(dataset, RunKey("t", "v", "s", 1), {}, own, 0.0, 10.0) == (2.0, 1, 1.0, 1)
     assert analysis.loops_on_the_way(dataset, RunKey("t", "v", "s", 1), {}, {"a": [{"t": 1.0, "hops": ""}]}, 0.0, 10.0) is None
+
+
+def test_loops_and_holes_beyond_the_resolution_leave_out_shorter_ones():
+    routers = {r: {"asn": n, "neighbors": []} for n, r in enumerate(("o", "a", "b"), 64600)}
+    dataset = type("D", (), {"topology": lambda self, name: {"routers": routers}})()
+    p, q = "10.0.0.0/24", "10.0.1.0/24"
+    # p: a and b loop from 4 s to 6 s, a sends into a hole until 7 s. q: a reads its route via b 50 ms before b's
+    # route is read, as routers read their next hops one after another: a hole of 50 ms.
+    own = {"o": [{"t": 0.5, "hops": f"{p}=. {q}=."}],
+           "a": [{"t": 1.0, "hops": f"{p}=o|"}, {"t": 2.0, "hops": f"{q}=b|"}, {"t": 4.0, "hops": f"{p}=b|"}, {"t": 7.0, "hops": f"{p}=o|"}],
+           "b": [{"t": 1.0, "hops": f"{p}=o|"}, {"t": 2.05, "hops": f"{q}=o|"}, {"t": 4.0, "hops": f"{p}=a|"}, {"t": 6.0, "hops": f"{p}=-"}]}
+    checks: list = []
+    assert analysis.loops_on_the_way(dataset, RunKey("t", "v", "s", 1), {}, own, 0.0, 10.0, checks=checks) == (2.0, 1, 1.05, 1)
+    assert analysis.lasting(checks, 0.0, 10.0, 0.2) == (2.0, 1.0)
+    assert analysis.lasting(checks, 0.0, 6.5, 0.2) == (2.0, 0.5)  # counted within the window
+    assert analysis.lasting(checks, 0.0, 10.0, 1.5) == (2.0, 0.0)
 
 
 def test_a_stopped_router_forwards_nothing_until_it_is_up_again():

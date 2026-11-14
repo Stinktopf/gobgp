@@ -8,68 +8,130 @@ window.Graph = (() => {
   // Sizes in screen pixels, whatever the zoom.
   const px = (cy, n) => () => n / (cy() ? cy().zoom() : 1);
 
+  // Router colours as on the Simulation's map, --router-1 to --router-8 in styles.css: each router has its
+  // own while there are few, else all are neutral and only the meanings have colours: U of T blue a route,
+  // teal a role or rule, violet waits, rose the problem. Read again when the colour scheme changes.
+  const HUES = 8;
+  let hues = { theme: undefined, list: [] };
+  function palette() {
+    const theme = document.documentElement.dataset.theme;
+    if (hues.theme !== theme) hues = { theme, list: Array.from({ length: HUES }, (_, i) => css(`--router-${i + 1}`)) };
+    return hues.list;
+  }
+  // Up to this many routers the links are belts as on the map, more are thin lines.
+  const BELTS = 30;
+  // The routers of a graph in their order, their count and the count of links, kept until one comes or goes.
+  function order(cy) {
+    let o = cy.scratch("graph-order");
+    if (o) return o;
+    const ids = cy.nodes().not(".as").map((n) => n.id());
+    o = { count: ids.length, links: cy.edges().length, index: new Map(ids.length <= HUES ? ids.map((id, i) => [id, i]) : []) };
+    cy.scratch("graph-order", o);
+    if (!cy.scratch("graph-order-watched")) {
+      cy.scratch("graph-order-watched", true);
+      cy.on("add remove", () => cy.removeScratch("graph-order"));
+    }
+    return o;
+  }
+  // The colour of a router among few, or null.
+  function hue(n) {
+    const i = order(n.cy()).index.get(n.id());
+    return i === undefined ? null : palette()[i];
+  }
+  const belts = (cy) => order(cy).count <= BELTS;
+  // Links in screen pixels: belts 3, lines 1.5. Many links are fainter, so that a dense core stays a shape.
+  const linkWidth = (cy) => (belts(cy) ? 3 : 1.5);
+  function linkOpacity(cy) {
+    const n = order(cy).links;
+    return n <= 400 ? 1 : Math.max(0.2, 400 / n);
+  }
+  // The style of a link with a Local Preference: teal on the half at each router that prefers.
+  // As data mappers, so that the editor's changes show at once; replay passes the ends itself.
+  function prefFill(link, role, ends = (e) => [customPref(e.data("prefSource")), customPref(e.data("prefTarget"))]) {
+    const stops = (e) => { const [s, t] = ends(e); return [s ? role : link, s ? role : link, t ? role : link, t ? role : link].join(" "); };
+    return { "line-fill": "linear-gradient", "line-gradient-stop-colors": stops, "line-gradient-stop-positions": "0% 50% 50% 100%" };
+  }
+  // A colour token with transparency as a colour and an opacity, which Cytoscape takes apart.
+  function tone(token) {
+    const c = document.createElement("canvas").getContext("2d");
+    c.fillStyle = css(token);
+    c.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = c.getImageData(0, 0, 1, 1).data;
+    return { color: `rgb(${r},${g},${b})`, opacity: a / 255 };
+  }
+  // A router's name, its role and, for an origin, that it is one, as on the map.
+  const labelOf = (n) => `${n.id()}${n.hasClass("rr") ? " RR" : ""}${n.hasClass("rs") ? " RS" : ""}${n.hasClass("origin") ? "\norigin" : ""}`;
+
   function style(cy, { node = 12, label = 10 } = {}) {
+    const C = Object.fromEntries(["--graph-bg", "--graph-node", "--graph-label", "--graph-link", "--graph-accent", "--graph-role"].map((t) => [t, css(t)]));
+    const frame = tone("--graph-as-1");
+    const zoom = () => (cy() ? cy().zoom() : 1);
+    // Smaller cards among many routers, so that the links between them show.
+    const side = (n) => (belts(n.cy()) ? node : node * 0.75) / zoom();
     return [
+      // A router: a card of the map in miniature, its border and name in its colour.
       { selector: "node", style: {
-        "background-color": css("--graph-node"), width: px(cy, node), height: px(cy, node), label: "data(id)",
-        color: css("--graph-label"), "font-size": px(cy, label), "font-family": font, "text-valign": "bottom",
-        "text-margin-y": px(cy, 4), "text-background-color": css("--graph-bg"), "text-background-opacity": 0.7,
+        shape: "round-rectangle", "background-color": C["--graph-bg"], "border-width": px(cy, 1.75),
+        "border-color": (n) => hue(n) || C["--graph-node"], width: side, height: side, label: labelOf, "text-wrap": "wrap",
+        color: (n) => hue(n) || C["--graph-label"], "font-size": px(cy, label), "font-family": font, "font-weight": 600, "text-valign": "bottom",
+        "text-margin-y": px(cy, 4), "text-background-color": C["--graph-bg"], "text-background-opacity": 0.7,
         "text-background-padding": px(cy, 1), "text-background-shape": "roundrectangle",
       } },
       // A label that would cover another is hidden until a zoom makes room, see declutter.
       { selector: "node.crowded", style: { "text-opacity": 0 } },
       { selector: "node.crowded:selected", style: { "text-opacity": 1 } },
-      { selector: "node.origin", style: {
-        shape: "diamond", "background-color": css("--graph-accent"), width: px(cy, node * 1.5), height: px(cy, node * 1.5),
+      // A router that runs OBGP in a hybrid has a double border.
+      { selector: "node.obgp", style: { "border-style": "double", "border-width": px(cy, 3.5) } },
+      // A link: a belt as on the map while the routers are few, else a thin line, fainter among many.
+      { selector: "edge", style: {
+        width: (e) => linkWidth(e.cy()) / zoom(), "line-color": C["--graph-link"], opacity: (e) => linkOpacity(e.cy()),
+        "curve-style": "straight", "line-cap": "round",
       } },
-      // A router that runs OBGP in a hybrid is a square; a ring means it holds every prefix.
-      { selector: "node.obgp", style: { shape: "round-rectangle" } },
-      { selector: "edge", style: { width: px(cy, 1.5), "line-color": css("--graph-edge"), "curve-style": "straight" } },
-      // A Local Preference is a small pill at the end of the router that prefers.
+      // A Local Preference is teal, as the map's rules: the half of the link at the router that prefers,
+      // so that its direction shows at any size, and a tag with its value where there is room.
       { selector: "edge.pref", style: {
-        width: px(cy, 2), "line-color": css("--graph-accent-soft"), "source-label": pill("prefSource"), "target-label": pill("prefTarget"),
-        "source-text-offset": px(cy, 26), "target-text-offset": px(cy, 26), "font-size": px(cy, 9), "font-weight": 600,
-        color: css("--graph-accent"), "font-family": font,
-        "text-background-color": css("--graph-bg"), "text-background-opacity": 1, "text-background-padding": px(cy, 2),
-        "text-background-shape": "roundrectangle", "text-border-width": px(cy, 1), "text-border-color": css("--graph-accent-soft"),
+        ...prefFill(C["--graph-link"], C["--graph-role"]), opacity: 1,
+        "source-label": pill("prefSource"), "target-label": pill("prefTarget"),
+        "source-text-offset": px(cy, 30), "target-text-offset": px(cy, 30), "font-size": px(cy, 9), "font-weight": 600,
+        color: C["--graph-role"], "font-family": font,
+        "text-background-color": C["--graph-bg"], "text-background-opacity": 1, "text-background-padding": px(cy, 2),
+        "text-background-shape": "roundrectangle", "text-border-width": px(cy, 1), "text-border-color": C["--graph-role"],
         "text-border-opacity": 1,
       } },
-      // After the pill itself, which it hides where it would cover another label, see declutter.
+      // After the tag itself, which it hides where it would cover another label, see declutter.
       { selector: "edge.pref.crowded-source", style: { "source-label": "" } },
       { selector: "edge.pref.crowded-target", style: { "target-label": "" } },
-      // Gao-Rexford: an arrow points from a provider to its customer, peers
+      // Gao-Rexford, in teal as every rule: an arrow points from a provider to its customer, peers
       // have a dot at both ends, siblings a double line.
-      { selector: "edge.p2c", style: { "target-arrow-shape": "triangle", "target-arrow-color": css("--graph-edge"), "arrow-scale": 1.3 } },
-      { selector: "edge.c2p", style: { "source-arrow-shape": "triangle", "source-arrow-color": css("--graph-edge"), "arrow-scale": 1.3 } },
+      { selector: "edge.p2c", style: { "target-arrow-shape": "triangle", "target-arrow-color": C["--graph-role"], "arrow-scale": (e) => (belts(e.cy()) ? 0.9 : 1) } },
+      { selector: "edge.c2p", style: { "source-arrow-shape": "triangle", "source-arrow-color": C["--graph-role"], "arrow-scale": (e) => (belts(e.cy()) ? 0.9 : 1) } },
       { selector: "edge.p2p", style: {
-        "source-arrow-shape": "circle", "target-arrow-shape": "circle", "source-arrow-color": css("--graph-edge"),
-        "target-arrow-color": css("--graph-edge"), "arrow-scale": 0.9,
+        "source-arrow-shape": "circle", "target-arrow-shape": "circle", "source-arrow-color": C["--graph-role"],
+        "target-arrow-color": C["--graph-role"], "arrow-scale": (e) => (belts(e.cy()) ? 0.7 : 0.8),
       } },
-      { selector: "edge.s2s", style: { "line-style": "double", width: px(cy, 3.5) } },
-      // Routers of one AS sit in a frame; iBGP sessions are dashed, a route
-      // reflector has a ring.
+      // Two lines: the link in the background's colour inside an outline in the link's colour.
+      { selector: "edge.s2s", style: { "line-color": C["--graph-bg"], width: px(cy, 1.5), "line-outline-width": px(cy, 1.5), "line-outline-color": C["--graph-link"] } },
+      // An AS of several routers is a shaded area behind them, a confederation also has a dashed border, as on the map,
+      // each named inside at its top left: Cytoscape puts a left label outside, the margins move it in.
       { selector: "node.as", style: {
-        shape: "round-rectangle", "background-color": css("--graph-accent-soft"), "background-opacity": 0.12,
-        "border-width": px(cy, 1), "border-style": "dashed", "border-color": css("--graph-edge"), padding: px(cy, 18),
-        label: "data(label)", "text-valign": "top", "text-halign": "center", "text-margin-y": px(cy, -4),
-        "font-size": px(cy, label), color: css("--graph-label"), "text-background-opacity": 0,
+        shape: "round-rectangle", "background-color": frame.color, "background-opacity": frame.opacity,
+        "border-width": 0, padding: px(cy, 20),
+        label: "data(label)", "text-valign": "top", "text-halign": "left", "text-margin-y": px(cy, label + 7),
+        "text-margin-x": (n) => (String(n.data("label")).length * label * 0.6 + 8) / zoom(),
+        "font-size": px(cy, label), "font-weight": 600, color: C["--graph-node"], "text-background-opacity": 0,
       } },
-      // A confederation is a frame around the routers and frames of its member ASes.
-      { selector: "node.confed", style: { "border-style": "solid", "background-opacity": 0.05, padding: px(cy, 24) } },
-      { selector: "edge.ibgp", style: { "line-style": "dashed" } },
-      // A route reflector has a ring and RR after its name, a route server a dashed ring and RS, in one colour as in the Simulation.
-      { selector: "node.rr, node.rs", style: { "border-width": px(cy, 2), "border-color": css("--graph-role"), color: css("--graph-role"), "font-weight": 700 } },
-      { selector: "node.rr", style: { label: (n) => `${n.id()} RR` } },
-      { selector: "node.rs", style: { "border-style": "dashed", label: (n) => `${n.id()} RS` } },
+      { selector: "node.confed", style: { "border-width": px(cy, 1.2), "border-style": "dashed", "border-color": C["--graph-node"], padding: px(cy, 28) } },
+      // A route reflector has RR after its name, a route server RS, both in teal as in the Simulation.
+      { selector: "node.rr, node.rs", style: { "border-color": C["--graph-role"], color: C["--graph-role"] } },
       { selector: ":selected", style: {
-        "underlay-color": css("--graph-accent"), "underlay-padding": px(cy, 5), "underlay-opacity": 0.25, "underlay-shape": "ellipse",
+        "underlay-color": C["--graph-accent"], "underlay-padding": px(cy, 5), "underlay-opacity": 0.25, "underlay-shape": "round-rectangle",
       } },
     ];
   }
 
   const DEFAULT_PREF = 100;  // BGP's default Local Preference
   const customPref = (pref) => pref != null && +pref !== DEFAULT_PREF;
-  const pill = (end) => (e) => (customPref(e.data(end)) ? String(e.data(end)) : "");
+  const pill = (end) => (e) => (customPref(e.data(end)) ? `pref ${e.data(end)}` : "");
 
   // What the target of a session is to its source, as the class of the edge.
   const REL = { customer: "p2c", provider: "c2p", peer: "p2p", sibling: "s2s" };
@@ -421,19 +483,18 @@ window.Graph = (() => {
     const r = Math.max(1.1, 2.6 * fine) * unit, origins = new Set(topology.roles?.origins || []);
     let out = p ? await map(p) : "";
     for (const [a, router] of Object.entries(topology.routers)) for (const n of router.neighbors || []) {
-      if (a < n.name && pos[n.name]) out += `<line x1="${pos[a].x}" y1="${pos[a].y}" x2="${pos[n.name].x}" y2="${pos[n.name].y}" stroke="var(--graph-edge)" stroke-width="${Math.max(0.5, fine) * unit}"/>`;
+      if (a < n.name && pos[n.name]) out += `<line x1="${pos[a].x}" y1="${pos[a].y}" x2="${pos[n.name].x}" y2="${pos[n.name].y}" stroke="var(--graph-link)" stroke-width="${Math.max(0.5, fine) * unit}"/>`;
     }
-    for (const [n, q] of Object.entries(pos)) {
-      out += origins.has(n)
-        ? `<rect x="${q.x - r * 1.2}" y="${q.y - r * 1.2}" width="${r * 2.4}" height="${r * 2.4}" transform="rotate(45 ${q.x} ${q.y})" fill="var(--graph-accent)"/>`
-        : `<circle cx="${q.x}" cy="${q.y}" r="${r}" fill="var(--graph-node)"/>`;
-    }
+    // Routers as small rounded squares, the origins in U of T blue: too small for the word the larger views write.
+    const square = (q, s, fill) => `<rect x="${q.x - s}" y="${q.y - s}" width="${2 * s}" height="${2 * s}" rx="${s * 0.45}" fill="${fill}"/>`;
+    for (const [n, q] of Object.entries(pos)) if (!origins.has(n)) out += square(q, r * 0.9, "var(--graph-node)");
+    for (const [n, q] of Object.entries(pos)) if (origins.has(n)) out += square(q, r * 1.25, "var(--graph-accent)");
     svg.innerHTML = out;
     return p ? null : { viewBox: svg.getAttribute("viewBox"), body: out };  // a map is drawn again, it is quick
   }
 
   // A read-only view of a topology, e.g. a preview; extra styles on top.
-  function view(container, topology, { node = 10, label = 10, padding = 24, styles = [] } = {}) {
+  function view(container, topology, { node = 10, label = 10, padding = 24, styles = [], maxZoom = 1.6, keyed = true } = {}) {
     const { positions, projection } = layout(topology);
     let cy = null;
     cy = cytoscape({
@@ -442,14 +503,14 @@ window.Graph = (() => {
       style: [...style(() => cy, { node, label }), ...styles],
     });
     cy.on("zoom", () => cy.style().update());  // sizes follow the zoom
-    fit(cy, padding);
+    fit(cy, padding, maxZoom);
     underlay(cy, container, projection);
     declutter(cy, label);
-    // Under the graph what its marks mean, once per container.
+    // Under the graph what its marks mean, once per container, unless keyed is false: graphs side by side share one.
     const key = container.nextElementSibling?.classList.contains("graph-legend") ? container.nextElementSibling : null;
     const shown = legend(cy, { inline: true });
     shown.classList.add("px-1", "pt-2");
-    if (shown.children.length) key ? key.replaceWith(shown) : container.after(shown);
+    if (keyed && shown.children.length) key ? key.replaceWith(shown) : container.after(shown);
     else key?.remove();
     return cy;
   }
@@ -461,19 +522,19 @@ window.Graph = (() => {
     const ul = document.createElement("ul");
     ul.className = inline ? "graph-legend muted flex flex-wrap gap-x-4 gap-y-1 text-xs" : "graph-legend muted space-y-2 text-xs";
     const swatch = (style, text = "") => { const e = document.createElement("span"); e.className = "inline-block shrink-0 text-center leading-none whitespace-nowrap"; e.textContent = text; Object.assign(e.style, style); return e; };
-    const node = { width: "10px", height: "10px", background: "var(--graph-node)", margin: "0 3px" };
     const has = (selector) => always || cy.$(selector).length > 0;
+    const teal = { color: "var(--graph-role)", fontWeight: "700" };
+    // The origins are named on the graph, as on the Simulation's map, so they need no entry.
     const items = [
-      [has("node.origin"), swatch({ width: "9px", height: "9px", background: "var(--graph-accent)", transform: "rotate(45deg)", margin: "0 4px" }), "Origin"],
-      [has("node.obgp"), swatch({ ...node, borderRadius: "3px" }), "OBGP in hybrids"],
-      [has("edge.pref"), swatch({ width: "17px", height: "2px", background: "var(--graph-accent-soft)" }), "Local Preference, at the router that prefers"],
-      [has("edge.p2c, edge.c2p"), swatch({ width: "17px" }, "→"), "Provider to customer"],
-      [has("edge.p2p"), swatch({ width: "17px" }, "•–•"), "Peers"],
+      [has("node.obgp"), swatch({ width: "11px", height: "11px", border: "3px double var(--graph-node)", borderRadius: "3px", margin: "0 3px" }), "OBGP in hybrids"],
+      [has("edge.pref"), swatch({ padding: "1px 4px", border: "1px solid var(--graph-role)", borderRadius: "999px", ...teal, fontSize: "12px", lineHeight: "1" }, "pref"), "Local Preference, at the router that prefers"],
+      [has("edge.p2c, edge.c2p"), swatch({ width: "17px", ...teal }, "→"), "Provider to customer"],
+      [has("edge.p2p"), swatch({ width: "17px", ...teal }, "•–•"), "Peers"],
       [has("edge.s2s"), swatch({ width: "17px" }, "═"), "Siblings, one organization"],
-      [cy.$("node.as").not(".confed").length > 0, swatch({ width: "17px", height: "0", borderTop: "2px dashed var(--graph-edge)" }), "iBGP inside an AS, the frame"],
-      [cy.$("node.confed").length > 0, swatch({ width: "14px", height: "10px", border: "1px solid var(--graph-edge)", borderRadius: "3px" }), "Confederation"],
-      [cy.$("node.rr").length > 0, swatch({ width: "17px", color: "var(--graph-role)", fontWeight: "700" }, "RR"), "Route reflector"],
-      [cy.$("node.rs").length > 0, swatch({ width: "17px", color: "var(--graph-role)", fontWeight: "700" }, "RS"), "Route server"],
+      [cy.$("node.as").not(".confed").length > 0, swatch({ width: "17px", height: "11px", background: "var(--graph-as-1)", borderRadius: "3px" }), "AS of several routers"],
+      [cy.$("node.confed").length > 0, swatch({ width: "17px", height: "11px", background: "var(--graph-as-1)", border: "1px dashed var(--graph-node)", borderRadius: "3px" }), "Confederation"],
+      [cy.$("node.rr").length > 0, swatch({ width: "17px", ...teal }, "RR"), "Route reflector"],
+      [cy.$("node.rs").length > 0, swatch({ width: "17px", ...teal }, "RS"), "Route server"],
     ];
     for (const [shown, mark, text] of items) {
       if (!shown) continue;
@@ -487,36 +548,55 @@ window.Graph = (() => {
     return ul;
   }
 
-  // Hides the labels that would cover others, as a map does: routers with
-  // the most sessions place theirs first, then the Local Preferences at the
-  // ends of sessions. Again after every zoom and move.
+  // Hides the labels that would cover routers or other labels, as a map does:
+  // origins first, then routers with the most sessions, then the Local
+  // Preferences at the ends of sessions. Again after every zoom and move,
+  // and when a view changes the routers' sizes: cy.scratch("declutter")().
+  let measure = null;
+  const tagWidth = (text) => {
+    measure ||= document.createElement("canvas").getContext("2d");
+    measure.font = `600 9px ${font}`;
+    return measure.measureText(text).width + 6;  // with its padding and border
+  };
   function declutter(cy, label = 10) {
     const place = () => {
-      const placed = [];
+      const routers = cy.nodes().not(".as");
+      const placed = routers.map((n) => {
+        const p = n.renderedPosition(), r = n.renderedWidth() / 2;
+        return { x1: p.x - r, x2: p.x + r, y1: p.y - r, y2: p.y + r };
+      });
       // Frames keep their label: it sits above them, not where the box below assumes.
-      cy.batch(() => cy.nodes().not(".as").sort((a, b) => b.degree() - a.degree()).forEach((n) => {
-        const p = n.renderedPosition(), w = (String(n.data("label") || n.id()).length + (n.hasClass("rr") || n.hasClass("rs") ? 5 : 0)) * label * 0.6, h = label + 2;
-        const box = { x1: p.x - w / 2, x2: p.x + w / 2, y1: p.y + 6, y2: p.y + 6 + h };
+      cy.batch(() => routers.sort((a, b) => b.hasClass("origin") - a.hasClass("origin") || b.degree() - a.degree()).forEach((n) => {
+        const lines = labelOf(n).split("\n"), p = n.renderedPosition(), w = Math.max(...lines.map((l) => l.length)) * label * 0.6, h = lines.length * (label + 2);
+        const box = { x1: p.x - w / 2, x2: p.x + w / 2, y1: p.y + n.renderedWidth() / 2 + 2, y2: p.y + n.renderedWidth() / 2 + 2 + h };  // below its own card
         const covers = placed.some((o) => box.x1 < o.x2 && o.x1 < box.x2 && box.y1 < o.y2 && o.y1 < box.y2);
         n.toggleClass("crowded", covers);
         if (!covers) placed.push(box);
       }));
+      const zoom = cy.zoom(), pan = cy.pan(), rendered = (p) => ({ x: p.x * zoom + pan.x, y: p.y * zoom + pan.y });
       cy.batch(() => cy.edges(".pref").forEach((e) => {
-        const s = e.source().renderedPosition(), t = e.target().renderedPosition(), d = Math.hypot(t.x - s.x, t.y - s.y) || 1;
+        const s = rendered(e.sourceEndpoint()), t = rendered(e.targetEndpoint()), d = Math.hypot(t.x - s.x, t.y - s.y) || 1;
         for (const [end, from, sign] of [["source", s, 1], ["target", t, -1]]) {
           const text = pill(`pref${end[0].toUpperCase()}${end.slice(1)}`)(e);
-          // Where the pill sits: 26 px from its router along the session, as the style puts it.
-          const x = from.x + (sign * 26 * (t.x - s.x)) / d, y = from.y + (sign * 26 * (t.y - s.y)) / d, w = text.length * 5.4 + 8;
-          const box = { x1: x - w / 2, x2: x + w / 2, y1: y - 8, y2: y + 8 };
+          // Where the tag sits: 30 px along the session from where it leaves the card, as the style puts it,
+          // not from the router's centre, which put the tag over its own card and name.
+          const x = from.x + (sign * 30 * (t.x - s.x)) / d, y = from.y + (sign * 30 * (t.y - s.y)) / d, w = tagWidth(text);
+          const box = { x1: x - w / 2, x2: x + w / 2, y1: y - 7, y2: y + 7 };
           const covers = !!text && placed.some((o) => box.x1 < o.x2 && o.x1 < box.x2 && box.y1 < o.y2 && o.y1 < box.y2);
           e.toggleClass(`crowded-${end}`, covers);
           if (text && !covers) placed.push(box);
         }
       }));
     };
-    let timer = null;
-    const later = () => { clearTimeout(timer); timer = setTimeout(place, 60); };
-    cy.on("zoom position add remove data", later);
+    // At most every 100 ms, also while a zoom or a replay goes on.
+    let pending = false;
+    const soon = () => {
+      if (pending) return;
+      pending = true;
+      setTimeout(() => { pending = false; if (!cy.destroyed()) place(); }, 100);
+    };
+    cy.on("zoom position add remove data", soon);
+    cy.scratch("declutter", soon);
     place();
   }
 
@@ -546,12 +626,15 @@ window.Graph = (() => {
     const data = document.getElementById("thumbs");
     if (!data) return;
     const stamps = JSON.parse(data.textContent);
-    const keyOf = (svg) => `thumb:${svg.dataset.topology}:${stamps[svg.dataset.topology]}:${svg.clientWidth}x${svg.clientHeight}`;
+    // DRAWING counts the changes of the look and of what a preview gets: a drawing of an older look is
+    // drawn again, and its data fetched anew, which the browser keeps a day under the same address.
+    const DRAWING = 4;
+    const keyOf = (svg) => `thumb:${svg.dataset.topology}:${stamps[svg.dataset.topology]}:${DRAWING}:${svg.clientWidth}x${svg.clientHeight}`;
     async function draw(svg) {
       const name = svg.dataset.topology, key = keyOf(svg);
       const kept = UI.stored(key, null);
       if (kept) { svg.setAttribute("viewBox", kept.viewBox); svg.setAttribute("preserveAspectRatio", "xMidYMid meet"); svg.innerHTML = kept.body; return; }
-      const response = await fetch(`/topologies/${encodeURIComponent(name)}/thumb?v=${stamps[name]}`);
+      const response = await fetch(`/topologies/${encodeURIComponent(name)}/thumb?v=${stamps[name]}&d=${DRAWING}`);
       if (!response.ok) return;
       const drawn = await thumbnail(svg, await response.json());
       if (!drawn) return;
@@ -566,5 +649,5 @@ window.Graph = (() => {
     document.querySelectorAll("svg.thumb[data-topology]").forEach((svg) => seen.observe(svg));
   });
 
-  return { px, customPref, classes, style, elements, projection, arrange, underlay, view, fit, declutter, ramp, serialize, legend };
+  return { px, customPref, classes, style, elements, projection, arrange, underlay, view, fit, declutter, ramp, serialize, legend, hue, belts, linkWidth, linkOpacity, prefFill };
 })();

@@ -130,6 +130,24 @@ def test_cancel_all_empties_the_queue_and_keeps_the_runs(lab_files, monkeypatch)
     assert a.status["state"] == "stopped" and b.status["state"] == "stopped" and a.path.exists()
 
 
+def test_cancel_all_stops_the_running_result_too(lab_files, monkeypatch):
+    from lab import cluster
+
+    a, b = waiting_result("t-a"), waiting_result("t-b")
+    a.write_status({"state": "running", "done": 1, "total": 4})
+    monkeypatch.setattr(cluster, "holding", lambda: ("t-a", 4242))
+    killed = []
+    monkeypatch.setattr(J.os, "kill", lambda pid, sig: killed.append(pid))
+    jobs = J.Jobs()
+    jobs._save(["t-a", "t-b"])
+    jobs.stop_all()
+    assert killed == [4242] and a.stopping  # its runner ends the phase first, the pages say "Stopping…" meanwhile
+    assert jobs.queue() == [] and b.status["state"] == "stopped"
+    from lab.web import common
+    html = common.templates.get_template("partials/lab.html").render(active=a, left_s=None, machine=None)
+    assert "Stopping…" in html and "/results/t-a/stop" not in html
+
+
 def test_an_empty_queue_is_no_longer_paused(lab_files, monkeypatch):
     from lab import cluster
 
@@ -307,3 +325,57 @@ def test_a_pause_lets_the_running_result_end_its_run(lab_files, monkeypatch):
     jobs._save(["t-a"])
     jobs.pause()
     assert killed == [] and not (d.path / runner.STOP_FILE).exists() and jobs.paused()
+
+
+def test_a_result_put_first_runs_before_the_running_one_which_goes_on_after(lab_files, monkeypatch):
+    from lab import cluster
+
+    jobs = J.Jobs()
+    a = waiting_result("t-a")
+    waiting_result("t-b"), waiting_result("t-c")
+    jobs._save(["t-a", "t-b", "t-c"])
+    running = {"on": True}
+    monkeypatch.setattr(jobs, "active", lambda: a if running["on"] else None)
+    monkeypatch.setattr(cluster, "holder", lambda: "t-a" if running["on"] else None)
+    jobs.run_next("t-c")
+    # The running one ends after its run, as on a pause, but the queue is not paused and goes on by itself.
+    assert jobs.queue() == ["t-c", "t-a", "t-b"] and results.pause_file().read_text() == "t-c was put first"
+    assert jobs.handing_over() == "t-c" and not jobs.paused()
+    jobs._step()  # still running: nothing changes
+    assert jobs.handing_over() == "t-c"
+    running["on"] = False
+    a.write_status({"state": "interrupted"})  # as its runner writes
+    started = []
+    monkeypatch.setattr(J.subprocess, "Popen", lambda args, **k: started.append(args[-1]) or type("P", (), {"poll": lambda self: None, "args": args})())
+    monkeypatch.setattr(J.host, "docker_running", lambda: True)
+    monkeypatch.setattr(J.host, "low_disk", lambda path: "")
+    monkeypatch.setattr(jobs, "boot_wait_s", lambda: 0)
+    monkeypatch.setattr(jobs, "gpu_wait_s", lambda: 0)
+    import threading
+
+    stepped = threading.Thread(target=lambda: [jobs.lock.acquire(), jobs._step(), jobs.lock.release()], daemon=True)
+    stepped.start()  # as supervise steps: under the lock, which _step must not take again
+    stepped.join(timeout=5)
+    assert not stepped.is_alive(), "_step took the lock supervise holds"
+    assert started == ["t-c"] and not results.pause_file().exists() and not jobs.handing_over()
+    assert jobs.queue() == ["t-c", "t-a", "t-b"]
+
+
+def test_a_pause_while_handing_over_keeps_the_queue_paused(lab_files, monkeypatch):
+    jobs = J.Jobs()
+    a, _ = waiting_result("t-a"), waiting_result("t-b")
+    jobs._save(["t-a", "t-b"])
+    monkeypatch.setattr(jobs, "active", lambda: a)
+    jobs.run_next("t-b")
+    jobs.pause()
+    assert jobs.paused() and not jobs.handing_over() and jobs.queue() == ["t-b", "t-a"]
+    with pytest.raises(ValueError):
+        jobs.run_next("t-x")
+
+
+def test_a_search_runs_next_by_its_id(lab_files):
+    jobs = J.Jobs()
+    waiting_result("t-a")
+    jobs._save(["t-a", "sim:7"])
+    jobs.run_next("7")
+    assert jobs.queue() == ["sim:7", "t-a"]

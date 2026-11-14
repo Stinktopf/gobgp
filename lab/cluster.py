@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,14 +34,96 @@ CHART = ROOT / "gobgp-lab"
 DAEMON_SOURCES = ["go.mod", "go.sum", "api", "cmd", "internal", "pkg", "proto"]
 # Files of this tree that go into the image besides the daemon.
 IMAGE_SOURCES = ["Dockerfile", "pyproject.toml", "uv.lock", "controller/app.py"]
+BATCH = 32  # routers per Helm call of a larger topology
+PROGRESS_S = 30  # between the log lines of a deploy
+TELL_S = 5  # between the looks at the pods while the controllers are told their neighbors
+GUARD_S = 5  # between the looks at the node's connection tracking during a deploy
+API_SILENT_S = 180  # a Kubernetes API that does not answer this long ends a deploy
+CONNTRACK_SHARE = 0.6  # a node's connection tracking fuller than this ends a deploy: when full, the host drops packets
+WAVE = 16  # routers told their neighbors at a time, a wave every TELL_S: not all sessions of a large topology in one second
+DIAGNOSE_S = 30  # between two looks at the node during a deploy, see Cluster.diagnose
+SYSTEM_WEIGHT = 10000  # CPU weight of the node's own services against its pods, the highest cgroups know
+
+log = logging.getLogger("lab")
 
 
 class Incompatible(RuntimeError):
     """An existing profile must be recreated before it can serve this request."""
 
 
+NOT_READY = "Kubernetes is not ready"  # what trouble() says when the container runs but its API does not answer
+
+
 class LabError(RuntimeError):
     """An infrastructure failure. The affected run can be retried."""
+
+
+class HostLimit(LabError):
+    """The cluster reached a limit of the shared host: the Kubernetes API
+    stopped answering, the node's connection tracking ran full, the kernel's
+    neighbour table is too small for the topology, or the cluster was lost twice. The result ends as failed instead of being
+    played again, which would hit the limit again."""
+
+
+# The kernel keeps one neighbour (ARP) table for all containers of the host. Each router holds an entry for
+# every BGP neighbour. When the table is full, the kernel drops packets, even those of the node's own
+# Kubernetes API on 127.0.0.1. Setup raises its limits to NEIGH_WANT (gc_thresh1, 2, 3), never lowering one.
+NEIGH = Path("/proc/sys/net/ipv4/neigh/default")
+NEIGH_STAT = Path("/proc/net/stat/arp_cache")
+NEIGH_WANT = (8192, 32768, 65536)
+NEIGH_LOW = 16384  # a gc_thresh3 below this is low for the large topologies
+NEIGH_SPARE = 0.1  # of gc_thresh3, kept free for the host's other containers
+
+
+def neigh_table() -> tuple[int, int] | None:
+    """Entries of the host's neighbour table now and its limit gc_thresh3, None when unreadable."""
+    try:
+        limit = int((NEIGH / "gc_thresh3").read_text())
+        entries = int(NEIGH_STAT.read_text().splitlines()[1].split()[0], 16)
+    except (OSError, ValueError, IndexError):
+        return None
+    return entries, limit
+
+
+def neigh_need(topology: dict) -> int:
+    """Entries a topology adds to the neighbour table: one per BGP neighbour of each router, one per router on the node."""
+    return sum(len(cfg.get("neighbors") or []) + 1 for cfg in topology["routers"].values())
+
+
+def check_neigh(name: str, topology: dict) -> None:
+    """Raises HostLimit before a deploy that would fill the host's neighbour table."""
+    if (table := neigh_table()) is None:
+        return
+    entries, limit = table
+    need = neigh_need(topology)
+    if entries + need > limit * (1 - NEIGH_SPARE):
+        raise HostLimit(f"{name} needs about {need:,} entries in the kernel's neighbour table, which holds {limit:,} "
+                        f"with {entries:,} in use: run setup again or raise net.ipv4.neigh.default.gc_thresh3, see docs/setup.md")
+
+
+# What the node shows of its load, read through Docker, which answers when the Kubernetes API does not.
+# Lines that fail print nothing: the node may have cgroups v1, or no such container yet.
+NODE_LOOK = r"""
+date -u +%FT%TZ; echo; cat /proc/loadavg; echo threads $(ps -eL --no-headers 2>/dev/null | wc -l)
+for f in cpu memory io; do echo "node $f: $(tr '\n' ' ' < /sys/fs/cgroup/$f.pressure 2>/dev/null)"; done
+for s in kubepods.slice system.slice; do
+  echo; echo "$s weight $(cat /sys/fs/cgroup/$s/cpu.weight 2>/dev/null)"; cat /sys/fs/cgroup/$s/cpu.pressure /sys/fs/cgroup/$s/cpu.stat 2>/dev/null
+done
+echo; echo "conntrack $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null) of $(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)"
+set -- $(sed -n 2p /proc/net/stat/arp_cache 2>/dev/null)
+[ -n "$1" ] && echo "neighbour table $((0x$1)) of $(cat /proc/sys/net/ipv4/neigh/default/gc_thresh3 2>/dev/null), full $((0x${13})) times"
+ss -s 2>/dev/null | head -3
+echo; docker ps -a --filter name=k8s_kube-apiserver --filter name=k8s_etcd --format '{{.Names}} {{.Status}}' 2>/dev/null
+echo; ps -eo pid,nlwp,pcpu,rss,comm --sort=-pcpu 2>/dev/null | head -25
+"""
+# Once the API was lost, also the logs of the API server, etcd and kubelet.
+NODE_LOST = r"""
+for c in kube-apiserver etcd; do
+  id=$(docker ps -aq --filter name=k8s_$c | head -1); echo; echo "== $c"; [ -n "$id" ] && docker logs --tail 150 $id 2>&1
+done
+echo; echo "== etcd disk"; curl -s --max-time 5 http://127.0.0.1:2381/metrics 2>/dev/null | grep -E '^etcd_disk_(wal_fsync|backend_commit)_duration_seconds_(sum|count)'
+echo; echo "== kubelet"; journalctl -u kubelet --since -5min --no-pager 2>/dev/null | tail -200
+"""
 
 
 # One result at a time on the cluster: a second runner would deploy into
@@ -117,10 +200,11 @@ class Interrupted(Exception):
 STOP = threading.Event()
 
 
-def sh(*args: str, env: dict | None = None, timeout: float | None = None, interruptible: bool = False) -> str:
-    """Runs a command; LabError when it fails or takes longer than timeout.
-    A long one is interruptible: it ends with Interrupted when STOP is set;
-    cleaning up never is."""
+def sh(*args: str, env: dict | None = None, timeout: float | None = None, interruptible: bool = False,
+       abort: threading.Event | None = None) -> str:
+    """Runs a command; LabError when it fails, takes longer than timeout or
+    abort is set. A long one is interruptible: it ends with Interrupted when
+    STOP is set; cleaning up never is."""
     deadline = time.monotonic() + timeout if timeout else None
     with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env) as process:
         while True:
@@ -130,10 +214,13 @@ def sh(*args: str, env: dict | None = None, timeout: float | None = None, interr
             except subprocess.TimeoutExpired:
                 late = deadline is not None and time.monotonic() > deadline
                 stopped = interruptible and STOP.is_set()
-                if stopped or late:
+                aborted = abort is not None and abort.is_set()
+                if stopped or late or aborted:
                     _end(process)
                     if stopped:
                         raise Interrupted(f"{' '.join(args[:2])} stopped") from None
+                    if aborted:
+                        raise LabError(f"{' '.join(args[:3])} aborted") from None
                     raise LabError(f"{' '.join(args[:3])} took longer than {timeout:.0f} s") from None
     result = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
     if result.returncode != 0:
@@ -331,7 +418,19 @@ class Cluster:
             raise LabError(f"cannot bind the cluster to CPUs {cpus}: {e}") from None
         if done.returncode:
             raise LabError(f"cannot bind the cluster to CPUs {cpus}: {done.stderr.strip()[-300:]}")
+        self.weigh()
         return self.pinned()
+
+    def weigh(self) -> None:
+        """Gives the node's own services, kubelet and Docker, as much CPU
+        weight as its pods. The node reports all CPUs of the host, so the pods
+        weighed some hundred times more: once routers filled the CPUs, kubelet
+        and the Docker the API server writes through came last. Inside the
+        lab's own container only. Without it the lab runs as before."""
+        try:
+            sh("docker", "exec", PROFILE, "systemctl", "set-property", "--runtime", "system.slice", f"CPUWeight={SYSTEM_WEIGHT}", timeout=30)
+        except LabError as e:
+            log.warning("the node's services keep their CPU weight: %s", str(e)[-200:])
 
     def pinned(self) -> dict:
         """The CPUs and memory nodes Docker binds the cluster's container to, empty for none."""
@@ -355,8 +454,48 @@ class Cluster:
         try:
             sh("kubectl", "--context", PROFILE, "get", "--raw", "/readyz", timeout=15)
         except LabError as e:
-            return f"Kubernetes is not ready: {str(e)[-200:]}"
+            return f"{NOT_READY}: {str(e)[-200:]}"
         return None
+
+    def api_answers(self, tries: int = 3, every: float = 10) -> bool:
+        """Whether the Kubernetes API answers, asked a few times: a single
+        late answer is no reason to delete the cluster."""
+        for i in range(tries):
+            try:
+                sh("kubectl", "--context", PROFILE, "get", "--raw", "/readyz", timeout=15)
+                return True
+            except LabError:
+                if i < tries - 1:
+                    time.sleep(every)
+        return False
+
+    def clean(self) -> str | None:
+        """Removes the routers of any run before. Returns why the cluster
+        must be created anew, None when it is clean: its API does not answer,
+        or routers of another run do not go."""
+        if not self.api_answers():
+            return "the Kubernetes API does not answer"
+        try:
+            self.undeploy()
+        except LabError as e:
+            return f"routers of another run stay: {str(e)[-200:]}"
+        return None
+
+    def diagnose(self, folder: Path, why: str = "") -> None:
+        """Writes what the node shows of its load into folder, a file per
+        look: during a deploy every DIAGNOSE_S, and once with the logs of the
+        API server, etcd and kubelet when the API was lost, so that the
+        cause can be read afterwards. A diagnosis never ends a run."""
+        try:
+            out = sh("docker", "exec", PROFILE, "sh", "-c", NODE_LOOK + (NODE_LOST if why else ""), timeout=60)
+        except LabError as e:
+            out = f"the node could not be read: {str(e)[-300:]}"
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            name = time.strftime("%Y%m%d-%H%M%S", time.gmtime()) + ("-lost" if why else "")
+            (folder / f"{name}.txt").write_text((f"{why}\n\n" if why else "") + out)
+        except OSError as e:
+            log.warning("the diagnosis could not be written: %s", e)
 
     def max_pods(self) -> int:
         """Pods the node must hold: a router each, as many as fit, and
@@ -428,13 +567,18 @@ class Cluster:
             subprocess.run(["docker", "rmi", *(f"{IMAGE}:{t}" for t in old)], env=env, capture_output=True, timeout=600)
 
     def deploy(self, name: str, topology: dict, tag: str, mode: dict[str, str], seed: int, bgp: config.Bgp,
-               refresh_delay: float = 0, per_neighbor: bool = False) -> None:
+               routers: "Routers", refresh_delay: float = 0, per_neighbor: bool = False, progress=None,
+               diagnosis: Path | None = None) -> None:
         """Replaces the running routers, each in its pure mode, and waits until
         all BGP sessions are established. per_neighbor gives the OBGP routers
-        a table per neighbor, and the routers of a variant all in BGP too: NS-BGP."""
+        a table per neighbor, and the routers of a variant all in BGP too: NS-BGP.
+        Once all pods run, every controller gets its neighbors' pod addresses
+        through `routers`: no router asks DNS, none needs a Service. Looks at
+        the node go to the folder diagnosis, see diagnose."""
         from . import modes
 
         self.undeploy()
+        check_neigh(name, topology)
         per = {"GOBGP_OPERA_EXPORT": "neighbor"}
         ns_bgp = set(mode.values()) == {"bgp"}
 
@@ -442,51 +586,164 @@ class Cluster:
             tables = modes.get(m).obgp and m != "obgp-paper" or ns_bgp
             return modes.get(m).env | (per if per_neighbor and tables else {})
 
-        routers = {r: cfg | {"env": env(mode[r])} for r, cfg in topology["routers"].items()}
-        for cfg in routers.values():  # gobgpd lists the member ASes of its confederation
+        configs = {r: cfg | {"env": env(mode[r])} for r, cfg in topology["routers"].items()}
+        for cfg in configs.values():  # gobgpd lists the member ASes of its confederation
             if (c := cfg.get("confederation")) is not None:
-                cfg["confedMembers"] = sorted({int(o["asn"]) for o in routers.values() if o.get("confederation") == c})
-        with tempfile.NamedTemporaryFile("w", suffix=".yaml") as values:
-            json.dump({"routers": routers}, values)
-            values.flush()
-            try:
-                sh(
-                    "helm", "upgrade", "--install", RELEASE, str(CHART), "--kube-context", PROFILE,
-                    "-n", NAMESPACE, "--create-namespace", "-f", values.name,
-                    "--set", f"image.repository={IMAGE}", "--set", f"image.tag={tag}", "--set", f"seed={seed}",
-                    "--set", f"bgp.holdTime={bgp.hold_time}", "--set", f"bgp.keepalive={bgp.keepalive}",
-                    "--set", f"bgp.connectRetry={bgp.connect_retry}", "--set", f"bgp.gracefulRestart={str(bgp.graceful_restart).lower()}",
-                    "--set", f"bgp.mrai={bgp.mrai:g}", "--set", f"bgp.refresh={bgp.refresh:g}",
-                    "--set", f"bgp.refreshDelay={refresh_delay:g}",
-                    "--set", f"memory.requestMi={config.Cluster.ROUTER_MB}", "--set", f"memory.limitMi={self.resources.router_limit_mb}",
-                    # 100 routers took 165 s until all sessions were up.
-                    "--wait", "--timeout", f"{300 + 3 * len(routers)}s", interruptible=True,
-                )
-            except LabError as e:
-                raise LabError(f"routers of {name} did not become ready: {e}") from None
+                cfg["confedMembers"] = sorted({int(o["asn"]) for o in configs.values() if o.get("confederation") == c})
+        # A large topology goes in batches, each Helm call with the pods of all routers so far. Each batch
+        # waits for its pods to run. Then every controller gets its neighbors' addresses and starts gobgpd,
+        # and the deploy waits until all sessions are up.
+        look = (lambda why="": self.diagnose(diagnosis, why)) if diagnosis else None
+        watch = Watch(name, len(configs), self._status, self._conntrack, progress=progress, diagnose=look)
+        watch.start()
+        try:
+            for names in batches(list(configs)):
+                with tempfile.NamedTemporaryFile("w", suffix=".yaml") as values:
+                    json.dump({"routers": configs, "deploy": names}, values)
+                    values.flush()
+                    sh(
+                        "helm", "upgrade", "--install", RELEASE, str(CHART), "--kube-context", PROFILE,
+                        "-n", NAMESPACE, "--create-namespace", "-f", values.name,
+                        "--set", f"image.repository={IMAGE}", "--set", f"image.tag={tag}", "--set", f"seed={seed}",
+                        "--set", f"bgp.holdTime={bgp.hold_time}", "--set", f"bgp.keepalive={bgp.keepalive}",
+                        "--set", f"bgp.connectRetry={bgp.connect_retry}", "--set", f"bgp.gracefulRestart={str(bgp.graceful_restart).lower()}",
+                        "--set", f"bgp.mrai={bgp.mrai:g}", "--set", f"bgp.refresh={bgp.refresh:g}", "--set", f"bgp.procs={bgp.procs}",
+                        "--set", f"probe.periodS={probe_period(len(configs))}",
+                        "--set", f"bgp.refreshDelay={refresh_delay:g}",
+                        "--set", f"memory.requestMi={config.Cluster.ROUTER_MB}", "--set", f"memory.limitMi={self.resources.router_limit_mb}",
+                        timeout=10 * 60, interruptible=True, abort=watch.lost,
+                    )
+                self._wait_running(len(names), watch)
+            # 100 routers took 165 s until all sessions were up.
+            self._tell(topology["routers"], routers, watch, timeout=300 + 3 * len(configs), every=TELL_S)
+        except LabError as e:
+            if watch.lost.is_set():
+                raise HostLimit(f"routers of {name} did not become ready: {watch.why}") from None
+            raise LabError(f"routers of {name} did not become ready: {e}") from None
+        finally:
+            watch.stop()
 
-    def undeploy(self) -> None:
-        subprocess.run(
-            ["helm", "uninstall", RELEASE, "--kube-context", PROFILE, "-n", NAMESPACE, "--wait"],
-            capture_output=True,
-        )
-        deadline = time.monotonic() + 300
+    def _wait_running(self, count: int, watch: "Watch", timeout: float = 300 + 3 * BATCH, every: float = 5) -> None:
+        """Waits until `count` pods run, not until they are ready."""
+        deadline = time.monotonic() + timeout
+        running = 0
+        while True:
+            if watch.lost.is_set():
+                raise LabError(watch.why)
+            if STOP.is_set():
+                raise Interrupted("deploy stopped")
+            try:
+                running = self._status()[0].get("Running", 0)
+            except LabError:
+                pass  # the watch tells when the API is lost
+            else:
+                if running >= count:
+                    return
+            if time.monotonic() > deadline:
+                raise LabError(f"{running} of {count} pods running after {timeout:.0f} s")
+            watch.lost.wait(every)
+
+    def _tell(self, topology: dict[str, dict], routers: "Routers", watch: "Watch", timeout: float, every: float = 5) -> None:
+        """Sends every controller its neighbors' pod addresses once all pods
+        run with one, WAVE routers every `every` seconds, and waits until all
+        routers are ready. A pod that is
+        replaced meanwhile has a new address its neighbors do not know: the
+        deploy fails. A restarted container keeps its pod and what it was told."""
+        deadline = time.monotonic() + timeout
+        told: dict[str, tuple[str, str]] = {}  # router -> its pod and address when told
+        live: list[dict] = []
+        while True:
+            if watch.lost.is_set():
+                raise LabError(watch.why)
+            if STOP.is_set():
+                raise Interrupted("deploy stopped")
+            try:
+                live = self._router_pods()
+            except LabError:
+                live = []  # the watch tells when the API is lost
+            pods = {p["router"]: p for p in live if p["phase"] == "Running" and p["ip"] and not p["gone"]}
+            for r, (pod, ip) in told.items():
+                if r in pods and (pods[r]["pod"], pods[r]["ip"]) != (pod, ip):
+                    raise LabError(f"the pod of {r} was replaced during the deploy, its neighbors know its old address")
+            if len(pods) == len(topology):
+                if sum(p["ready"] for p in pods.values()) == len(topology):
+                    return
+                routers.pods = {r: p["pod"] for r, p in pods.items()}
+                ips = {r: p["ip"] for r, p in pods.items()}
+
+                def tell(r: str) -> str | None:
+                    neighbors = {n["name"]: ips[n["name"]] for n in topology[r].get("neighbors") or []}
+                    try:
+                        routers.post(r, "/neighbors/addresses", {"addresses": neighbors}, timeout=10)
+                    except LabError:
+                        return None  # not listening yet: told in the next round
+                    return r
+
+                with ThreadPoolExecutor(16) as pool:
+                    for r in pool.map(tell, [r for r in topology if r not in told][:WAVE]):
+                        if r:
+                            told[r] = (pods[r]["pod"], pods[r]["ip"])
+            if time.monotonic() > deadline:
+                running = sum(p["phase"] == "Running" for p in live)
+                ready = sum(p["ready"] for p in live)
+                raise LabError(f"{running} of {len(topology)} pods running, {len(told)} told their neighbors, "
+                               f"{ready} ready after {timeout:.0f} s")
+            watch.lost.wait(every)
+
+    def guard(self, name: str, total: int, on_lost, diagnosis: Path | None = None) -> "Watch":
+        """Guards a run as a deploy is guarded: the node's connection tracking
+        and whether the Kubernetes API answers. Calls on_lost once lost, after
+        a look at the node into the folder diagnosis."""
+        look = (lambda why="": self.diagnose(diagnosis, why)) if diagnosis else None
+        watch = Watch(name, total, self._status, self._conntrack, quiet=True, on_lost=on_lost, diagnose=look)
+        watch.start()
+        return watch
+
+    def _router_pods(self) -> list[dict]:
+        """The routers' pods: name, router, phase, address, readiness and
+        whether they terminate, in a small table even for hundreds."""
+        out = sh("kubectl", "--context", PROFILE, "-n", NAMESPACE, "get", "pods", "-l", "app", "--no-headers", "--request-timeout=20s",
+                 "-o", "custom-columns=POD:.metadata.name,ROUTER:.metadata.labels.app,PHASE:.status.phase,IP:.status.podIP,"
+                 "READY:.status.containerStatuses[0].ready,GONE:.metadata.deletionTimestamp", timeout=30)
+        return router_pods(out)
+
+    def undeploy(self, timeout: float = 300) -> None:
+        """Removes the routers and waits until their pods are gone; LabError
+        when the Kubernetes API does not answer or they stay."""
+        deadline = time.monotonic() + timeout
+        try:
+            subprocess.run(["helm", "uninstall", RELEASE, "--kube-context", PROFILE, "-n", NAMESPACE, "--wait", "--timeout", f"{timeout:.0f}s"],
+                           capture_output=True, timeout=timeout + 30)
+        except subprocess.TimeoutExpired:
+            raise LabError(f"helm uninstall took longer than {timeout:.0f} s") from None
+        if self._pods():  # routers whose release is gone, in the lab's own namespace
+            sh("kubectl", "--context", PROFILE, "-n", NAMESPACE, "delete", "deployments", "--all", "--wait=false", timeout=60)
         while self._pods():
             if time.monotonic() > deadline:
                 raise LabError("routers of the previous run did not terminate")
             time.sleep(2)
 
+    def _conntrack(self) -> tuple[int, int]:
+        """Entries in the connection tracking of the cluster's node, its own
+        container, and their maximum."""
+        out = sh("docker", "exec", PROFILE, "cat", "/proc/sys/net/netfilter/nf_conntrack_count", "/proc/sys/net/netfilter/nf_conntrack_max", timeout=20)
+        count, most = (int(v) for v in out.split()[:2])
+        return count, most
+
+    def _status(self) -> tuple[dict[str, int], int]:
+        """The pods by status and how many are ready, from the table the
+        API server prints, which is small even for hundreds of pods."""
+        out = sh("kubectl", "--context", PROFILE, "-n", NAMESPACE, "get", "pods", "--no-headers",
+                 "--request-timeout=20s", timeout=30)
+        return pod_status(out)
+
     def _pods(self) -> list[dict]:
-        out = sh("kubectl", "--context", PROFILE, "-n", NAMESPACE, "get", "pods", "-o", "json")
+        out = sh("kubectl", "--context", PROFILE, "-n", NAMESPACE, "get", "pods", "-o", "json", "--request-timeout=60s", timeout=90)
         return json.loads(out)["items"]
 
     def addresses(self) -> dict[str, str]:
         """Maps the IP addresses of the pods to router names: next hops."""
         return {p["status"]["podIP"]: p["metadata"]["labels"]["app"] for p in self._pods() if p.get("status", {}).get("podIP")}
-
-    def pods(self) -> dict[str, str]:
-        """Maps router names to pod names."""
-        return {p["metadata"]["labels"]["app"]: p["metadata"]["name"] for p in self._pods()}
 
     def restarts(self) -> tuple[int, list[str]]:
         """How often routers restarted, and those ended for taking too much memory."""
@@ -502,6 +759,123 @@ class Cluster:
             "kubernetes": kube["serverVersion"]["gitVersion"],
             "docker": sh("docker", "version", "--format", "{{.Server.Version}}", env=self._docker_env()).strip(),
         }
+
+
+def probe_period(routers: int) -> int:
+    """Seconds between two readiness probes of a router. A router is ready
+    once all its sessions are up, so until then every probe fails and
+    writes an event: among many routers less often, which spares the API
+    and costs a deploy at most one period."""
+    return 2 if routers <= BATCH else 10
+
+
+def batches(names: list[str], size: int = BATCH) -> list[list[str]]:
+    """The routers of each Helm call of a deploy, a batch more each time.
+    A topology that fits in one batch goes in one call."""
+    return [names[:end] for end in range(size, len(names), size)] + [names]
+
+
+def router_pods(table: str) -> list[dict]:
+    """Parses the table of Cluster._router_pods."""
+    pods = []
+    for line in table.splitlines():
+        if len(cols := line.split()) < 6:
+            continue
+        pod, router, phase, ip, ready, gone = cols[:6]
+        pods.append({"pod": pod, "router": router, "phase": phase, "ip": "" if ip == "<none>" else ip,
+                     "ready": ready == "true", "gone": gone != "<none>"})
+    return pods
+
+
+def pod_status(table: str) -> tuple[dict[str, int], int]:
+    """Counts the pods of `kubectl get pods --no-headers` by status, and
+    those ready: a router is ready once all its sessions are up."""
+    statuses: dict[str, int] = {}
+    ready = 0
+    for line in table.splitlines():
+        if len(cols := line.split()) < 3:
+            continue
+        statuses[cols[2]] = statuses.get(cols[2], 0) + 1
+        up, _, of = cols[1].partition("/")
+        ready += up == of and up not in ("", "0")
+    return statuses, ready
+
+
+class Watch(threading.Thread):
+    """Logs the progress of a deploy every PROGRESS_S and sets lost when
+    the Kubernetes API has not answered for API_SILENT_S, which ends the
+    Helm calls and waits of the deploy instead of Helm's timeout. Quiet, it
+    guards a run: it logs nothing and calls on_lost once lost."""
+
+    def __init__(self, name: str, total: int, status, conntrack=None, every: float = PROGRESS_S, silent: float = API_SILENT_S,
+                 clock=time.monotonic, quiet: bool = False, on_lost=None, progress=None, diagnose=None) -> None:
+        super().__init__(daemon=True)
+        self.diagnose = diagnose  # writes a look at the node, with why once lost; looks only during a deploy
+        self.diagnosed = clock()
+        self.looking: threading.Thread | None = None
+        self.name, self.total, self.status, self.every, self.silent, self.clock = name, total, status, every, silent, clock
+        self.conntrack, self.quiet, self.on_lost, self.progress = conntrack, quiet, on_lost, progress
+        self.looked = clock()  # when the pods were last looked at
+        self.lost = threading.Event()
+        self.done = threading.Event()
+        self.why = ""
+        self.answered = clock()
+        self.running = 0
+
+    def run(self) -> None:
+        while not self.done.wait(GUARD_S if self.conntrack else self.every) and self.step():
+            pass
+
+    def step(self) -> bool:
+        """One look at the pods and the node's connection tracking. False once
+        the API is lost or the connection tracking nearly full."""
+        if self.conntrack:
+            try:
+                count, most = self.conntrack()
+            except (LabError, ValueError):
+                count, most = 0, 0
+            if most and count > CONNTRACK_SHARE * most:
+                self.why = (f"the node's connection tracking held {count} of {most} entries at {self.running} of {self.total} pods running, "
+                            "when full the host drops packets")
+                return self._lose()
+            if self.clock() - self.looked < self.every:
+                return True
+        self.looked = self.clock()
+        try:
+            statuses, ready = self.status()
+        except LabError:
+            silent = self.clock() - self.answered
+            if silent < self.silent:
+                return True
+            self.why = (f"the Kubernetes API stopped answering at {self.running} of {self.total} pods running, "
+                        f"no answer for {silent:.0f} s")
+            return self._lose()
+        self.answered = self.clock()
+        self.running = statuses.get("Running", 0)
+        if self.diagnose and not self.quiet and self.clock() - self.diagnosed >= DIAGNOSE_S and not (self.looking and self.looking.is_alive()):
+            self.diagnosed = self.clock()  # beside the watch, which must go on guarding meanwhile
+            self.looking = threading.Thread(target=self.diagnose, daemon=True)
+            self.looking.start()
+        if self.progress:  # the live view shows how far the deploy got
+            self.progress(pods=sum(statuses.values()), running=self.running, ready=ready, total=self.total)
+        if not self.quiet:
+            by = ", ".join(f"{n} {s}" for s, n in sorted(statuses.items(), key=lambda i: -i[1])) or "none yet"
+            log.info("%s: %d of %d pods (%s), %d ready with all sessions up", self.name, sum(statuses.values()), self.total, by, ready)
+        return True
+
+    def _lose(self) -> bool:
+        if self.diagnose:  # before anything ends: the clean-up may delete the node
+            try:
+                self.diagnose(self.why)
+            except Exception as e:  # noqa: BLE001  a diagnosis never hides the loss
+                log.warning("no diagnosis: %s", e)
+        self.lost.set()
+        if self.on_lost:
+            self.on_lost()
+        return False
+
+    def stop(self) -> None:
+        self.done.set()
 
 
 def _die_with_parent() -> None:
@@ -520,11 +894,13 @@ class Routers:
     """
 
     START_S = 30
+    POOL = 64  # the sampler's requests at once
+    CONNECTIONS = POOL + 32  # kept to the proxy: the sampler's and the runner's own beside them, more would be opened and dropped
 
     def __init__(self) -> None:
         self.proxy: subprocess.Popen | None = None
         self.session = requests.Session()
-        self.session.mount("http://", HTTPAdapter(pool_maxsize=64))
+        self.session.mount("http://", HTTPAdapter(pool_maxsize=self.CONNECTIONS))
         self.pods: dict[str, str] = {}
         self._start()
 

@@ -188,7 +188,8 @@ func NewBgpServer(opt ...ServerOption) *BgpServer {
 
 	if o := table.InitOperaFromEnv(); o.Enabled {
 		logger.Info("OBGP path selection enabled", slog.String("Topic", "Table"), slog.String("Pruning", o.Pruning.String()),
-			slog.Bool("ReceivedSetOrder", o.ReceivedSetOrder), slog.Bool("PerNeighbor", o.PerNeighbor))
+			slog.Bool("ReceivedSetOrder", o.ReceivedSetOrder), slog.Bool("PerNeighbor", o.PerNeighbor),
+			slog.Bool("EnhancedRefresh", !o.PlainRefresh))
 	} else if o.PerNeighbor {
 		logger.Info("NS-BGP: a BGP table per eBGP neighbor", slog.String("Topic", "Table"))
 	}
@@ -1090,7 +1091,27 @@ func (s *BgpServer) handleRouteRefresh(peer *peer, e *fsmMsg) []*table.Path {
 		return nil
 	}
 	rfList := []bgp.Family{rf}
+	enhanced := s.operaEnhancedRefresh(peer)
+	switch rr.Demarcation {
+	case bgp.BGP_ROUTE_REFRESH_REQUEST:
+	case bgp.BGP_ROUTE_REFRESH_BEGIN:
+		if enhanced {
+			s.operaAnswerBegins(peer, rf)
+		}
+		return nil
+	case bgp.BGP_ROUTE_REFRESH_END:
+		if enhanced {
+			s.operaAnswerEnds(peer, rf)
+		}
+		return nil
+	default:
+		return nil // RFC 7313: other subtypes are ignored
+	}
 	accepted, _ := s.getBestFromLocal(peer, rfList, true)
+	if enhanced { // framed, also when empty: the peer then drops every route it holds from here
+		peer.fsm.outgoingCh.In() <- &fsmOutgoingMsg{Paths: accepted, Answer: rfList}
+		return nil
+	}
 	return accepted
 }
 
@@ -1210,6 +1231,11 @@ func (s *BgpServer) propagateUpdate(peer *peer, pathList []*table.Path) {
 			}
 		}
 
+		// a path received again unchanged, as a route refresh resends most,
+		// changes nothing in OBGP's tables: no decision, no tables per neighbor
+		if d := rib.GetDestination(path); d != nil && d.OperaRedundant(path) {
+			continue
+		}
 		ou, before := s.operaBefore(rib, path)
 		if dsts := rib.Update(path); len(dsts) > 0 {
 			if ou != nil {
@@ -1473,6 +1499,7 @@ func (s *BgpServer) handleFSMMessage(peer *peer, e *fsmMsg) {
 			peer.prefixLimitWarned = make(map[bgp.Family]bool)
 			s.propagateUpdate(peer, peer.DropAll(dropFamilies))
 			s.operaDropViews(peer)
+			s.operaRefreshDown(peer)
 
 			peer.fsm.lock.Lock()
 			if peer.fsm.pConf.Config.PeerAs == 0 {
@@ -1710,6 +1737,7 @@ func (s *BgpServer) handleFSMMessage(peer *peer, e *fsmMsg) {
 				_ = s.setAdminState(peer.ID(), "", adminStatePfxCt)
 				return
 			}
+			s.operaAnswerRepeats(peer, pathList)
 			if m.Header.Type == bgp.BGP_MSG_UPDATE {
 				s.notifyPrePolicyUpdateWatcher(peer, pathList, m, e.timestamp, e.payload)
 			}
@@ -2774,6 +2802,8 @@ func (s *BgpServer) getAdjRib(addr string, family bgp.Family, in bool, enableFil
 					}
 					pathList = append(pathList, path)
 				}
+			} else if dsts, ok := s.operaExactDestinations(family, prefixes); ok && operaHasView(peer, family) {
+				pathList = s.operaExportsOf(peer, dsts)
 			} else {
 				pathList, _ = s.getAdvertised(peer, peer.configuredRFlist(), true)
 			}

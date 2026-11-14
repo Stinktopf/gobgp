@@ -26,6 +26,7 @@
       <div data-graph class="relative h-[clamp(16rem,38vh,24rem)] w-full {{ 'md:h-[clamp(18rem,50vh,34rem)]' if n <= 2 else 'md:h-[clamp(16rem,40vh,26rem)]' }}"></div>
       <div data-router hidden class="absolute bottom-3 left-4 z-10 w-72 rounded-lg border border-slate-200 bg-white/95 p-2.5 text-xs shadow-sm dark:border-white/10 dark:bg-slate-900/95"></div>
       <p data-missing hidden class="muted absolute inset-0 grid place-content-center text-sm">This run is not done.</p>
+      <p data-loading hidden class="loading absolute inset-0 z-20 py-0" role="status"><span class="spinner"></span>Loading the run…</p>
     </div>
     {% endfor %}
   </div>
@@ -57,21 +58,24 @@
       </div>
       <span data-clock class="ml-auto font-mono text-sm whitespace-nowrap tabular-nums"></span>
     </div>
-    <p data-event class="muted mt-2 min-h-4 text-center font-mono text-xs"></p>
+    <p data-event class="muted mt-2 min-h-4 text-center text-xs"></p>
   </div>
 
   <div class="muted flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
-    <span class="flex items-center gap-2">quiet<span class="h-2 w-20 rounded-full" style="background: linear-gradient(90deg, var(--activity-low), var(--activity-high))"></span>updates per second</span>
-    <span class="flex items-center gap-1.5"><span class="size-3 rounded-full border-2" style="border-color: var(--graph-label)"></span>holds every expected prefix</span>
-    <span class="flex items-center gap-1.5"><span class="size-2.5 rounded-[3px]" style="background: var(--graph-node)"></span>OBGP in a hybrid</span>
-    <span class="flex items-center gap-2">size
-      <span class="segmented" role="radiogroup" aria-label="Size">
-        <label data-tip="Paths received from all peers" data-size-new><input type="radio" name="size" value="adj_in" checked>Adj-RIB-In</label>
+    <span class="flex items-center gap-2">quiet<span class="h-2 w-20 rounded-full border border-slate-300 dark:border-slate-600" style="background: linear-gradient(90deg, var(--graph-bg), var(--activity-high))"></span>updates per second</span>
+    <span class="flex items-center gap-1.5"><span class="size-3 rounded-[3px] border-2" style="border-color: var(--graph-node)"></span>holds every expected prefix</span>
+    <span class="flex items-center gap-1.5"><span class="size-3 rounded-[3px] border border-dashed" style="border-color: var(--graph-none-line)"></span>misses prefixes</span>
+    <span class="flex items-center gap-1.5"><span class="size-3 rounded-[3px] border-[3px] border-double" style="border-color: var(--graph-node)"></span>OBGP in a hybrid</span>
+    <span class="flex items-center gap-2" data-size-choice>size
+      <span class="segmented text-xs" role="radiogroup" aria-label="Size">
+        <label data-tip="Paths received from all peers"><input type="radio" name="size" value="adj_in" checked>Adj-RIB-In</label>
         <label data-tip="Paths the import admits"><input type="radio" name="size" value="paths">Admitted</label>
-        <label data-tip="Paths OBGP keeps without admitting them" data-size-new><input type="radio" name="size" value="suppressed">Set aside</label>
+        <label data-tip="Paths OBGP keeps without admitting them"><input type="radio" name="size" value="suppressed">Set aside</label>
       </span>
     </span>
-    <span class="flex items-center gap-1.5"><span class="w-5 border-t-2 border-dashed border-slate-400"></span>down</span>
+    <span class="flex items-center gap-1.5" data-size-only hidden><span class="size-2 rounded-[2px] border" style="border-color: var(--graph-node)"></span><span class="size-3 rounded-[3px] border" style="border-color: var(--graph-node)"></span>size, admitted paths</span>
+    <span class="flex items-center gap-1.5"><span class="w-5 border-t-2 border-dashed" style="border-color: var(--activity-high)"></span>updates on the link, in the sender's colour among few routers</span>
+    <span class="flex items-center gap-1.5"><span class="relative w-5 border-t-2 border-dashed border-slate-400"><span class="absolute -top-2.5 left-1.5 font-bold" style="color: var(--graph-problem)">×</span></span>down</span>
     <span class="flex items-center gap-1.5"><span class="w-5 border-t-2 border-dotted border-slate-400"></span>degraded</span>
   </div>
 </div>

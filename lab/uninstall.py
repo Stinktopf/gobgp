@@ -16,11 +16,17 @@ SETTINGS_FILES = {
     "notify.json", "cluster-policy.json", "serve.json", "serve.log", "serve.lock", "lifecycle.lock",
     "gpu-seen", "web-stopped", "watch.log", "watch.json", "serve.log.1", "watch.log.1", "watch.path",
     "tokens.json", "agents.json", "agents.log", "groups.json", "pending.json", "cluster-busy",
-    "host-history.jsonl", "host-history.tmp",
+    "host-history.jsonl", "host-history.tmp", "marks.lock",
 }
 SETTINGS_DIRS = {"analysing", "served-static"}  # locks of analyses, the copy of the pages a started server serves
 SEARCHES = "simulation"  # the searches of the simulator: kept as results are, unless purged
+KEPT = {SEARCHES, "marks.json"}  # and the stars and notes on results, searches and cases
 SYSCTL = Path("/etc/sysctl.d/90-obgp-lab.conf")
+PROC = Path("/proc/sys")
+NEIGH_SYSCTL = Path("/etc/sysctl.d/90-obgp-lab-neigh.conf")
+# What setup may raise: the record's name, its file, the sysctl prefix and the limits, in the record's order.
+SYSCTLS = (("inotify", SYSCTL, "fs.inotify", ("max_user_instances", "max_user_watches")),
+           ("neigh", NEIGH_SYSCTL, "net.ipv4.neigh.default", ("gc_thresh1", "gc_thresh2", "gc_thresh3")))
 SYSTEMD = Path("/etc/systemd/system/obgp-lab.service.d/lifecycle.conf")
 
 
@@ -130,9 +136,31 @@ def remove_packages(packages, privileged, kept):
 KICBASE = "gcr.io/k8s-minikube/kicbase"  # the image of the minikube node, pulled for the lab
 
 
+def restore_sysctl(lines, base, privileged, kept, hashes, kind, sysctl, prefix, names):
+    """Sets kernel limits back to what they were before setup, if setup changed them and nobody since."""
+    before = next((line.split()[1:] for line in lines if line.startswith(f"{kind}-before ")), None)
+    after = next((line.split()[1:] for line in reversed(lines) if line.startswith(f"{kind}-after ")), None)
+    if not before:
+        return
+    current = [PROC.joinpath(*prefix.split("."), name).read_text().strip() for name in names]
+    if (not after or not all(v.isdigit() for v in before + after)
+            or len(before) != len(names) or current != after or not sysctl.is_file()
+            or hashes.get(str(sysctl)) != digest(sysctl)):
+        kept.append(f"{kind} settings (changed or incomplete installation record)")
+        return
+    if f"{kind}-existing" in lines:
+        backup = base / f"{kind}.before"
+        if not backup.is_file() or hashes.get(str(backup)) != digest(backup):
+            raise RuntimeError(f"The original {kind} configuration backup is missing")
+        privileged(["cp", "--", str(backup), str(sysctl)])
+    else:
+        privileged(["rm", "--", str(sysctl)])
+    privileged(["sysctl", "-w", *(f"{prefix}.{name}={value}" for name, value in zip(names, before))])
+
+
 def undo_host(lines, base, privileged, kept):
     packages = [tuple(line.split()[1:]) for line in lines if line.startswith("package ")]
-    changes = any(line.startswith(("package ", "docker-group ", "inotify-before ", "docker-started ")) for line in lines)
+    changes = any(line.startswith(("package ", "docker-group ", "inotify-before ", "neigh-before ", "docker-started ")) for line in lines)
     if not changes:
         return
     # Other Docker workloads, including stopped containers and images of others, may rely on these changes.
@@ -149,25 +177,9 @@ def undo_host(lines, base, privileged, kept):
         except RuntimeError:
             kept.append("host changes (Docker usage could not be checked)")
             return
-    before = next((line.split()[1:] for line in lines if line.startswith("inotify-before ")), None)
-    after = next((line.split()[1:] for line in reversed(lines) if line.startswith("inotify-after ")), None)
     hashes = {line.split(" ", 2)[2]: line.split(" ", 2)[1] for line in lines if line.startswith("sha256 ")}
-    if before:
-        names = ("max_user_instances", "max_user_watches")
-        current = [Path("/proc/sys/fs/inotify", name).read_text().strip() for name in names]
-        if (not after or not all(v.isdigit() for v in before + after)
-                or len(before) != 2 or current != after or not SYSCTL.is_file()
-                or hashes.get(str(SYSCTL)) != digest(SYSCTL)):
-            kept.append("inotify settings (changed or incomplete installation record)")
-        else:
-            if "inotify-existing" in lines:
-                backup = base / "inotify.before"
-                if not backup.is_file() or hashes.get(str(backup)) != digest(backup):
-                    raise RuntimeError("The original inotify configuration backup is missing")
-                privileged(["cp", "--", str(backup), str(SYSCTL)])
-            else:
-                privileged(["rm", "--", str(SYSCTL)])
-            privileged(["sysctl", "-w", *(f"fs.inotify.{name}={value}" for name, value in zip(names, before))])
+    for kind, sysctl, prefix, names in SYSCTLS:
+        restore_sysctl(lines, base, privileged, kept, hashes, kind, sysctl, prefix, names)
     # Remove the membership only if setup added it for this user.
     import pwd
     user = pwd.getpwuid(os.getuid()).pw_name
@@ -235,14 +247,16 @@ def cleanup(root, settings, base, privileged, purge=False):
             path = settings / name
             if path.is_file() or path.is_symlink():
                 path.unlink()
-        for name in SETTINGS_DIRS | ({SEARCHES} if purge else set()):
-            folder = settings / name
-            if folder.is_dir() and not folder.is_symlink():
-                shutil.rmtree(folder)
+        for name in SETTINGS_DIRS | (KEPT if purge else set()):
+            path = settings / name
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            elif path.is_file():
+                path.unlink()
         if settings.exists():
-            if any(p.name != SEARCHES for p in settings.iterdir()):
+            if any(p.name not in KEPT for p in settings.iterdir()):
                 kept.append(f"{settings} (unrecognized files)")
-            elif not (settings / SEARCHES).exists():
+            elif not any((settings / name).exists() for name in KEPT):
                 settings.rmdir()
     # The environment/interpreter is removed last, once cleanup imports are loaded.
     if not kept:
@@ -251,6 +265,7 @@ def cleanup(root, settings, base, privileged, purge=False):
     if not kept:
         (base / "installed.txt").unlink(missing_ok=True)
         (base / "inotify.before").unlink(missing_ok=True)
+        (base / "neigh.before").unlink(missing_ok=True)
         (base / "systemd.before").unlink(missing_ok=True)
     for path in (base / "bin", base):
         if path.is_dir() and not any(path.iterdir()):

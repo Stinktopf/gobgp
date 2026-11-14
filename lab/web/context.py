@@ -1,6 +1,8 @@
 """What every page shows, the overview of the lab in the dock and a notice of updates, and the files of the
 lab as several pages list them."""
 
+import hashlib
+import json
 import platform
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -67,7 +69,10 @@ def thumbnails(loaded: dict[str, dict]) -> dict[str, dict]:
     session once, by name, and positions to the pixel. Parts of the Internet
     hold thousands of sessions."""
     def router(n: str, r: dict) -> dict:
-        out = {"neighbors": [{"name": m["name"]} for m in r.get("neighbors", []) if n < m["name"]]}
+        # The AS and confederation too: the arrangement groups the routers of one AS, as the editor does.
+        out = {"asn": r.get("asn"), "neighbors": [{"name": m["name"]} for m in r.get("neighbors", []) if n < m["name"]]}
+        if r.get("confederation") is not None:
+            out["confederation"] = r["confederation"]
         if p := r.get("position"):
             out["position"] = {"x": round(p["x"]), "y": round(p["y"])}
         if loc := r.get("location"):
@@ -125,7 +130,7 @@ def overview() -> dict:
     boot_wait = jobs.boot_wait_s() if results else 0
     docker_down = bool(results) and not hostload.docker_running()
     if not active and not searching and not names:
-        return {"active": None, "searching": None, "queue": [], "results_waiting": False, "paused": paused, "pause_reason": pause_reason,
+        return {"active": None, "searching": None, "queue": [], "results_waiting": False, "paused": paused, "pause_reason": pause_reason, "handing_over": "",
                 "gpu_wait_s": 0, "boot_wait_s": 0, "docker_down": False}
     past = estimate.history()
     clock = datetime.now()
@@ -144,7 +149,7 @@ def overview() -> dict:
         queue.append({"name": name, "takes_s": takes, "ends": ends if takes is not None else None})
     # The whole of it: the running result and every waiting one that can be estimated.
     return {"active": active, "searching": searching, "results_waiting": bool(results), "active_parts": parts(active, running=True) if active else [], "left_s": left, "active_ends": clock + timedelta(seconds=left) if left is not None else None,
-            "queue": queue, "paused": paused, "pause_reason": pause_reason, "gpu_wait_s": gpu_wait, "boot_wait_s": boot_wait, "gpu_busy": hostload.gpu_in_use(hostload.now()) is not False,
+            "queue": queue, "paused": paused, "pause_reason": pause_reason, "handing_over": jobs.handing_over(), "gpu_wait_s": gpu_wait, "boot_wait_s": boot_wait, "gpu_busy": hostload.gpu_in_use(hostload.now()) is not False,
             "docker_down": docker_down, "all_ends": ends if queue and ends > clock and not paused and not gpu_wait and not boot_wait and not docker_down else None, "all_s": (ends - clock).total_seconds()}
 
 
@@ -167,48 +172,50 @@ def allowed_failures(run: dict) -> list[dict]:
     return [e for e in run.get("events", []) if e["name"] == "expect" and not e["passed"] and e.get("allowed")]
 
 
-_LOOKS: dict = {}  # run.json -> (its stamp, how its dot looks)
+_LOOKS: dict = {}  # result folder -> (the stamps of its finished runs, how each run's dot looks)
 
 
 def looks(dataset: Dataset) -> dict:
     """How every finished run looks as a dot, as in the runs of a result:
-    as it ended, a run without rest or with a failed check as failed, one
-    the simulator foretold or that failed only checks it may fail as
-    allowed, a completed one without a rest value as unmeasured. Each
-    run is looked at once until it changes, the metrics come from the
-    summary of the result as far as it is measured: the dock never waits
-    for an analysis. A completed run not measured yet looks completed until
-    it is, then it is looked at again."""
+    the same judgement, problems.look over the problems of the result, with
+    the metrics measured already: the dock never waits for an analysis. A
+    completed run not measured yet looks done until it is. Judged anew once
+    a run finishes or is measured, not at every refresh of the dock."""
     stamps = dataset.done_stamps()
-    path = lambda k: dataset.path / k.path / "run.json"
-    new = [k for k, stamp in stamps.items() if (_LOOKS.get(path(k)) or (None,))[0] != stamp]
-    metrics = analysis.known_metrics(dataset) if new else {}
-    unmeasured = {}
-    for k in new:
+    metrics = analysis.known_metrics(dataset)
+    # Judged anew as well once the simulator answered again, e.g. after predict_again.
+    told = hashlib.sha1(json.dumps(dataset.meta.get("predictions") or {}, sort_keys=True).encode()).hexdigest()
+    seen = (tuple(sorted((str(k), s) for k, s in stamps.items())), frozenset(metrics), told)
+    if (kept := _LOOKS.get(dataset.path)) and kept[0] == seen:
+        return kept[1]
+    try:
+        found = problems.of(dataset, metrics)
+    except Exception:  # a run being written: judged at the next look, nothing kept
+        found, seen = [], None
+    by_run: dict = {}
+    for p in found:
+        by_run.setdefault((p["topology"], p["variant"], p["scenario"], p["run"]), []).append(p)
+    out = {}
+    for k in stamps:
         try:
             run = dataset.run(k)
         except (OSError, ValueError):
             continue  # being written
-        state, m = run.get("status", "completed"), metrics.get(str(k))
-        if state == "completed" and m is None and not allowed_failures(run):
-            unmeasured[k] = state
+        predictable = problems.prediction(dataset, k) is not None
+        if run.get("status", "completed") == "completed" and str(k) not in metrics and not allowed_failures(run):
+            out[k] = "completed" if predictable else "open"  # not measured yet
             continue
-        # Rest is a property as any other: a run without it failed, as one that failed a check, unless the simulator foretold it.
-        rest = analysis.rested(run, m)
-        if state == "timeout" or (state == "completed" and rest is False):
-            # A wait for rest in vain: foretold as well where the simulator saw no rest.
-            state = "allowed" if problems.no_rest_predicted(dataset, k) else "failed"
-        elif state == "completed" and m is not None and rest is None:
-            state = "unmeasured"  # no rest value, as problems.broken tells
-        elif state == "completed" and allowed_failures(run):
-            state = "allowed"
-        _LOOKS[path(k)] = (stamps[k], state)
-    return {**{k: _LOOKS[path(k)][1] for k in stamps if path(k) in _LOOKS}, **unmeasured}
+        # A failure the scenario allows looks predicted only where the simulator failed that check as well.
+        allowed = bool(allowed_failures(run)) and problems.allowed_predicted(dataset, k, run) is True
+        out[k] = problems.look(run, by_run.get((k.topology, k.variant, k.scenario, k.index), []), allowed, predictable)
+    if seen is not None:
+        _LOOKS[dataset.path] = (seen, out)
+    return out
 
 
 def parts(dataset: Dataset, running: bool = False) -> list[dict]:
     """The sub-jobs of a result: its runs by topology and scenario, each
-    running, pending or as it ended (completed, allowed, failed,
+    running, pending or as it ended (completed, allowed, unjudged, failed,
     unmeasured, error). The running one first, then those to come, the finished
     ones last, so that a long list shows what matters at its top."""
     try:

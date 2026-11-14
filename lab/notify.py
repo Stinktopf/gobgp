@@ -79,10 +79,18 @@ def send(embed: dict, mention: bool = False, settings: dict | None = None) -> li
         # Only the kind of error: the messages of requests contain the URL, and with it the token.
         except requests.HTTPError as e:
             problem = f"Discord answered {e.response.status_code}"
+        except (requests.ConnectTimeout, requests.ConnectionError) as e:
+            # No connection at all, or one that broke after the request went out: then Discord may have posted it.
+            if isinstance(e, requests.ConnectTimeout) or any(w in str(e) for w in ("NameResolution", "NewConnectionError", "Failed to establish")):
+                problem = f"Discord not reachable ({type(e).__name__})"
+            else:
+                problem = f"Discord did not answer ({type(e).__name__}), the notification may have arrived"
+        except requests.Timeout as e:
+            problem = f"Discord did not answer ({type(e).__name__}), the notification may have arrived"
         except (requests.RequestException, ValueError) as e:
             problem = f"Discord not reachable ({type(e).__name__})"
         break
-    log.warning("notification not sent: %s", problem)
+    log.warning("notification: %s", problem)
     return [problem]
 
 
@@ -217,9 +225,9 @@ def result_ended(dataset) -> None:
     except (ValueError, KeyError):
         e = None
     if e and (failed := _failed_checks(dataset, e)):
-        lines.append(f"Failed checks: {failed}")
+        lines.append(f"Failed checks, not predicted: {failed}")
     if broken := _properties(dataset):
-        lines.append(f"Broken properties: {broken}")
+        lines.append(f"Broken properties, not predicted: {broken}")
     if limit := _host_limit(dataset):
         lines.append(f"Host at its limit: {limit}")
     if queue := _queue(dataset, 0, _past()):
@@ -244,11 +252,11 @@ def _verdict(dataset) -> str | None:
 
 
 def _properties(dataset) -> str | None:
-    """The properties runs broke that no check of their scenario foretold, by group, with how many runs."""
+    """The properties runs broke that the simulator did not predict, by group, with how many runs."""
     from . import problems
 
     try:
-        found = [p for p in problems.broken(dataset) if p["kind"] == "property" and not p.get("predicted")]
+        found = [p for p in problems.broken(dataset) if p["kind"] == "property" and problems.fails(p)]  # not what the simulator predicted or cannot play
     except (OSError, ValueError, KeyError):  # a summary that cannot be read is left out
         return None
     groups: dict[str, set] = {}
@@ -284,17 +292,20 @@ def _statuses(dataset) -> str | None:
     try:
         statuses = dataset.statuses()
         metrics = analysis.run_summary(dataset) if any(v == "completed" for v in statuses.values()) else {}
+        unforeseen = {(f["topology"], f["variant"], f["scenario"], f["run"]) for f in _unforeseen(dataset)} \
+            if "failed" in statuses.values() else set()
     except (OSError, ValueError, KeyError):  # a summary that cannot be read is left out
         return None
-    count = {"done": 0, "did not come to rest": 0, "not measured": 0, "failed a check": 0, "ended in an error": 0}
+    count = {"done": 0, "did not come to rest": 0, "not measured": 0, "failed a check as predicted": 0, "failed a check": 0, "ended in an error": 0}
     for key, status in statuses.items():
         if status == "completed":
             rest = analysis.rested(dataset.run(key), metrics.get(str(key)))
             count["done" if rest else "did not come to rest" if rest is False else "not measured"] += 1
         elif status == "timeout":
             count["did not come to rest"] += 1
-        elif status == "failed":
-            count["failed a check"] += 1
+        elif status == "failed":  # the runner marks every failed check, the simulator may have predicted it
+            seen = (key.topology, key.variant, key.scenario, key.index) in unforeseen
+            count["failed a check" if seen else "failed a check as predicted"] += 1
         elif status == "error":
             count["ended in an error"] += 1
     return ", ".join(f"{n} {what}" for what, n in count.items() if n) or None
@@ -310,12 +321,19 @@ def _listing(names: list[str], most: int = 4) -> str:
     return f"{shown}, … ({len(names)})" if len(names) > most else shown
 
 
-def _failed_checks(dataset, experiment) -> str | None:
-    """Per variant, the runs in which a check failed, and the first problem."""
-    from . import analysis
+def _unforeseen(dataset) -> list[dict]:
+    """The failed checks the simulator did not predict, or could not judge."""
+    from . import analysis, problems
+    from .results import RunKey
 
+    return [f for f in analysis.failed_checks(dataset)
+            if problems.check_predicted(dataset, RunKey(f["topology"], f["variant"], f["scenario"], f["run"]), f.get("key")) is not True]
+
+
+def _failed_checks(dataset, experiment) -> str | None:
+    """Per variant, the runs in which a check failed that the simulator did not predict, and the first problem."""
     try:
-        failed = analysis.failed_checks(dataset)
+        failed = _unforeseen(dataset)
     except (OSError, ValueError, KeyError):  # a summary that cannot be read is left out
         return None
     lines = []

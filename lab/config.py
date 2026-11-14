@@ -237,11 +237,15 @@ class Bgp(Model):
     mrai: float = Field(0, ge=0, le=600, description="Seconds at least between two advertisements to another AS, 0 for none")
     refresh: float = Field(1, ge=0, le=600, description="Seconds at least between two route refreshes refresh pruning asks of one "
                                                        "neighbor, the prefixes waiting meanwhile in one")
+    procs: int = Field(0, ge=0, le=64, description="Threads that run Go code in each gobgpd (its --cpus), 0 for one per CPU of the "
+                                                   "cluster: with many routers on few CPUs fewer threads start their sessions without "
+                                                   "starving Kubernetes")
 
 
 class Sampling(Model):
     interval: float = Field(0.1, ge=0.01, description="Seconds between two samples of every router")
     stable_s: float = Field(3.0, gt=0, description="Seconds a state must hold to count as stable")
+    profile_s: float = Field(0, ge=0, le=300, description="Seconds of a CPU profile of the router with the most neighbors, from the first announcement on, 0 for none")
 
     def digits(self) -> int:
         """Decimals that times measured at this interval can show."""

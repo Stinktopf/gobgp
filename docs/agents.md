@@ -4,15 +4,19 @@ An agent operates the lab over MCP (`/mcp`) or HTTP (`/api/v1`), with a token fr
 
 | Scope | May |
 |---|---|
-| read | read status, results, single runs with their samples and loops on the way, logs, experiments, scenarios, topologies and the simulator's searches |
-| control | also change experiments and scenarios, run the queue, start a simulator search, let the simulator play a topology and scenario, and update the lab |
+| read | read status, results, single runs with their samples and loops on the way, logs, experiments, scenarios, topologies, the simulator's searches, and stars and notes |
+| control | also change experiments and scenarios, run the queue and put a result before the running one, start a simulator search, let the simulator play a topology and scenario, star and note results, searches and cases, and update the lab |
 
-The MCP server describes its tools itself. The simulator's are `simulation_*` and `predict`. Its searches
+The MCP server describes its tools itself. The simulator's are `simulation_*`, `start_simulation`, `stop_simulation`, `predict`, `predict_again` and `agreement`. Its searches
 are also over HTTP, under `/api/v1/simulation/searches`.
+
+Stars and notes are the lab's own, for everyone and without an author, the same whether a person or an agent
+set them: `marks`, `star`, `add_note`, `edit_note`, `delete_note`. They stay out of downloads and public results.
 
 ## Approval
 
-- **Default:** a control token asks first. Each change waits under Settings › Agents.
+- **Default:** a control token asks first, and each change waits under Settings › Agents. A token made to act
+  at once skips this, except for updates and changes beyond the budget.
 - **Shown:** the runs and hours of an experiment, the file it saves, or the commits of an update.
 - **Updates:** always wait, also with a token that acts at once.
 - **Budget:** queueing waits once the queue would run longer than agents may fill, 24 h by default.

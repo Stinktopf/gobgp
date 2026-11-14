@@ -18,7 +18,7 @@
     <div class="ml-auto flex flex-wrap items-center justify-end gap-2">
       {% if not new %}{{ copy_button("/experiments/new?like=" ~ values.original) }}{{ delete_button("/experiments/" ~ values.original ~ "/delete", values.original) }}{% endif %}
       <button type="button" id="save" class="btn" data-tip="Save (Ctrl+S)">Save</button>
-      <button type="button" id="start" class="btn btn-primary">{{ icon("play") }}<span class="sm:hidden">Start</span><span class="max-sm:hidden">Save and start</span></button>
+      <button type="button" id="start" class="btn btn-primary" data-tip="Save and start" data-tip-align="end">{{ icon("play") }}Start</button>
     </div>
   {% endcall %}
   <div class="flex flex-wrap items-baseline gap-x-4">
@@ -93,7 +93,7 @@
             <td class="px-2 py-1.5"><input name="v{{ loop.index0 }}_ref" value="{{ v.ref }}" list="refs" class="input py-1.5 font-mono" placeholder="HEAD" aria-label="Git ref"></td>
             <td class="px-2 py-1.5">
               <select name="v{{ loop.index0 }}_mode" class="input py-1.5" aria-label="Mode" data-mode>
-                {% for m in modes %}<option value="{{ m.name }}" data-tip="{{ m.description }}" data-random="{{ 'yes' if m.pick == 'random' else '' }}" {% if v.mode == m.name %}selected{% endif %}>{{ m.name }}, {{ m.label }}</option>{% endfor %}
+                {% for m in modes %}<option value="{{ m.name }}" data-tip="{{ m.description }}" data-random="{{ 'yes' if m.pick == 'random' else '' }}" {% if v.mode == m.name %}selected{% endif %}>{{ m.label }}</option>{% endfor %}
               </select>
             </td>
             <td class="w-24 px-2 py-1.5" data-label="Share"><label class="flex items-center gap-1"><input name="v{{ loop.index0 }}_share" type="number" min="1" max="100" step="1" value="{{ (v.share * 100) | round | int if v.share else 50 }}" class="input py-1.5 text-right tabular-nums" aria-label="Share" data-share><span class="muted text-xs">%</span></label></td>
@@ -151,7 +151,7 @@
         <tbody id="sweeps">{% for w in values.sweeps %}{{ sweep_row(loop.index0, w) }}{% endfor %}</tbody>
       </table>
       <template id="sweep-row">{{ sweep_row("__i__", {"scenario": "", "param": "", "values": ""}) }}</template>
-      <p class="muted px-5 pt-3 text-xs" data-sweep-none>None of the chosen scenarios offers a number for sweeps. Mark one in the scenario editor.</p>
+      <p class="muted px-5 pt-3 text-sm" data-sweep-none data-tip="A scenario offers one where its editor marks a number for sweeps">No scenario chosen offers a number.</p>
       <div class="px-5 pt-2 pb-4"><button type="button" id="add-sweep" class="btn">{{ icon("add") }}Sweep</button></div>
     </section>
 
@@ -168,6 +168,7 @@
         {{ number("connect_retry", "Connect retry, s") }}
         {{ number("mrai", "MRAI, s", step="any", min=0, tip="Seconds at least between two advertisements to another AS, as routers commonly hold them back. 0 sends every change at once") }}
         {{ number("refresh", "Refresh, s", step="any", min=0, tip="Seconds at least between two route refreshes that refresh pruning asks of one neighbor") }}
+        {{ number("procs", "Threads per router", min=0, tip="Threads that run Go code in each gobgpd. 0 for one per CPU, fewer for many routers on few CPUs") }}
         <label class="flex items-center gap-2 text-sm" data-tip="Peers keep the routes of a router that restarts gracefully">
           <input type="checkbox" name="graceful_restart" value="on" class="accent-uoft-700" {% if values.graceful_restart %}checked{% endif %}>Graceful restart</label>
       </div>
@@ -178,6 +179,7 @@
             {% for i in intervals %}<option value="{{ i }}" {% if values.interval | float == i %}selected{% endif %}>{{ (1 / i) | round(0) | int }} Hz</option>{% endfor %}
           </select></label>
         {{ number("stable_s", "Stable after, s", step="any", min=0.1) }}
+        {{ number("profile_s", "CPU profile, s", step="any", min=0, tip="Seconds of a CPU profile of the router with the most neighbors, from the first announcement on. 0 for none") }}
       </div>
       <div class="space-y-3">
         <h2 class="section-title">Cluster</h2>
@@ -265,7 +267,7 @@
     window.syncSweeps = sync;
     sync();
   })();
-  // Saving as in every editor; Save and start saves, queues a result and shows it.
+  // Saving as in every editor; Start saves, queues a result and shows it.
   const form = document.getElementById("builder");
   const editor = UI.editor({
     kind: "experiments", original: {{ values.original | tojson }}, state: () => new URLSearchParams(new FormData(form)).toString(),

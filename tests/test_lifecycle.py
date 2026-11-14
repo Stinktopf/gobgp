@@ -492,6 +492,7 @@ def roomy(isolated, monkeypatch):
     monkeypatch.setattr(lifecycle.host, "memory_mb", lambda: (4096.0, 32768.0))
     monkeypatch.setattr(lifecycle.host, "gpus", list)
     monkeypatch.setattr(lifecycle.host, "low_inotify", lambda: None)
+    monkeypatch.setattr(lifecycle.host, "low_neigh", lambda: None)
     return cluster.Cluster(config.Cluster(cpus=4, memory_mb=8192))
 
 
@@ -517,10 +518,11 @@ def test_preflight_only_warns_about_load_and_a_busy_gpu(roomy, monkeypatch, caps
     monkeypatch.setattr(lifecycle.host, "memory_mb", lambda: (30000.0, 32768.0))
     monkeypatch.setattr(lifecycle.host, "gpus", lambda: [{"name": "g", "util": 80.0, "memory_mb": 1.0, "total_mb": 2.0}])
     monkeypatch.setattr(lifecycle.host, "low_inotify", lambda: "128 instances, 65536 watches")
+    monkeypatch.setattr(lifecycle.host, "low_neigh", lambda: "1,024 entries")
     lifecycle.preflight({}, roomy)
     out = capsys.readouterr()
     text = out.out + out.err
-    assert "Consider --cpus" in text and "smaller --memory-gb" in text and "Others use a GPU" in text and "128 instances" in text
+    assert "Consider --cpus" in text and "smaller --memory-gb" in text and "Others use a GPU" in text and "128 instances" in text and "neighbour table holds 1,024" in text
     assert lifecycle.parser().parse_args(["setup", "--no-sudo"]).no_sudo
 
 

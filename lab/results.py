@@ -26,6 +26,11 @@ from pathlib import Path
 from . import cluster, config, scenario, topology
 from .config import ROOT, Experiment, load_yaml, write_atomic
 
+# A sample's next hops can be long: with a table per eBGP neighbor, each prefix names the route sent to every
+# neighbor, half a megabyte on a large router. The csv module stops at 128 KiB by default, for every reader.
+csv.field_size_limit(2**31 - 1)
+
+STOP_FILE = "stop"  # in the folder of a result: a person stopped it; any other end of the runner interrupts it
 RESULTS = ROOT / "results"
 PUBLIC = RESULTS / "public"
 PRIVATE = RESULTS / "private"
@@ -121,6 +126,11 @@ class Dataset:
     @property
     def public(self) -> bool:
         return self.path.parent == PUBLIC
+
+    @property
+    def stopping(self) -> bool:
+        """Stopped by a person and still running: its runner ends the current phase first."""
+        return self.status.get("state") == "running" and (self.path / STOP_FILE).exists()
 
     @property
     def status(self) -> dict:
@@ -228,6 +238,9 @@ class Dataset:
         if problem := self.busy():
             raise ValueError(problem)
         shutil.rmtree(self.path)
+        from . import marks
+
+        marks.forget("result", self.name)  # its star and notes go with it
 
     def publish(self, public: bool) -> None:
         """Moves the dataset between results/private and results/public, unless it runs."""

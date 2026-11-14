@@ -1,0 +1,9 @@
+name: orders-import-filter-r0-r1
+description: The simulator's import-filter case with 300 ms on the link r0-r1, so that messages over it arrive late, an order equal link delays make rare.
+steps:
+  - degrade: {link: r0-r1, delay_ms: 300}
+  - announce: {rate: 1, for: 1, lifetime: 86400, jitter: 0, max_active: 1}
+  - until_stable: {timeout: 120}
+  - set_import: {router: r1, neighbor: r0}
+  - until_stable: {timeout: 120}
+  - expect: {router: r1, may_fail: [obgp-hp, obgp-paper, obgp-hp-pn]}

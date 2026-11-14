@@ -25,6 +25,11 @@ from ..results import BOOT_WAIT_S, Dataset, pause_file, queue_file, queued
 log = logging.getLogger("lab")
 
 
+def next_file():
+    """There while a result waits to run next: the running one ends after its run, then the queue goes on by itself."""
+    return pause_file().with_name("queue.next")
+
+
 def gpu_file():
     return config.SETTINGS / "gpu-seen"
 
@@ -71,8 +76,33 @@ class Jobs:
             ordered = [n for n in names if n in waiting] + [n for n in waiting if n not in names]
             self._save(first + ordered)
 
+    def run_next(self, name: str) -> None:
+        """Puts a waiting result before all others, before the running one too: that one ends after its current run,
+        interrupted as by a pause, and goes on right after. The queue goes on by itself, a paused one stays paused."""
+        with self.lock:
+            queue = self.queue()
+            if name not in queue and f"sim:{name}" in queue:  # a search by its id, as start_simulation names it
+                name = f"sim:{name}"
+            if name not in queue:
+                raise ValueError(f"{name} does not wait in the queue.")
+            active = self.active()
+            rest = [n for n in queue if n != name]
+            if active and active.name != name and active.name not in rest:  # started on the command line
+                rest = [active.name] + rest
+            self._save([name] + rest)
+            if active and active.name != name and not self.paused():
+                next_file().write_text(name)
+                pause_file().write_text(f"{name} was put first")  # the runner ends between two runs, as on a pause, with this reason
+
+    def handing_over(self) -> str:
+        """The result that runs next once the running one ended its run, empty when none waits so."""
+        try:
+            return next_file().read_text().strip()
+        except OSError:
+            return ""
+
     def paused(self) -> bool:
-        return pause_file().exists()
+        return pause_file().exists() and not self.handing_over()
 
     def pause_reason(self) -> str:
         """Why the lab paused the queue itself, empty when a person did."""
@@ -88,6 +118,7 @@ class Jobs:
         with self.lock:
             pause_file().parent.mkdir(parents=True, exist_ok=True)
             pause_file().write_text("")  # a person paused it: no reason shown
+            next_file().unlink(missing_ok=True)  # a hand-over waiting becomes a pause
             if running := cluster.holding():
                 if running[0] == "__maintenance__":
                     return
@@ -122,6 +153,7 @@ class Jobs:
                 if (dataset := Dataset.find(name)) and dataset.status.get("state") == "stopped":
                     dataset.write_status({**dataset.status, "state": "queued"})
             pause_file().unlink(missing_ok=True)
+            next_file().unlink(missing_ok=True)
 
     def stop_all(self) -> None:
         """Cancels every result of the queue and stops the running one. Their runs are kept."""
@@ -132,6 +164,7 @@ class Jobs:
         for name in reversed(names):  # the running one last, so that none of the others starts
             self.stop(name)
         pause_file().unlink(missing_ok=True)
+        next_file().unlink(missing_ok=True)
 
     def active(self) -> Dataset | None:
         """The dataset that is running right now, started here or on the command line."""
@@ -205,6 +238,9 @@ class Jobs:
         if self.active() or cluster.holder() or (self.worker and self.worker.poll() is None) or simulation.running():
             return
         self._ended()
+        if self.handing_over():  # the running result ended its run: the one put first starts. supervise holds the lock
+            next_file().unlink(missing_ok=True)
+            pause_file().unlink(missing_ok=True)
         if self.paused() and not self.queue():  # nothing left to hold back
             pause_file().unlink(missing_ok=True)
         if self.paused():

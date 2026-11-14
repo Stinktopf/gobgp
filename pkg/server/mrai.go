@@ -59,6 +59,19 @@ func (m *mrai) add(paths []*table.Path, now time.Time) []*table.Path {
 	return send
 }
 
+// answer takes the paths that answer a route refresh, which go out at once:
+// they carry the current routes, so an older advertisement of the same route
+// that waits is dropped.
+func (m *mrai) answer(paths []*table.Path) []*table.Path {
+	for _, p := range paths {
+		if i, ok := m.waiting[m.key(p)]; ok {
+			m.order[i] = nil
+			delete(m.waiting, m.key(p))
+		}
+	}
+	return paths
+}
+
 // flush returns what waits, if its interval has passed.
 func (m *mrai) flush(now time.Time) []*table.Path {
 	if len(m.waiting) == 0 || now.Sub(m.last) < m.interval {

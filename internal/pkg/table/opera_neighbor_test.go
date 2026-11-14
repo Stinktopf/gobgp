@@ -110,3 +110,24 @@ func operaPeers(l []*PeerInfo) []string {
 	}
 	return out
 }
+
+// Two neighbors whose policies differ on one path split their table, and
+// share it again once that path is gone.
+func TestOperaTablesShareAgainOnceAlike(t *testing.T) {
+	for _, pruning := range []Pruning{PruneRefresh, PruneSoft, PruneHard, PruneOff} {
+		withOperaOptions(t, OperaOptions{Enabled: true, Pruning: pruning, PerNeighbor: true})
+		d := newOperaDestination()
+		both := map[string]bool{"a": true, "b": true}
+		feed := func(p *Path, allows map[string]bool) {
+			d.Calculate(logger, p)
+			d.OperaFeedAll(logger, p, allows, true)
+		}
+		feed(operaPath("10.0.0.1", []uint32{1, 9}, false), both)
+		require.Len(t, d.operaViewList(), 1, pruning)
+		feed(operaPath("10.0.0.2", []uint32{2, 9}, false), map[string]bool{"a": true, "b": false})
+		require.Len(t, d.operaViewList(), 2, pruning)
+		feed(operaPath("10.0.0.2", []uint32{2, 9}, true), map[string]bool{"a": false, "b": false})
+		require.Len(t, d.operaViewList(), 1, pruning)
+		require.Equal(t, 2, d.operaViewList()[0].users, pruning)
+	}
+}

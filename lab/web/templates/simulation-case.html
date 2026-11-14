@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "macros.html" import icon, page_header, problem %}
+{% from "macros.html" import icon, page_header, problem, star_button %}
 {% set f = example.finding %}
 {# The title and counts speak of one mode: the one chosen if it shows the problem, else the first that does. #}
 {% set named = right if right in per_mode else shown[0] %}
@@ -9,24 +9,26 @@
 {# Theorems 1 and 2 promise that OBGP comes to rest and forwards without loops at rest, inside their model. #}
 {% set theorem = {"no-convergence": "the convergence proof", "loop": "the proof of loop-freedom at rest"}.get(f.kind) if proof == "contradicts it" else none %}
 {% set title = {
-  "unreachable": hit ~ " lose" ~ ("s" if rs | length == 1) ~ " the prefix",
+  "unreachable": hit ~ (" has" if rs | length == 1 else " have") ~ " no route at rest",
   "black-hole": "Packets from " ~ hit ~ " end nowhere",
   "loop": "Packets circle at rest",
   "no-convergence": "The network never comes to rest",
   "leaked": hit ~ " use" ~ ("s" if rs | length == 1) ~ " a leaked path",
+  "forward-valley": "Packets from " ~ hit ~ " go against the relations",
   "inconsistent-export": "An AS sends different paths",
   "transient-loop": "Packets circle on the way to rest",
   "transient-blocked": "Routers wait without a route",
   "transient-hole": "Routers lose their route for a while",
 } %}
 {% block title %}{{ title.get(f.kind, f.kind) | capitalize }} – Simulation – OBGP Lab{% endblock %}
-{% block head %}<script src="{{ static('simulation.js') }}" defer></script>{% endblock %}
+{% block head %}<script src="{{ static('sim-map.js') }}" defer></script><script src="{{ static('simulation.js') }}" defer></script>{% endblock %}
 {% block content %}
 {% call page_header("/simulation?search=" ~ search_id, "Simulation") %}
-  <h1 class="mr-auto text-2xl font-semibold tracking-tight first-letter:uppercase">{{ title.get(f.kind, f.detail) }}</h1>
+  <h1 class="text-2xl font-semibold tracking-tight first-letter:uppercase">{{ title.get(f.kind, f.detail) }}</h1>
+  {{ star_button("case", search_id ~ "/" ~ finding_id, starred, "/simulation/" ~ search_id ~ "/" ~ finding_id, "this search", "star-title mr-auto") }}
   <form method="post" action="/simulation/{{ search_id }}/{{ finding_id }}/lab"><button class="btn" data-tip="As an experiment on real routers, every mode, the simulator's prediction as checks">{{ "Open in the lab" if lab else "Play in the lab" }}</button></form>
 {% endcall %}
-{# Light by design: the title says what happens, one grey line why, one graph, one caption with the key moment. Everything else is folded into Details. #}
+{# Light by design: the title says what happens, one grey line why, then the map, which carries itself. #}
 <p data-why class="-mt-4 max-w-3xl text-lg text-balance text-slate-600 dark:text-slate-400">&nbsp;</p>
 {% if theorem %}<p class="mt-2 text-sm font-semibold text-rose-700 dark:text-rose-300">Contradicts {{ theorem }}</p>{% endif %}
 <div class="mb-6"></div>
@@ -34,80 +36,54 @@
 {{ problem(error) }}
 <div id="sim" data-search="{{ search_id }}" data-finding="{{ finding_id }}" data-proof="{{ proof }}" data-modes='{{ per_mode | tojson }}'>
   {% macro picker(mode) %}<select data-mode aria-label="Mode" class="input w-auto py-0.5 font-mono text-sm font-medium">{% for m in modes %}<option value="{{ m }}" {% if m == mode %}selected{% endif %} {% if m in shown %}data-problem class="text-rose-700 dark:text-rose-300"{% endif %}>{{ m }}</option>{% endfor %}</select>{% endmacro %}
-  {# The graph and its caption: the presentation. #}
+  {# The map and its controls. #}
   <div class="card overflow-hidden" data-run>
     <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pt-3 text-sm">
       {{ picker(right) }}
-      {# Under NS-BGP, whose packets the graph follows: every router's own, or the whole way of one router's packets. Hidden elsewhere. #}
-      <select data-follow aria-label="Packets from" class="input hidden w-auto py-0.5 text-sm"><option value="">Each router's own packets</option>{% for k in range(example.instance.routers) %}<option value="{{ k }}">Packets from router {{ k }}</option>{% endfor %}</select>
       <span data-state class="muted text-xs"></span>
       {% if examples | length > 1 %}
       <select aria-label="Network" class="input ml-auto w-auto max-w-full min-w-0 py-0.5 text-sm" onchange="location.href = '/simulation/{{ search_id }}/' + this.value">{% for c in examples %}<option value="{{ c.id }}" {% if c.id == finding_id %}selected{% endif %}>Network {{ loop.index }} of {{ loop.length }}, {{ c.instance.routers }} routers</option>{% endfor %}</select>
       {% endif %}
     </div>
-    <div class="relative">
-      <svg data-graph viewBox="-130 -118 260 250" class="block h-[clamp(16rem,40vh,26rem)] w-full md:h-[clamp(18rem,52vh,36rem)]" role="img"></svg>
+    {# On a phone the map keeps a width to read it by and scrolls sideways. #}
+    <div class="relative overflow-x-auto">
+      {# The map: routers as cards, each link two belts, routes as parcels, what a router does as a bubble beside it. #}
+      <svg data-map class="block h-[clamp(24rem,72vh,48rem)] w-full min-w-[60rem] md:min-w-0" role="img" aria-label="Routers and the routes travelling between them"></svg>
       <p data-wait class="muted absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm"><span class="spinner"></span><span>Playing the run…</span></p>
     </div>
-    {# Three marks only: where packets go, the problem, and the next hop a router wants. #}
-    <div class="muted flex flex-wrap justify-center gap-x-5 gap-y-1 px-4 pb-2 text-xs">
-      <span class="flex items-center gap-1.5"><span class="w-5 border-t-2 border-uoft-700 dark:border-uoft-300"></span>where packets go</span>
-      <span class="flex items-center gap-1.5"><span class="w-5 border-t-2 border-rose-600 dark:border-rose-400"></span>the problem</span>
-      <span class="flex items-center gap-1.5" data-key="aim"><span class="w-5 border-t border-dashed border-rose-500"></span>the next hop it wants</span>
-    </div>
-    {# Always at hand under the graph: the key moment, and the controls, every message on the timeline, the key moments with the arrows. #}
-    <div class="space-y-3 border-t border-slate-900/5 px-4 py-3 dark:border-white/5">
-      {# The key moments above the timeline, numbered as in their list, at the message they happen at. #}
-      <div data-marks class="relative h-7" aria-label="Key moments on the timeline"></div>
-      <div data-timeline data-dense tabindex="0" role="slider" aria-label="Every message, the problem filled red" aria-valuemin="0" class="relative flex h-5 w-full cursor-pointer touch-none items-center"></div>
-      <div class="flex flex-wrap items-center gap-3">
-        <div class="flex gap-1">
-          <button type="button" data-act="prev" class="btn btn-icon" aria-label="One message back" data-tip="One message back"><span class="rotate-90">{{ icon("chevron-down") }}</span></button>
-          <button type="button" data-act="play" class="btn btn-primary w-24" data-tip="Play message by message">{{ icon("play") }}<span>Play</span></button>
-          <button type="button" data-act="next" class="btn btn-icon" aria-label="One message on" data-tip="One message on"><span class="-rotate-90">{{ icon("chevron-down") }}</span></button>
-          <button type="button" data-act="loop" class="btn btn-icon" aria-pressed="false" data-tip="Play in a loop" aria-label="Play in a loop">{{ icon("repeat") }}</button>
-        </div>
-        {# Speed as a slider that snaps to ½× to 16×, at 1× a message a second. #}
-        <label class="flex items-center gap-2 text-xs">
-          <input type="range" min="0" max="5" step="1" value="1" data-speed aria-label="Speed" class="w-28 accent-uoft-700 dark:accent-uoft-300">
-          <span data-speed-label class="w-8 font-mono tabular-nums">1×</span>
-        </label>
-        {# The key moment in the row of the controls, centred, before the count. On a phone it takes a line above them. #}
-        <p data-caption class="order-first min-w-0 basis-full text-center text-sm text-balance sm:order-none sm:flex-1 sm:basis-0" aria-live="polite"></p>
-        <span data-counter class="muted font-mono text-xs whitespace-nowrap tabular-nums max-sm:ml-auto" data-tip="Messages: the timeline, arrow keys on it"></span>
+    {# Under the map only the controls: the timeline, every phase a part of it, the problem in rose. #}
+    <div class="flex flex-wrap items-center gap-3 border-t border-slate-900/5 px-4 py-3 dark:border-white/5">
+      <div data-timeline tabindex="0" role="slider" aria-label="Every step, the problem in rose" aria-valuemin="0" class="basis-full"></div>
+      <div class="flex gap-1">
+        <button type="button" data-act="prev" class="btn btn-icon" aria-label="One step back" data-tip="One step back"><span class="rotate-90">{{ icon("chevron-down") }}</span></button>
+        <button type="button" data-act="play" class="btn btn-primary w-24" data-tip="Play step by step">{{ icon("play") }}<span>Play</span></button>
+        <button type="button" data-act="next" class="btn btn-icon" aria-label="One step on" data-tip="One step on"><span class="-rotate-90">{{ icon("chevron-down") }}</span></button>
+        <button type="button" data-act="loop" class="btn btn-icon" aria-pressed="false" data-tip="Play in a loop" aria-label="Play in a loop">{{ icon("repeat") }}</button>
       </div>
+      {# Speed as a slider that snaps to ½× to 16×, at 1× a step every 1.4 seconds. #}
+      <label class="flex items-center gap-2 text-xs">
+        <input type="range" min="0" max="5" step="1" value="1" data-speed aria-label="Speed" class="w-28 accent-uoft-700 dark:accent-uoft-300">
+        <span data-speed-label class="w-8 font-mono tabular-nums">1×</span>
+      </label>
+      {# What kind of step this is beside its number: on a phone the words wrap above it. #}
+      <span class="ml-auto flex flex-wrap items-baseline justify-end gap-x-3 gap-y-1 text-right text-xs">
+        <span data-phase></span>
+        <span data-counter class="muted font-mono whitespace-nowrap tabular-nums" data-tip="Steps: a message arrives, then what it makes leaves. Arrow keys step."></span>
+      </span>
     </div>
   </div>
 
-  {# Below, for a closer look: the key moments and the network. A click on a router opens its table. #}
-  <div class="mt-4 grid gap-4 md:grid-cols-2">
-    {# As high as the network beside it on a wide screen, the list scrolling inside. On a phone it ends at a height of its own. #}
-    <div class="card relative max-md:px-4 max-md:py-3 md:min-h-64">
-      <div class="flex flex-col md:absolute md:inset-0 md:px-4 md:py-3">
-        <p class="label mb-2">Key moments</p>
-        <ol data-moments class="max-h-80 min-h-0 flex-1 space-y-0.5 overflow-y-auto pr-1 pb-4 text-sm [mask-image:linear-gradient(to_bottom,black_88%,transparent)] md:max-h-none"></ol>
-      </div>
-    </div>
+  {# Below: the network and its policies. #}
+  <div class="mt-4">
     <div class="card space-y-2 px-4 py-3">
       <p class="label">The network</p>
       {# One table: where the case was found, then the network and its policies, the rows the script adds. #}
       <dl data-policies class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-        <dt class="muted">Modes</dt><dd>{{ label }}</dd>
-        <dt class="muted">Family</dt><dd class="font-mono">{{ example.instance.family }}</dd>
-        {% if pm.of %}<dt class="muted">Seen</dt><dd {% if shown | length > 1 %}data-tip="{% for m in shown %}{{ m }}: {{ per_mode[m].count }} of {{ per_mode[m].of }}{% if not loop.last %}&#10;{% endif %}{% endfor %}"{% endif %}>in {{ "{:,}".format(pm.count) }} of {{ "{:,}".format(pm.of) }} networks, {% set pct = 100 * pm.count / pm.of %}{{ "under 0.1" if pct < 0.1 else "{:.1f}".format(pct) }} %</dd>{% endif %}
-        {% if pm.orders %}<dt class="muted">Orders</dt><dd {% if shown | length > 1 %}data-tip="{% for m in shown %}{{ m }}: {{ per_mode[m].shown }} of {{ per_mode[m].orders }}{% if not loop.last %}&#10;{% endif %}{% endfor %}"{% endif %}>in {{ pm.shown }} of {{ pm.orders }} orders of messages</dd>{% endif %}
+        <dt class="muted">Shows the problem in</dt><dd>{{ label }}</dd>
+        {# Counted per family, mode and kind over every network of the family, this network one of them, and over the orders of messages tried on it. #}
+        {% if pm.of %}<dt class="muted">How often</dt><dd {% if shown | length > 1 %}data-tip="{% for m in shown %}{{ m }}: {{ per_mode[m].count }} of {{ per_mode[m].of }} networks{% if per_mode[m].orders %}, {{ per_mode[m].shown }} of {{ per_mode[m].orders }} orders{% endif %}{% if not loop.last %}&#10;{% endif %}{% endfor %}"{% endif %}>in {{ "{:,}".format(pm.count) }} of {{ "{:,}".format(pm.of) }} {{ example.instance.family }} networks, {% set pct = 100 * pm.count / pm.of %}{{ "under 0.1" if pct < 0.1 else "{:.1f}".format(pct) }} %{% if pm.orders %}, and in {{ pm.shown }} of {{ pm.orders }} orders of messages{% endif %}</dd>{% endif %}
         {% if lab %}{% set mine = lab[0].modes | selectattr("mode", "equalto", named) | first %}{% if mine and mine.runs %}<dt class="muted">Lab</dt><dd><a href="#lab" class="hover:underline">in {{ mine.seen }} of {{ mine.runs }} runs</a></dd>{% endif %}{% endif %}
       </dl>
-      <div class="muted mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-slate-900/5 pt-2 text-xs dark:border-white/5">
-        <span class="flex items-center gap-1.5"><span class="size-2.5 rounded-full bg-uoft-700 dark:bg-uoft-300"></span>has a route</span>
-        <span class="flex items-center gap-1.5"><span class="size-2.5 rounded-full bg-violet-400"></span>waits for a refresh</span>
-        <span class="flex items-center gap-1.5"><span class="size-2.5 rounded-full border border-slate-400 bg-slate-200 dark:bg-slate-700"></span>no route</span>
-        <span class="flex items-center gap-1.5" data-key="peers"><span class="text-center leading-none whitespace-nowrap">•–•</span>peers</span>
-        <span class="flex items-center gap-1.5" data-key="ibgp"><span class="w-5 border-t border-slate-400"></span>IGP link in an AS</span>
-        <span class="flex items-center gap-1.5" data-key="frame"><span class="size-3 rounded-full bg-uoft-700/10 dark:bg-uoft-300/15"></span>one AS or confederation</span>
-        <span data-key="rr"><b style="color: var(--graph-role)">RR</b> route reflector</span><span data-key="rs"><b style="color: var(--graph-role)">RS</b> route server</span>
-        <span>◆ origin</span>
-      </div>
     </div>
   </div>
 </div>

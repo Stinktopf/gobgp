@@ -53,7 +53,8 @@ VARIANTS = {
     "-np": (" without pruning", "no pruning, native iBGP, AS_SET ordered canonically, confederation hops counted", {**BUILT, "GOBGP_OPERA_PRUNING": "false"}, NATIVE),
     "-paper": (" as in the paper", "hard pruning, iBGP filtered, AS_SET as received, confederation hops ignored, the paper's code",
                {"GOBGP_OPERA_ENABLED": "true", "GOBGP_OPERA_PRUNING": "hard", "GOBGP_OPERA_IBGP": "filter",
-                "GOBGP_OPERA_AS_SET": "received", "GOBGP_OPERA_CONFED": "ignore", "GOBGP_OPERA_RS": "admit"}, ()),
+                "GOBGP_OPERA_AS_SET": "received", "GOBGP_OPERA_CONFED": "ignore", "GOBGP_OPERA_RS": "admit",
+                "GOBGP_OPERA_ENHANCED_REFRESH": "off"}, ()),
 }
 
 MODES = {

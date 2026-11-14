@@ -3,14 +3,17 @@
 
    Colours have one job each:
    - accent (U of T Blue): titles, interaction, selection, what stands
-     out (the best value, OBGP), roles such as origins
-   - neutrals (slate): structure, text, the graph itself
+     out (the best value, OBGP), origins on the graphs of the lab
+   - neutrals (slate): structure, text, the graph itself, and limits of
+     a measurement or of the host (.notice-warn)
    - series 1–8: variants, in charts and replays only
    - activity (U of T Blue, from pale to deep): how busy a router or link
      is, in replays only, where origins turn neutral
-   - status: sky running, emerald done (a ring: failed a check as allowed),
-     amber waiting for you (unsaved, low disk) and runs without rest (a
-     ring), orange failed checks (a ring), rose errors */
+   - roles (teal): roles of a router on the map of the simulator
+   - status: sky running, emerald done (a ring: failed as predicted),
+     violet waiting (queued) and sweeps, amber runs the simulator cannot
+     predict, rose problems only: errors and failures the simulator did
+     not predict */
 @import "tailwindcss";
 @source "./templates";
 
@@ -39,7 +42,7 @@
 :root {
   /* Variants: passes the colour vision checks on the chart surface. */
   --series-1: #007c9c;
-  --series-2: #bd1d57;
+  --series-2: #1e3765;  /* U of T blue: clear of the problem rose */
   --series-3: #b58900;
   --series-4: #83458e;
   --series-5: #2f8f46;
@@ -54,6 +57,7 @@
   --graph-bg: #ffffff;
   --graph-node: #64748b;
   --graph-edge: #cbd5e1;
+  --graph-link: #a3afc0;  /* a session in the topology views and the replay, idle */
   --graph-label: #475569;
   --graph-accent: #1e3765;
   --graph-accent-soft: #9bb8eb;
@@ -65,6 +69,17 @@
   --graph-none-line: #94a3b8;
   --graph-waits: #a78bfa;  /* a router that waits for a route refresh */
   --graph-waits-text: #1e1b4b;
+  --graph-tip: #0f172a;  /* the speech bubbles of the Simulation's map */
+  /* Routers among few, each in its own colour, here and in the Simulation: none of the meanings above. */
+  --router-1: #0284c7;
+  --router-2: #d97706;
+  --router-3: #059669;
+  --router-4: #a21caf;
+  --router-5: #65a30d;
+  --router-6: #c2410c;
+  --router-7: #a16207;
+  --router-8: #475569;
+  --graph-problem-soft: #ffe4e6;
   --graph-as-1: rgb(30 55 101 / 0.09);  /* the areas of ASes of several routers */
   --graph-as-2: rgb(100 116 139 / 0.12);
   --graph-as-3: rgb(71 85 105 / 0.08);
@@ -87,7 +102,7 @@
 /* Unlayered as the light ones above, which they replace. */
 :root[data-theme=dark] {
   --series-1: #1f9bbd;
-  --series-2: #e0457d;
+  --series-2: #9bb8eb;
   --series-3: #ad8700;
   --series-4: #a36bb0;
   --series-5: #45a85a;
@@ -101,6 +116,7 @@
   --graph-bg: #0f172a;
   --graph-node: #94a3b8;
   --graph-edge: #334155;
+  --graph-link: #5b6b82;
   --graph-label: #cbd5e1;
   --graph-accent: #9bb8eb;
   --graph-accent-soft: #345695;
@@ -112,6 +128,17 @@
   --graph-none-line: #94a3b8;
   --graph-waits: #a78bfa;
   --graph-waits-text: #1e1b4b;
+  --graph-tip: #1e293b;  /* the speech bubbles of the Simulation's map */
+  /* The routers' colours, mixed 30 % toward white. */
+  --router-1: #4ea9d8;
+  --router-2: #e4a051;
+  --router-3: #50b696;
+  --router-4: #be60c7;
+  --router-5: #93bf56;
+  --router-6: #d47a55;
+  --router-7: #bd9151;
+  --router-8: #7e8896;
+  --graph-problem-soft: #4c0519;
   --graph-as-1: rgb(147 176 224 / 0.16);
   --graph-as-2: rgb(148 163 184 / 0.18);
   --graph-as-3: rgb(148 163 184 / 0.10);
@@ -149,11 +176,6 @@
 }
 
 @layer base {
-  /* The scrollbar's room is always kept: a page that grows past the window
-     during a refresh does not shift sideways. */
-  html {
-    scrollbar-gutter: stable;
-  }
   /* Columns of a grid shrink with it, e.g. around long text. */
   .grid > * {
     min-width: 0;
@@ -273,11 +295,15 @@
   .dock-run-error { @apply bg-rose-500; }
   /* A run that failed a check or broke a property, rest included. */
   .dock-run-failed { @apply border-rose-600; }
+  .dock-run-unjudged { @apply border-amber-500; }
+  .dock-run-open { @apply bg-slate-400 dark:bg-slate-500; }
   .dock-run-unmeasured { @apply border-slate-400 dark:border-slate-500; }
   /* The same states as a bar on a phone, where a ring is no colour of its own. */
   .dock-bar-completed { @apply bg-emerald-500; }
   .dock-bar-allowed { @apply bg-emerald-300 dark:bg-emerald-700; }
   .dock-bar-failed { @apply bg-rose-600; }
+  .dock-bar-unjudged { @apply bg-amber-300 dark:bg-amber-700; }
+  .dock-bar-open { @apply bg-slate-400 dark:bg-slate-500; }
   .dock-bar-unmeasured { @apply bg-slate-400 dark:bg-slate-500; }
   .dock-bar-error { @apply bg-rose-500; }
   .dock-bar-running { @apply animate-pulse bg-sky-500; }
@@ -286,8 +312,7 @@
   .drag-handle {
     @apply -ml-1 flex rounded p-0.5 text-slate-300 hover:text-slate-500 focus-visible:outline-2 focus-visible:outline-uoft-500 dark:text-slate-600 dark:hover:text-slate-400;
   }
-  /* A notice above content, coloured as the run states: amber a limit of
-     the measurements, orange failed checks, rose errors */
+  /* A notice above content: slate a limit, emerald passed, rose problems */
   .notice {
     @apply rounded-lg px-4 py-2 text-sm;
   }
@@ -318,6 +343,10 @@
   .muted {
     @apply text-slate-500 dark:text-slate-400;
   }
+  /* Nothing to show: one muted line in the place of the card or list. */
+  .empty-state {
+    @apply py-10 text-center text-sm text-slate-500 dark:text-slate-400;
+  }
   .error {
     @apply text-sm text-rose-700 dark:text-rose-300;
   }
@@ -329,6 +358,123 @@
   }
 
   /* Icons from static/icons.svg */
+  .star-toggle {
+    @apply -m-3.5 inline-flex rounded p-3.5 text-slate-300 transition hover:text-amber-500 dark:text-slate-600 dark:hover:text-amber-400;
+  }
+  .star-toggle.is-starred {
+    @apply text-amber-500 dark:text-amber-400;
+  }
+  .star-toggle.is-starred .icon {
+    fill: currentColor;
+  }
+  /* A note as a slip of paper: warm, a soft shadow, each a little askew, straight while worked on. */
+  .note {
+    @apply relative rounded-sm bg-amber-50 px-3.5 pt-3 pb-2 text-slate-900 shadow-[0_1px_2px_rgb(0_0_0/0.08),0_6px_14px_-6px_rgb(120_80_0/0.25)] ring-1 ring-amber-200/70 transition-transform dark:bg-[#3a311b] dark:text-slate-50 dark:shadow-[0_6px_14px_-6px_rgb(0_0_0/0.6)] dark:ring-amber-200/15;
+    rotate: -0.6deg;
+  }
+  .note:nth-of-type(even) {
+    rotate: 0.5deg;
+  }
+  .note:hover, .note:focus-within {
+    rotate: 0deg;
+  }
+  .note::before {  /* the strip of tape that holds it */
+    @apply absolute -top-1.5 left-1/2 h-3 w-12 -translate-x-1/2 rounded-[1px] bg-amber-200/60 dark:bg-amber-200/20;
+    content: "";
+  }
+  /* Colours to tell notes apart, each as paper, its tape a shade darker. Done ones turn green. */
+  .note-pink { @apply bg-pink-50 ring-pink-200/70 before:bg-pink-200/60 dark:bg-[#3b2230] dark:ring-pink-200/15 dark:before:bg-pink-200/20; }
+  .note-blue { @apply bg-sky-50 ring-sky-200/70 before:bg-sky-200/60 dark:bg-[#1b2d3b] dark:ring-sky-200/15 dark:before:bg-sky-200/20; }
+  .note-violet { @apply bg-violet-50 ring-violet-200/70 before:bg-violet-200/60 dark:bg-[#2c2340] dark:ring-violet-200/15 dark:before:bg-violet-200/20; }
+  .note-orange { @apply bg-orange-50 ring-orange-200/70 before:bg-orange-200/60 dark:bg-[#3d2717] dark:ring-orange-200/15 dark:before:bg-orange-200/20; }
+  .note.is-done {
+    @apply bg-emerald-50 text-slate-600 ring-emerald-200/70 dark:bg-[#183226] dark:text-slate-300 dark:ring-emerald-200/15;
+  }
+  .note.is-done::before {
+    @apply bg-emerald-200/60 dark:bg-emerald-200/20;
+  }
+  /* Written on the slip itself: no box, the paper is the field. */
+  .note-input {
+    @apply block w-full resize-none border-0 bg-transparent p-0 text-[15px] leading-snug text-inherit placeholder:text-slate-500 focus:ring-0 focus:outline-none dark:placeholder:text-slate-400;
+  }
+  .note.is-editing > .note-meta, .note.is-editing > .note-text {
+    display: none;
+  }
+  /* A small slip in the overview, picked by its box. */
+  .note-sm {
+    @apply flex cursor-pointer items-start gap-2 px-2.5 pt-2 pb-1.5 text-sm;
+  }
+  .note-sm::before {
+    @apply -top-1 h-2 w-8;
+  }
+  .note-colors {
+    @apply inline-flex items-center gap-1.5;
+  }
+  .note-swatch {
+    @apply relative size-4 cursor-pointer rounded-full ring-1 ring-black/10 has-[:checked]:ring-2 has-[:checked]:ring-slate-700 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-uoft-500 dark:ring-white/20 dark:has-[:checked]:ring-white;
+    rotate: 0deg;
+  }
+  .note-swatch.note-yellow { @apply bg-amber-200 dark:bg-amber-300/70; }
+  .note-swatch.note-pink { @apply bg-pink-200 dark:bg-pink-300/70; }
+  .note-swatch.note-blue { @apply bg-sky-200 dark:bg-sky-300/70; }
+  .note-swatch.note-violet { @apply bg-violet-200 dark:bg-violet-300/70; }
+  .note-swatch.note-orange { @apply bg-orange-200 dark:bg-orange-300/70; }
+  .note-swatch::before { content: none; }
+  .note-text {
+    @apply text-[15px] leading-snug break-words whitespace-pre-line;
+  }
+  .note-meta {
+    @apply mt-1 flex items-center gap-1 text-xs text-slate-600 dark:text-slate-300;
+  }
+  .note-action {
+    @apply -mx-1 -my-3.5 inline-flex rounded p-3.5 text-slate-500 transition hover:bg-black/5 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white;
+  }
+  /* Until a thumbnail is drawn, or where none can be: a quiet mark in its box. */
+  .thumb-placeholder {
+    @apply pointer-events-none absolute inset-0 grid place-content-center text-slate-300 dark:text-slate-700;
+  }
+  .thumb-placeholder .icon {
+    @apply size-6;
+  }
+  .thumb:not(:empty) + .thumb-placeholder {
+    @apply hidden;
+  }
+  .link-pill {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1 text-sm whitespace-nowrap text-slate-700 transition hover:bg-slate-900/5 dark:border-white/10 dark:text-slate-200 dark:hover:bg-white/5;
+  }
+  .note-count {
+    @apply ml-1 inline-flex items-center gap-0.5 align-middle font-sans text-xs text-slate-500 dark:text-slate-400;
+  }
+  .note-count .icon {
+    @apply size-3.5;
+  }
+  .notes-drawer {
+    @apply fixed inset-y-0 right-0 z-30 w-full border-l border-slate-200 bg-slate-50 shadow-xl sm:w-[24rem] dark:border-slate-800 dark:bg-slate-950;
+  }
+  .notes-panel {
+    @apply flex h-full flex-col;
+  }
+  .notes-head {
+    @apply flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900;
+  }
+  .notes-body {
+    @apply flex-1 overflow-y-auto p-4;
+  }
+  .notes-error {
+    @apply mx-4 mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-800 dark:bg-rose-950/50 dark:text-rose-200;
+  }
+  .btn-sm {
+    @apply gap-1 px-2 py-1 text-xs;
+  }
+  .notes-bar {
+    @apply sticky -top-4 z-10 -mx-4 mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-200 bg-slate-50 px-4 py-2 dark:border-slate-800 dark:bg-slate-950;
+  }
+  .notes-badge {
+    @apply absolute -top-0.5 -right-1 h-4 min-w-4 rounded-full bg-uoft-700 px-1 text-center text-[10px] leading-4 font-semibold text-white dark:bg-uoft-300 dark:text-slate-900;
+  }
+  .star-title .icon {
+    @apply size-5;  /* beside a title, centred on its line */
+  }
   .icon {
     @apply size-4 shrink-0;
     fill: none;
@@ -347,6 +493,9 @@
   }
   .btn-danger {
     @apply text-rose-700 hover:bg-rose-50 dark:text-rose-300 dark:hover:bg-rose-950;
+  }
+  .btn-quiet-danger {
+    @apply text-slate-400 hover:bg-rose-50 hover:text-rose-700 dark:text-slate-500 dark:hover:bg-rose-950 dark:hover:text-rose-300;
   }
   .btn-icon {
     @apply size-8 px-0 pointer-coarse:size-9;
@@ -407,16 +556,26 @@
      above the 24 px of WCAG 2.2. Their text stays at 14 px, base.html keeps
      iOS from zooming into it. */
   @media (pointer: coarse) {
-    :is(.btn, .nav-link, .tabs > a, .segmented > *, .group-toggle, .select-button, .chip, .hit, .drag-handle) {
+    :is(.btn, .nav-link, .tabs > a, .segmented > *, .group-toggle, .select-button, .chip, .hit, .drag-handle, .link-pill) {
       position: relative;
     }
-    :is(.btn, .nav-link, .tabs > a, .segmented > *, .group-toggle, .select-button, .chip, .hit, .drag-handle)::after {
+    :is(.btn, .nav-link, .tabs > a, .segmented > *, .group-toggle, .select-button, .chip, .hit, .drag-handle, .link-pill)::after {
       content: "";
       position: absolute;
       left: 50%;
       top: 50%;
       width: max(100%, 44px);
       height: max(100%, 44px);
+      transform: translate(-50%, -50%);
+    }
+    /* A key moment on the timeline stays a 24 px dot, placed absolutely, its area around it a finger wide. */
+    .mark-dot::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 44px;
+      height: 44px;
       transform: translate(-50%, -50%);
     }
     .input:not(textarea), select, select.btn, .input-note {
@@ -502,6 +661,15 @@
   .tip-time {
     @apply ml-auto pl-3 font-normal whitespace-nowrap text-slate-400 tabular-nums;
   }
+  /* The timeline of the Simulation's map: every phase a share of it, the loop rose, the past light, now a mark. */
+  .sim-track {
+    @apply relative h-2 cursor-pointer touch-none overflow-hidden rounded bg-slate-200 dark:bg-slate-800;
+  }
+  .sim-track i { @apply absolute inset-y-0; }
+  .sim-track .loop { @apply bg-rose-500/55; }
+  .sim-track .done { @apply left-0 bg-uoft-300/70 dark:bg-uoft-700/70; }
+  .sim-track .now { @apply min-w-1 bg-uoft-700 dark:bg-uoft-300; }
+
   /* Loading: a ring that turns; shown by htmx while a request runs (hx-indicator). */
   .spinner {
     @apply inline-block size-4 shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent opacity-60;
@@ -724,7 +892,7 @@
   .list tbody tr.empty, .list tbody tr.broken {
     @apply cursor-default hover:bg-transparent;
   }
-  .list tr.empty td {
+  .list tr.empty td {  /* as .empty-state */
     @apply py-10 text-center text-sm text-slate-500 dark:text-slate-400;
   }
   .list .num {
@@ -741,6 +909,10 @@
   }
   div.group-head {
     @apply mb-3 border-b border-slate-200/70 pb-2 dark:border-white/10;
+  }
+  /* A group of cards on a page without a list, e.g. Settings: as the groups of the main views. */
+  .group-title {
+    @apply border-b border-slate-200/70 px-1 pb-2 text-xs font-semibold tracking-wide text-slate-600 uppercase dark:border-white/10 dark:text-slate-300;
   }
   .group-toggle {
     @apply flex items-center gap-2 rounded text-left text-xs font-semibold tracking-wide text-slate-600 uppercase focus-visible:outline-2 focus-visible:outline-uoft-500 dark:text-slate-300;

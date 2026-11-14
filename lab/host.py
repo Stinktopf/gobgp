@@ -270,6 +270,14 @@ def low_inotify() -> str | None:
     return f"{instances} instances, {watches} watches" if instances < 1024 or watches < 524288 else None
 
 
+def low_neigh() -> str | None:
+    """The limit of the kernel's neighbour table, when below what the large topologies need."""
+    from .cluster import NEIGH_LOW, neigh_table
+
+    table = neigh_table()
+    return f"{table[1]:,} entries" if table and table[1] < NEIGH_LOW else None
+
+
 def gpu_busy(found: list[dict]) -> bool:
     return any(g["util"] >= GPU_BUSY for g in found)
 

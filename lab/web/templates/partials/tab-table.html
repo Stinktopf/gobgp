@@ -24,8 +24,8 @@
   {# The table: one metric of every scenario and variant. #}
   <section class="card overflow-hidden">
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-slate-100 px-4 py-1.5 dark:border-white/5">
-      {# What it measures, short; how many runs and how exact in the bar on the right. #}
-      <span class="muted min-w-0 basis-full text-xs sm:basis-0 sm:flex-1">{% if metric == "checks" %}<span class="font-semibold">Checks</span>: runs that passed every expect step{% else %}<span class="font-semibold" {% if caveat %}data-tip="{{ caveat }}"{% endif %}>{{ label }}</span> in {{ unit }}: {{ help }}{% if ns.runs and ns.reached < ns.runs %}. {{ ns.runs - ns.reached }} of {{ ns.runs }} runs did not {{ 'reach every prefix' if metric == 'convergence_s' else 'settle' }}{% endif %}{% endif %}</span>
+      {# The metric and its unit, what it measures in the tooltip; how many runs and how exact in the bar on the right. #}
+      <span class="muted min-w-0 basis-full text-xs sm:basis-0 sm:flex-1">{% if metric == "checks" %}<span class="font-semibold" data-tip="Runs that passed every expect step">Checks</span>{% else %}<span class="font-semibold" data-tip="{{ label }} in {{ unit }}: {{ help }}{% if caveat %}&#10;{{ caveat }}{% endif %}">{{ label }}</span> in {{ unit }}{% if ns.runs and ns.reached < ns.runs %}. {{ ns.runs - ns.reached }} of {{ ns.runs }} runs did not {{ 'reach every prefix' if metric == 'convergence_s' else 'settle' }}{% endif %}{% endif %}</span>
       <span class="muted text-xs whitespace-nowrap tabular-nums" data-tip="The median of the runs{% if metric in time_metrics %}, exact to two sampling intervals{% endif %}">{{ experiment.runs }} run{{ "s" if experiment.runs != 1 }}{% if metric in time_metrics %}, ±{{ (2 * experiment.sampling.interval) | round(3) }} s{% endif %}</span>
       {% if metric != "checks" %}
       <label class="muted flex items-center gap-1.5 text-xs whitespace-nowrap" data-tip="Every other value as its difference to this variant">Relative to

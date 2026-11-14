@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "macros.html" import state_badge, visibility_tag, list_header, problem, delete_button, icon %}
+{% from "macros.html" import state_badge, visibility_tag, list_header, problem, delete_button, icon, star_button %}
 {% block title %}Results – OBGP Lab{% endblock %}
 {% block content %}
 {% call list_header("Results", "#results") %}
@@ -16,7 +16,7 @@
 <div class="card overflow-x-auto">
   <table class="list" id="results">
     <thead><tr>
-      <th class="w-0 pr-0"><label class="hit inline-flex" data-tip="Pick every result shown"><input type="checkbox" class="accent-uoft-700 dark:accent-uoft-400" aria-label="Pick every result shown" data-pick-all></label></th><th>Result</th><th class="hidden md:table-cell">Variants</th><th class="num">Runs</th><th class="num hidden sm:table-cell">Size</th><th class="num hidden sm:table-cell">Created</th><th></th>
+      <th class="w-0 pr-0"><label class="hit inline-flex" data-tip="Pick every result shown"><input type="checkbox" class="accent-uoft-700 dark:accent-uoft-400" aria-label="Pick every result shown" data-pick-all></label></th><th>Result</th><th class="hidden md:table-cell">Variants</th><th class="num hidden sm:table-cell">Runs</th><th class="num hidden sm:table-cell">Size</th><th class="num hidden sm:table-cell">Created</th><th></th>
     </tr></thead>
     <tbody>
       {% for r in results %}
@@ -26,19 +26,23 @@
           <label class="hit inline-flex"><input type="checkbox" class="accent-uoft-700 dark:accent-uoft-400" value="{{ r.name }}" aria-label="Pick {{ r.name }}" data-pick {% if r.public %}data-kept{% endif %}></label>
         </td>
         <td class="w-full max-w-0 sm:w-auto sm:max-w-md">
+          <div class="flex items-center gap-2">{{ star_button("result", r.name, r.name in starred, "/results?show=" ~ show, "the results") }}<div class="min-w-0 flex-1">
           <a href="/results/{{ r.name }}" class="flex items-center gap-2">
-            <span class="item-name">{{ r.name }}</span>
+            <span class="item-name min-w-0 max-sm:whitespace-normal max-sm:[overflow-wrap:anywhere]">{{ r.name }}</span>
             {% if r.public %}{{ visibility_tag(r) }}{% endif %}
+            {% if notes.get(r.name) %}<span class="note-count" data-tip="Open notes">{{ icon("note") }}{{ notes[r.name] }}</span>{% endif %}
           </a>
+          {# What it is about, the same on every row: the description of its experiment, or else when it started. #}
           <span class="item-note" {% if e.description %}data-tip="{{ e.description }}"{% endif %}>
-            {% if e.name != r.name %}<span class="font-mono">{{ e.name }}</span>{% else %}{{ e.description }}{% endif %}{% if s.state and s.state != "finished" %}, {{ s.state }}{% endif %}{% if s.errors %}, <span class="text-rose-700 dark:text-rose-300">{{ s.errors }} with errors</span>{% endif %}{% set v = verdicts[r.name] %}{% if v and v.passed %}, <span class="text-emerald-700 dark:text-emerald-400">passed</span>{% elif v and v.passed == false %}, <span class="text-rose-700 dark:text-rose-300">did not pass: {{ v.reasons | join(", ") }}</span>{% endif %}</span>
+            {% if e.description %}{{ e.description }}{% else %}Started {{ created(r.meta.created, "full") }}{% endif %}{% if s.errors %}, <span class="text-rose-700 dark:text-rose-300">{{ s.errors }} with errors</span>{% endif %}</span>
+          </div></div>
         </td>
         {% set names = e.variants | map(attribute="name") | list %}
         <td class="muted hidden font-mono text-xs whitespace-nowrap md:table-cell" data-tip="{{ names | join(', ') }}">{{ names | listing }}</td>
-        <td class="num muted">{% if s.total and s.done < s.total %}{{ s.done }}/{{ s.total }}{% elif s.total %}{{ s.total }}{% else %}{{ e.runs_total() }}{% endif %}</td>
+        <td class="num muted hidden sm:table-cell">{% if s.total and s.done < s.total %}{{ s.done }}/{{ s.total }}{% elif s.total %}{{ s.total }}{% else %}{{ e.runs_total() }}{% endif %}</td>
         <td class="num muted hidden sm:table-cell">{{ sizes[r.name] | size }}</td>
         <td class="num muted hidden whitespace-nowrap sm:table-cell">{{ r.meta.created | created }}</td>
-        <td class="w-0 pr-5 text-right">{% if s.state != "finished" %}{{ state_badge(s.state) }}{% endif %}</td>
+        <td class="w-0 pr-5 text-right">{% set v = verdicts[r.name] %}{% if s.state != "finished" %}{{ state_badge(s.state) }}{% elif v and v.passed %}{{ state_badge("passed") }}{% elif v and v.passed == false %}<span data-tip="{{ v.reasons | join(', ') }}" data-tip-align="end">{{ state_badge("did not pass") }}</span>{% elif r.meta.imported %}<span data-tip="Imported from the former scripts, not judged" data-tip-align="end">{{ state_badge("legacy") }}</span>{% endif %}</td>
       </tr>
       {% else %}
       {% if not older %}<tr class="empty"><td colspan="7">No results yet.</td></tr>{% endif %}
@@ -50,7 +54,7 @@
           <span class="item-name text-slate-500 dark:text-slate-400">{{ r.name }}</span>
           <span class="item-note">An older format of the lab{% if r.public %}, public{% endif %}</span>
         </td>
-        <td class="hidden md:table-cell"></td><td></td>
+        <td class="hidden md:table-cell"></td><td class="hidden sm:table-cell"></td>
         <td class="num muted hidden sm:table-cell">{{ sizes[r.name] | size }}</td>
         <td class="hidden sm:table-cell"></td>
         <td class="w-0 pr-5 text-right">
@@ -63,7 +67,7 @@
   </table>
 </div>
 {% set low = storage.free < 0.1 * storage.total %}
-<p class="mt-3 text-right text-xs {{ 'text-rose-700 dark:text-rose-300' if low else 'muted' }}">
+<p class="mt-3 {{ 'notice notice-warn' if low else 'muted text-right text-xs' }}">
   Public {{ storage.public | size }}, private {{ storage.private | size }}, {{ storage.free | size }} free{% if low %}, less than a tenth of the disk{% endif %}
 </p>
 <script>

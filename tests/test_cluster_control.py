@@ -194,7 +194,7 @@ def test_idle_button_stops_cluster_and_keeps_automatic_wake(client, power):
     assert state["status"] == "Stopped" and state["stops"] == 1
     assert not cluster.manually_stopped()
     page = client.get("/partials/cluster").text
-    assert "Idle" in page and "New jobs wake the cluster." in page
+    assert "Idle" in page and "New jobs wake the cluster" in page
     with cluster.claim("new-job"):
         lifecycle.ensure_cluster(cluster.Cluster(config.Cluster(cpus=8, memory_mb=8192)))
     assert state["status"] == "Running"

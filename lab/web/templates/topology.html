@@ -8,8 +8,7 @@
 {% endblock %}
 {% block content %}
 {% call page_header("/topologies", "Topologies") %}
-  <input id="name" value="{{ copy or name }}" placeholder="untitled" aria-label="Name" class="input-title" spellcheck="false">
-  {% if topology.source %}<span class="tag">{{ topology.source }}</span>{% endif %}
+  <input id="name" value="{{ copy or name }}" placeholder="untitled" aria-label="Name" class="input-title" spellcheck="false" {% if topology.source %}data-tip="From {{ topology.source }}"{% endif %}>
   {{ save_state() }}
   {# The tools of the drawing; on a phone a row of their own under the name, undo and the saving. #}
   <div class="ml-auto flex items-center gap-2 max-sm:order-last max-sm:ml-0 max-sm:basis-full max-sm:justify-between">

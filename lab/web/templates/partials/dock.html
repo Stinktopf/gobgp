@@ -1,7 +1,7 @@
 {% from "macros.html" import icon, run_state %}
 {# The sub-jobs of a job: its runs by topology and scenario, a dot per run. #}
 {% macro subjobs(parts, name) -%}
-{% set dock_states = ["completed", "allowed", "failed", "unmeasured", "error", "running", "pending"] %}
+{% set dock_states = ["completed", "allowed", "open", "unjudged", "failed", "unmeasured", "error", "running", "pending"] %}
 <ul class="dock-parts @container" data-keep-scroll="parts-{{ name }}">
   {# Dots on one line where they fit in three fifths of the row, about 10 px each, else the bar. Whole class names, for Tailwind. #}
   {% set widths = [(16, "@lg:flex", "@lg:hidden"), (32, "@3xl:flex", "@3xl:hidden"), (48, "@5xl:flex", "@5xl:hidden")] %}
@@ -25,6 +25,11 @@
   </li>
   {% endfor %}
 </ul>
+{%- endmacro %}
+{# Run a waiting one next: before the running result, which ends its run and goes on after, or first after a running search. #}
+{% macro run_next(d, first) -%}
+{% set label = "the simulator search" if d.search else d.name %}
+{% if not handing_over and (active or not first) %}<form method="post" action="/queue/next"><input type="hidden" name="name" value="{{ d.name }}"><button class="btn btn-icon" data-tip="{{ ('Run next: ' ~ active.name ~ ' ends its run and goes on after') if active else 'Run next' }}" data-tip-align="end" aria-label="Run {{ label }} next">{{ icon("play") }}</button></form>{% endif %}
 {%- endmacro %}
 {% macro toggle(name) -%}
 <button type="button" class="dock-expand" aria-expanded="false" aria-label="Runs of {{ name }}" data-job-toggle>{{ icon("chevron-down") }}</button>
@@ -94,7 +99,11 @@
         {{ icon("list") }}<span class="hidden sm:inline">Runs</span>
         {% if queue %}<span class="ml-0.5 border-l border-slate-200 pl-2 font-normal text-slate-500 tabular-nums dark:border-white/10 dark:text-slate-400">{{ queue | length }} queued</span>{% endif %}
       </button>
-      {% if paused and (active or searching) %}
+      {% if active and active.stopping %}
+      <span class="muted px-2 text-xs whitespace-nowrap" data-tip="{{ active.name }} ends its current phase, then stops" data-tip-align="end">Stopping…</span>
+      {% elif handing_over and active %}
+      <span class="muted px-2 text-xs whitespace-nowrap" data-tip="{{ active.name }} ends its run, then {{ handing_over }} runs and it goes on after" data-tip-align="end">Switching…</span>
+      {% elif paused and (active or searching) %}
       <span class="muted px-2 text-xs whitespace-nowrap" data-tip="The running result ends its phase, then the queue waits" data-tip-align="end">Pausing…</span>
       {% elif paused and not cluster_off %}
       <form method="post" action="/queue/resume">
@@ -152,7 +161,8 @@
           <button type="button" class="drag-handle" aria-label="Move {{ 'the simulator search' if d.search else d.name }}" data-tip="Drag to reorder, or press ↑ ↓">{{ icon("grip") }}</button>
           {% if d.search %}
           <a href="/simulation?search={{ d.search }}" class="min-w-0 flex-1 truncate font-medium hover:underline">Simulator search</a>
-          <form method="post" action="/simulation/{{ d.search }}/stop"><button class="btn btn-icon btn-danger" data-tip="Cancel" data-tip-align="end" aria-label="Cancel" data-confirm="Cancel the simulator search?" data-confirm-text="It leaves the queue.">{{ icon("close") }}</button></form>
+          {{ run_next(d, loop.first) }}
+          <form method="post" action="/simulation/{{ d.search }}/stop"><button class="btn btn-icon btn-quiet-danger" data-tip="Cancel" data-tip-align="end" aria-label="Cancel" data-confirm="Cancel the simulator search?" data-confirm-text="It leaves the queue.">{{ icon("close") }}</button></form>
         </div>
       </li>
       {% else %}
@@ -162,7 +172,8 @@
           <span class="muted hidden text-xs tabular-nums sm:inline">{{ d.takes_s | duration }}</span>
           <span class="text-xs whitespace-nowrap tabular-nums">ends {{ d.ends | clock }}</span>
           {% endif %}
-          <form method="post" action="/results/{{ d.name }}/stop"><button class="btn btn-icon btn-danger" data-tip="Cancel" data-tip-align="end" aria-label="Cancel" data-confirm="Cancel {{ d.name }}?" data-confirm-text="It can be resumed later.">{{ icon("close") }}</button></form>
+          {{ run_next(d, loop.first) }}
+          <form method="post" action="/results/{{ d.name }}/stop"><button class="btn btn-icon btn-quiet-danger" data-tip="Cancel" data-tip-align="end" aria-label="Cancel" data-confirm="Cancel {{ d.name }}?" data-confirm-text="It can be resumed later.">{{ icon("close") }}</button></form>
         </div>
         <ul class="dock-parts" hx-get="/partials/dock/parts/{{ d.name }}" hx-trigger="intersect once" hx-swap="outerHTML"><li class="muted py-0.5">…</li></ul>
       </li>

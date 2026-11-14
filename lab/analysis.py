@@ -15,7 +15,8 @@ settle_s        time until no router changes anything
 settle_end_s    the same from the last event to the end of the run: for a
                 series of steps, e.g. flaps, the time to rest after all of them
 hold_churn      updates per router and second in the longest stretch without
-                events, a replay being one; zero unless routes keep changing
+                events, a replay being one, from the time the routes came
+                to rest in it; zero unless routes keep changing
 sample_hz       how often the routers really sampled, the median router;
                 sample_hz_min the slowest one. Busy routers sample less often
                 than set, and the times above are then only as exact. Per
@@ -51,6 +52,11 @@ loops_s         seconds in which packets to some prefix looped
 loops_max       the most prefixes looping at once
 holes_s         seconds in which packets to some prefix ended at a router without a route
 holes_max       the most prefixes ending so at once
+loops_beyond_s  seconds in which packets to some prefix looped, counting only
+                loops that lasted longer than the resolution, two sampling
+                intervals: the routers read their next hops one after another,
+                shorter ones may be no more than that
+holes_beyond_s  the same for black holes
 hops_sampled    on larger tables the prefixes of the sample all routers follow,
                 the same for every run of an experiment; loops and holes count from then
 
@@ -104,8 +110,8 @@ from statistics import mean, median
 from .config import write_atomic
 from .results import COUNTERS, Dataset, RunKey
 
-VERSION = 40  # of the metrics; a change recomputes the cached summaries
-METRICS = ["convergence_s", "settle_s", "settle_end_s", "hold_churn", "oscillates", "rest_s", "unreached", "stale_end", "loops_end", "holes_end", "loops_s", "loops_max", "holes_s", "holes_max", "flaps", "sessions_down_end", "flaps_unplanned", "down_unplanned", "hops_sampled",
+VERSION = 46  # of the metrics; a change recomputes the cached summaries
+METRICS = ["convergence_s", "settle_s", "settle_end_s", "hold_churn", "oscillates", "rest_s", "unreached", "stale_end", "loops_end", "holes_end", "loops_s", "loops_max", "holes_s", "holes_max", "loops_beyond_s", "holes_beyond_s", "flaps", "sessions_down_end", "flaps_unplanned", "down_unplanned", "hops_sampled",
            "blocked_s", "blocked_max", "known_mean", "sample_hz", "sample_hz_min", "host_cpu_max", "host_others_spread", "host_others_mean", "adj_in_mean", "rib_mean", "rib_max", "suppressed_mean",
            "selected_mean", "path_len_avg", "rss_mean", "heap_mean", "objects_mean", "cpu_s_mean"]
 # The sizes and resources that differ by router, and the field of each in the samples.
@@ -122,6 +128,14 @@ LEAD = 5  # seconds shown before the event
 # large tables sample every few seconds only; their counters keep counting,
 # so a change shows with the next sample.
 STALE_S = 10
+
+
+def stands(latest: dict, after: dict | None, t: float) -> bool:
+    """Whether a router's latest sample stands for it at time t: while it is
+    recent, and beyond STALE_S if its next sample shows no change of the
+    counters, so that nothing changed in between. A router that samples
+    every half minute at rest then no longer hides the rest of all others."""
+    return t - latest["t"] <= STALE_S or after is not None and all(latest.get(k) == after.get(k) for k in COUNTERS)
 
 
 CHECKS = ("expect", "final")  # events that look at the routes without changing them
@@ -207,14 +221,17 @@ def watched_only(samples: list[dict], run: dict) -> list[dict]:
 
 def ticks(samples: list[dict], run: dict) -> dict[float, list[dict]]:
     """The samples of all routers at every time some router answered: of
-    each router its latest sample, if not older than STALE_S. Busy routers
-    skip ticks of their own, so few times hold an answer of every one. A
-    time at which a running router has been silent longer is left out."""
-    by_t = defaultdict(list)
+    each router its latest sample, if it stands for it (see stands). Busy
+    routers skip ticks of their own, so few times hold an answer of every
+    one. A time at which a running router has been silent longer and changed
+    by its next sample is left out."""
+    by_t, own = defaultdict(list), defaultdict(list)
     for s in samples:
         by_t[s["t"]].append(s)
+        own[s["router"]].append(s)
     changes, watched = stopped(run["events"]), set(run["watched"])
     latest: dict[str, dict] = {}
+    position: dict[str, int] = {}  # of each router's latest sample in its own
     out = {}
     seen = 0  # changes taken into account
     for t, rows in sorted(by_t.items()):
@@ -225,9 +242,14 @@ def ticks(samples: list[dict], run: dict) -> dict[float, list[dict]]:
             seen += 1
         for r in rows:
             latest[r["router"]] = r
+            position[r["router"]] = position.get(r["router"], -1) + 1
         off = next(routers for since, routers in reversed(changes) if since <= t)
         running = watched - off
-        if all(r in latest and t - latest[r]["t"] <= STALE_S for r in running):
+
+        def after(r: str) -> dict | None:
+            mine = own[r]
+            return mine[position[r] + 1] if position[r] + 1 < len(mine) else None
+        if all(r in latest and stands(latest[r], after(r), t) for r in running):
             out[t] = [latest[r] for r in sorted(running | ({r["router"] for r in rows} & watched))]
     return out
 
@@ -280,8 +302,8 @@ def settled_since(times: list[float], state, seconds: float) -> float | None:
 def hop_of(router: str, value: str, addresses: dict[str, str]):
     """The router a sampled next hop leads to: "." the router itself, else the
     router of the next hop's address, else the neighbor the route came from.
-    With NS-BGP, "own;neighbor>route;...", a forwarding.Ingress of the router
-    and the first AS of each route."""
+    With a table per neighbor, "own;neighbor>route;...;=a,b", a forwarding.Ingress of the router
+    and the first AS of each route, "=a,b" naming the neighbors sent its own route."""
     from . import forwarding
 
     def one(v: str) -> tuple[str | None, int | None]:
@@ -293,7 +315,14 @@ def hop_of(router: str, value: str, addresses: dict[str, str]):
     if ";" not in value and value.count("|") < 2:
         return one(value)[0]
     own, *sent = value.split(";")
-    return forwarding.Ingress({None: one(own), **{n: one(v) for n, _, v in (s.partition(">") for s in sent)}})
+    ingress = forwarding.Ingress({None: one(own)})
+    for s in sent:
+        if s.startswith("="):  # the neighbors sent the route the router uses itself
+            ingress.update(dict.fromkeys(filter(None, s[1:].split(",")), ingress[None]))
+        else:
+            n, _, v = s.partition(">")
+            ingress[n] = one(v)
+    return ingress
 
 
 def loops_on_the_way(dataset: Dataset, key: RunKey, run: dict, own: dict, start: float, end: float,
@@ -398,6 +427,32 @@ def loops_on_the_way(dataset: Dataset, key: RunKey, run: dict, own: dict, start:
     return round(total, 3), most, round(holed, 3), holed_most
 
 
+def lasting(checks: list, start: float, end: float, least: float) -> tuple[float, float]:
+    """How long packets to some prefix looped, then ended without a route,
+    between start and end, from the verdicts of loops_on_the_way, counting
+    only the times a prefix looped or ended so for longer than least."""
+    spans: dict[str, list] = {"loops": [], "holes": []}
+    since: dict[tuple[str, str], float] = {}
+    for t, prefix, found in [*checks, (float("inf"), None, [])]:
+        for kind, now in (("loops", any("loops" in p for p in found)), ("holes", any("without a route" in p for p in found))):
+            for k in [k for k in since if k[0] == kind and (prefix is None or k[1] == prefix) and not now]:
+                if min(t, end) - since[k] > least:  # one still open at the end lasts at least until then
+                    spans[kind].append((max(since[k], start), min(t, end)))
+                del since[k]
+            if now and prefix is not None:
+                since.setdefault((kind, prefix), t)
+
+    def union(items: list) -> float:
+        total, reach = 0.0, float("-inf")
+        for a, b in sorted(items):
+            if b > max(a, reach):
+                total += b - max(a, reach)
+            reach = max(reach, b)
+        return round(total, 3)
+
+    return union(spans["loops"]), union(spans["holes"])
+
+
 def run_metrics(dataset: Dataset, key: RunKey, run: dict | None = None) -> dict:
     run = run or dataset.run(key)
     sampling = dataset.experiment.sampling_of(key.variant)
@@ -474,7 +529,8 @@ def run_metrics(dataset: Dataset, key: RunKey, run: dict | None = None) -> dict:
     # Convergence and settling are measured until the next event.
     until = min((e["t"] for e in events if e["t"] > ref["t"]), default=float("inf"))
     after = [t for t in window if ref["t"] <= t < until]
-    lengths = [r["path_len_avg"] for t in window for r in by_t[t] if r["destinations"]]
+    # Large tables tell their lengths only at rest, else none.
+    lengths = [r["path_len_avg"] for t in window for r in by_t[t] if r["destinations"] and r.get("path_len_avg") is not None]
     counters = by_t[window[0]][0].get("updates_rx") is not None
     # The Loc-RIB size of Table II, the admitted paths: the largest mean over
     # routers, and the largest table of any router.
@@ -494,8 +550,10 @@ def run_metrics(dataset: Dataset, key: RunKey, run: dict | None = None) -> dict:
         out["blocked_max"] = max((r.get("blocked") or 0) for t in window for r in by_t[t])
         out["blocked_s"] = round(sum(b - a for a, b in zip(window, window[1:]) if any(r.get("blocked") for r in by_t[a])), 3)
     # Loops on the way, from the next hops the routers sampled on every change of their table.
-    if (found := loops_on_the_way(dataset, key, run, hops, window[0], window[-1])) is not None:
+    checks: list = []
+    if (found := loops_on_the_way(dataset, key, run, hops, window[0], window[-1], checks=checks)) is not None:
         out["loops_s"], out["loops_max"], out["holes_s"], out["holes_max"] = found
+        out["loops_beyond_s"], out["holes_beyond_s"] = lasting(checks, window[0], window[-1], 2 * sampling.interval)
         out["hops_sampled"] = next((e["prefixes"] for e in run["events"] if e["name"] == "hops_sample"), None)
     if any(values_of(by_t[t], "cpu_s") is not None for t in window):
         cpu = used(by_t, window, "cpu_s")
@@ -527,7 +585,9 @@ def run_metrics(dataset: Dataset, key: RunKey, run: dict | None = None) -> dict:
     # path exploration that is slow but ends is no oscillation.
     tail = [t for t in window if t >= max(e["t"] for e in events)]
     if len(tail) > 1:
-        end = [t for t in tail if t >= tail[-1] - quiet]
+        # The last quiet time, its samples spanning one interval less, as settle_s holds it: the sample of a change
+        # just before it does not count as still changing.
+        end = [t for t in tail if t >= tail[-1] - stable]
         changing = len({tuple(sorted(state(t).items())) for t in end}) > 1
         if tail[-1] - tail[0] >= (3 * quiet if changing else quiet):
             out["oscillates"] = int(changing)
@@ -538,19 +598,23 @@ def run_metrics(dataset: Dataset, key: RunKey, run: dict | None = None) -> dict:
             out["settle_end_s"] = round(since - max(e["t"] for e in events), 3)
 
     if counters:
-        # The longest pause between events after the announcement, without
-        # the seconds it takes to become stable. A replay is no pause: it
-        # changes prefixes all along.
+        # The longest pause between events after the announcement, from the
+        # time the routes came to rest in it, as settle_s measures it: a
+        # withdrawal that takes longer than the quiet time is no update at
+        # rest. Where they never rest, from the quiet time on. A replay is
+        # no pause: it changes prefixes all along.
         announced = next((e["t"] for e in events if e["name"] == "announced"), None)
         if announced is not None:
             settle = quiet
             busy = [(e["t"], next((f["t"] for f in events if f["name"] == "replayed" and f["t"] >= e["t"]), window[-1]))
                     for e in events if e["name"] == "replay"]
             bounds = sorted({e["t"] for e in events if e["t"] >= announced} | {window[-1]})
-            spans = [(a + settle, b) for a, b in zip(bounds, bounds[1:])
+            spans = [(a, b) for a, b in zip(bounds, bounds[1:])
                      if b - a > settle + 1 and not any(x <= a < y for x, y in busy)]
             if spans:
                 a, b = max(spans, key=lambda s: s[1] - s[0])
+                rest = settled_since([t for t in window if a <= t < b], state, stable)
+                a = rest if rest is not None and rest < b else a + settle
                 # Per router from its own first and last sample in the
                 # hold, over their own times.
                 rates = []
@@ -579,6 +643,12 @@ def _stamped(dataset: Dataset) -> tuple[dict, list]:
     metrics, how many runs are done and when the last changed."""
     mtimes = {k: ns // 10**9 + (ns % 10**9) * 1e-9 for k, ns in dataset.done_stamps().items()}
     return mtimes, [VERSION, len(mtimes), max(mtimes.values(), default=0)]
+
+
+def stamp(dataset: Dataset) -> list:
+    """The version of the metrics, how many runs are done and when the last changed: a summary of the same stamp
+    still holds."""
+    return _stamped(dataset)[1]
 
 
 def _cached(dataset: Dataset) -> tuple[dict, dict]:
@@ -1040,16 +1110,37 @@ def curve(dataset: Dataset, topology: str, scenario_name: str, metric: str) -> d
     return {"x": [x for x, _, _ in points], "label": label, "variants": [v.name for v in e.variants], "series": series}
 
 
+def expect_keys(events: list[dict]) -> list[tuple[dict, str | None]]:
+    """Each expect event of a run with the key of its step, as
+    lab/simulate.py names it: the position and the repetition, e.g. 6.0#0.
+    Events are in the order they began, the checks of a parallel step in any
+    order, the repetitions of one step one after the other. None where an
+    event does not record its step."""
+    seen: dict[str, int] = {}
+    out = []
+    for e in events:
+        if e["name"] != "expect":
+            continue
+        if (step := e.get("step")) is None:
+            out.append((e, None))
+            continue
+        seen[step] = seen.get(step, -1) + 1
+        out.append((e, f"{step}#{seen[step]}"))
+    return out
+
+
 def failed_checks(dataset: Dataset, topology: str | None = None) -> list[dict]:
-    """Every expect step that failed, with the run, its step and its problems."""
+    """Every expect step that failed, with the run, its step, the key of the
+    step to find the simulator's verdict on it, and its problems."""
     out = []
     for key in sorted(dataset.keys(), key=lambda k: (k.topology, k.scenario, k.variant, k.index)):
         if (topology and key.topology != topology) or not dataset.is_done(key):
             continue
-        for e in dataset.run(key).get("events", []):  # a run that ended in an error has none
-            if e["name"] == "expect" and not check_ok(e):
+        for e, step_key in expect_keys(dataset.run(key).get("events", [])):  # a run that ended in an error may have none
+            if not check_ok(e):
                 out.append({"topology": key.topology, "scenario": key.scenario, "variant": key.variant, "run": key.index,
-                            "step": e.get("step"), "t": e.get("t"), "routers": e.get("routers", []), "problems": e.get("problems", [])})
+                            "step": e.get("step"), "t": e.get("t"), "routers": e.get("routers", []), "problems": e.get("problems", []),
+                            "key": step_key})
     return out
 
 
@@ -1112,6 +1203,9 @@ def _round(x: float) -> float:
 
 
 FRAMES = 1200
+# Up to this many routers the replay draws a belt per direction of a link, as
+# graph.js does, and gets the updates per direction. More get one line per link.
+LANES = 30
 
 
 def replay(dataset: Dataset, key: RunKey) -> dict:
@@ -1119,8 +1213,10 @@ def replay(dataset: Dataset, key: RunKey) -> dict:
 
     For every sample time: updates per second, paths and prefixes of each
     router, and updates per second on each link, from the counters per
-    neighbor where the run has them. A stopped router has empty tables.
-    t = 0 is the start of the run.
+    neighbor where the run has them: "directed" per direction, "a>b" for
+    those a sends to b, up to LANES routers and only directions that carry
+    any, else "links" per link, both directions together. A stopped router
+    has empty tables. t = 0 is the start of the run.
     """
     run = dataset.run(key)
     by_t = ticks(watched_only(dataset.samples(key), run), run)
@@ -1156,7 +1252,7 @@ def replay(dataset: Dataset, key: RunKey) -> dict:
                 link_rate.pop(r, None)
             frame["churn"].append(rate.get(r, 0.0))
             for peer, value in link_rate.get(r, {}).items():
-                links[tuple(sorted((r, peer)))][i] += value
+                links[(peer, r)][i] += value
             if row:
                 before[r] = row
     events = sorted(run["events"], key=lambda e: e["t"])  # older runs kept the order in which they ended
@@ -1172,11 +1268,20 @@ def replay(dataset: Dataset, key: RunKey) -> dict:
         "counters": any(row.get("updates_rx") is not None for rows in by_t.values() for row in rows),
         "sizes": any(row.get("suppressed") is not None for rows in by_t.values() for row in rows),
         "routers": frames,
-        "links": {f"{a}|{b}": v for (a, b), v in links.items()},
+        **({"directed": {f"{a}>{b}": v for (a, b), v in links.items() if any(v)}} if len(frames) <= LANES else {"links": _undirected(links)}),
         "events": sorted([{**e, "links": e.get("links", [])} for e in events] + settled, key=lambda e: e["t"]),
         "expected": [_expected(events, t) for t in times],
         "status": run["status"],
     }
+
+
+def _undirected(links: dict[tuple, list]) -> dict[str, list]:
+    """Updates per second per link, both directions added, as "a|b" with a before b."""
+    out: dict[str, list] = {}
+    for (a, b), v in links.items():
+        key = "|".join(sorted((a, b)))
+        out[key] = [round(x + y, 1) for x, y in zip(out[key], v)] if key in out else v
+    return out
 
 
 def _peers(text: str) -> dict[str, int]:
@@ -1279,6 +1384,7 @@ def primary(dataset: Dataset) -> dict | None:
 
 
 BUSY_HOST = 0.9  # a larger share of the CPUs in use, and a run may measure the host
+SLOW_SAMPLING = 0.9  # a slowest router below this share of the rate set samples at its limit: times only as exact as its samples
 SHIFTING_HOST = 0.2  # the load of others on a shared host changed by more during a run
 
 
@@ -1301,7 +1407,8 @@ def integrity(dataset: Dataset) -> dict:
     where = lambda g: {"topology": g["topology"], "scenario": g["scenario"], "variant": g["variant"],
                        "oscillating": bool((o := g["metrics"].get("oscillates")) and o["max"])}
     out.update(low=min((m["min"] for _, m in slowest), default=None), high=max(medians, default=None),
-               slow=sorted(({**where(g), "hz": m["min"]} for g, m in slowest if m["min"] < hz(g["variant"]) / 2), key=lambda x: x["hz"]),
+               slow=sorted(({**where(g), "hz": m["min"], "resolution": round(2 / m["min"], 3)} for g, m in slowest
+                           if m["min"] < SLOW_SAMPLING * hz(g["variant"])), key=lambda x: x["hz"]),
                busy=sorted(({**where(g), "cpu": m["max"]} for g in groups if (m := g["metrics"].get("host_cpu_max")) and m["max"] > BUSY_HOST),
                            key=lambda x: -x["cpu"]),
                shifting=sorted(({**where(g), "spread": m["max"]} for g in groups

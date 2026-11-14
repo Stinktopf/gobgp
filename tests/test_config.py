@@ -159,12 +159,17 @@ def test_a_checked_experiment_is_checked_again_when_a_topology_changes(lab_files
 def test_the_calibration_knows_its_values(lab_files, monkeypatch):
     from lab import analysis, calibration
 
-    run = {"status": "completed", "events": [{"name": "announced", "t": 10.0, "expected": 20}, {"name": "degrade", "t": 0.0}, {"name": "withdraw", "t": 20.0, "expected": 0}]}
+    run = {"status": "completed", "events": [*({"name": "degrade", "t": 0.0, "links": [link], "delay_ms": 500} for link in (["a", "b"], ["b", "c"], ["c", "d"])),
+                                             {"name": "announced", "t": 10.0, "expected": 20}, {"name": "withdraw", "t": 20.0, "expected": 0}]}
     good = {"selected_mean": 20, "rib_mean": 20, "rib_max": 20, "suppressed_mean": 0, "hold_churn": 0.0,
             "oscillates": 0, "convergence_s": 1.7, "sample_hz_min": 9.8}
     d = type("D", (), {"experiment": type("E", (), {"sampling": type("S", (), {"interval": 0.1})(), "variants": [], "sampling_of": lambda self, v: self.sampling})(),
                        "keys": lambda self: [RunKey("a", "bgp", "calibration", 1)], "is_done": lambda self, k: True, "run": lambda self, k: run})()
     monkeypatch.setattr(analysis, "run_metrics", lambda dataset, key, run: good)
+    assert all(c["ok"] for c in calibration.checks(d))
+    # Three hops of 500 ms, at most a round trip of TCP at each, a second of processing and one sampling interval.
+    assert calibration.reach_bounds(run, 10) == (1.5, 5.6)
+    good["convergence_s"] = 3.53  # one more round trip than the twenty withdrawals need on a line that pipelines them
     assert all(c["ok"] for c in calibration.checks(d))
     good["rib_max"] = 21
     good["sample_hz_min"] = 2.0

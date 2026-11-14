@@ -224,6 +224,29 @@ func (dest *Destination) OperaFeedAll(logger *slog.Logger, p *Path, allows map[s
 	for _, t := range targets {
 		t.v.feed(logger, p, t.in, update)
 	}
+	// a table the path brought into the state of another is shared again
+	for _, t := range targets {
+		dest.operaMerge(t.v)
+	}
+}
+
+// operaMerge lets the neighbors of table v share another table in the same
+// state, which decides alike from now on (same).
+func (dest *Destination) operaMerge(v *operaView) {
+	for _, w := range dest.operaViewList() {
+		if w == v {
+			continue
+		}
+		if w.same(v) {
+			for k, u := range dest.views {
+				if u == v {
+					dest.views[k] = w
+				}
+			}
+			w.users += v.users
+			return
+		}
+	}
 }
 
 // OperaShare lets the table of neighbor key be shared with another one in

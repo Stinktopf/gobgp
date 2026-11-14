@@ -140,7 +140,7 @@ def test_a_replay_is_played_once_and_then_kept(lab_files, found, monkeypatch):
     played = []
     monkeypatch.setattr(simulate, "trace", lambda inst, mode: played.append(mode) or {"mode": mode, "instance": inst, "steps": [], "result": {"converged": True}})
     entry = simulation.run(4)
-    assert simulation.trace(entry["id"], 0, "bgp") == simulation.trace(entry["id"], 0, "bgp") == {"mode": "bgp", "steps": [], "result": {"converged": True}}
+    assert simulation.trace(entry["id"], 0, "bgp") == simulation.trace(entry["id"], 0, "bgp") == {"mode": "bgp", "steps": [], "result": {"converged": True}, "format": 3}
     assert played == ["bgp"]
     with pytest.raises(ValueError):
         simulation.trace(entry["id"], 0, "nonsense")
@@ -153,7 +153,7 @@ def test_the_area_lists_searches_findings_and_opens_a_case(client, lab_files, fo
     # The two networks of the same problem are one row that opens the smaller, which offers the other.
     assert f'href="/simulation/{entry["id"]}/2"' in page and f'href="/simulation/{entry["id"]}/1"' not in page and "Delete" in page
     case = client.get(f"/simulation/{entry['id']}/2").text
-    assert "lose" in case and "router 3" in case and '<select data-mode' in case and "37 of 200" in case
+    assert "no route at rest" in case and "Router 3" in case and '<select data-mode' in case and "37 of 200" in case
     assert '<option value="1" >Network 2 of 2' in case
     assert client.get(f"/simulation/{entry['id']}/9").status_code == 404
     assert client.get("/simulation?search=123").status_code == 404
@@ -281,7 +281,7 @@ def test_a_finding_of_a_case_opens_the_case(client, lab_files, monkeypatch):
     answer = client.get(f"/simulation/{entry['id']}/1", follow_redirects=False)
     assert answer.status_code == 307 and answer.headers["location"] == f"/simulation/{entry['id']}/0"
     case = client.get(f"/simulation/{entry['id']}/0").text
-    assert "obgp-rp, obgp-sp" in case and "in 37 of 200 networks" in case
+    assert "obgp-rp, obgp-sp" in case and "in 37 of 200 gao-rexford networks" in case
 
 
 def test_tables_per_neighbor_are_outside_the_published_proofs():
@@ -303,6 +303,31 @@ def test_filters_communities_and_relations_are_different_causes():
     assert simulation.cause(imported, "obgp-rp") == "an import filter drops the offer"
     assert simulation.cause(related, "obgp-rp") == "a relation stops the offer"
     assert simulation.cause(neither, "obgp-rp") == "it does not admit the offer"
+
+
+def test_a_link_down_a_filter_set_by_an_event_and_an_offer_through_its_own_as_are_causes():
+    unreachable = {"mode": "obgp-rp", "kind": "unreachable", "routers": [2]}
+    # Router 2 of confederation 65500 with router 3: its link to 3 is down, router 4 offers only a path through 65500.
+    inst = {"routers": 5, "links": [[0, 1], [0, 3], [1, 3], [1, 4], [2, 3], [2, 4]], "confeds": [{"members": [2, 3], "id": 65500}],
+            "events": [{"after": 1 << 30, "kind": "down", "from": 2, "to": 3}]}
+    at_rest = {"obgp-rp": {"best": [[], [65001], None, [65001], [65002, 65500, 65001]],
+                           "exported": [[], [65500, 65001], None, [65001], [65002, 65500, 65001]]}}
+    found = {"instance": inst, "finding": unreachable, "results": at_rest}
+    assert simulation.cause(found, "obgp-rp") == "the link is down and the offer runs through its own AS"
+    back = {**inst, "events": [*inst["events"], {"after": 1 << 30, "kind": "up", "from": 2, "to": 3}]}
+    assert "the link is down" not in simulation.cause({**found, "instance": back}, "obgp-rp")
+    # A filter an event sets on counts as one of the network's.
+    links = [[0, 1], [1, 2]]
+    filtered = {"routers": 3, "links": links, "events": [{"after": 1 << 30, "kind": "deny-export", "from": 1, "to": 2, "value": 1}]}
+    lost = {"instance": filtered, "finding": unreachable, "results": {"obgp-rp": {"best": [[], [65001], None], "exported": [[], [65001], None]}}}
+    assert simulation.cause(lost, "obgp-rp") == "an export filter drops the offer"
+    off = {**filtered, "events": [*filtered["events"], {"after": 1 << 30, "kind": "deny-export", "from": 1, "to": 2}]}
+    assert simulation.cause({**lost, "instance": off}, "obgp-rp") == "it does not admit the offer"
+    # Two modes of one network: a cause both name stands once in the case's.
+    hard = {"best": [[], [65001], None, [65001], [65002, 65001]], "exported": [[], [65001], None, [65001], [65002, 65001]]}
+    entry = {"findings": [{"id": 0, "instance": inst, "finding": unreachable, "results": {**at_rest, "obgp-hp": hard},
+                           "findings": [unreachable, {**unreachable, "mode": "obgp-hp"}]}]}
+    assert simulation.cases(entry)[0]["cause"] == "it does not admit the offer and the link is down and the offer runs through its own AS"
 
 
 def test_a_running_search_shows_how_far_it_is(client, lab_files):
@@ -457,3 +482,38 @@ def test_a_search_of_both_tables_plays_them_in_one_pass(lab_files, monkeypatch):
     found = simulate.search(routers=3, seeds=2, tables="both")
     assert "-both-tables" in calls[0] and "-per-neighbor" not in calls[0]
     assert found[0]["finding"]["mode"] == "obgp-rp-pn"  # named by the simulator itself
+
+
+def test_a_replay_kept_without_send_times_is_played_again(tmp_path):
+    routers = [{"forward": 1}]
+    kept = tmp_path / "replay.json"
+    for first, again in (({"kind": "event", "routers": routers}, True), ({"kind": "update", "routers": routers}, True),
+                         ({"kind": "event", "sent": 0, "routers": routers}, False)):
+        kept.write_text(json.dumps({"steps": [first], "result": {"converged": True}, "format": simulation.TRACE_FORMAT}))
+        assert (simulation._kept(kept, "obgp-rp") is None) is again
+
+
+def test_a_replay_kept_in_an_older_format_is_played_again(tmp_path):
+    step = {"kind": "event", "sent": 0, "routers": [{"forward": 1}]}
+    kept = tmp_path / "replay.json"
+    for mode, format_, again in (("obgp-rp-pn", None, True), ("obgp-rp-pn", 2, True), ("obgp-rp-pn", 3, False), ("bgp", None, True), ("bgp", 3, False)):
+        kept.write_text(json.dumps({"steps": [step], "result": {"converged": True}, **({"format": format_} if format_ else {})}))
+        assert (simulation._kept(kept, mode) is None) is again
+
+
+def test_a_starred_case_comes_first_for_everyone_until_its_search_is_deleted(client, lab_files, found):
+    entry = simulation.run(4)
+    url = f"/simulation/{entry['id']}/2"
+    answer = client.post("/marks/case/star", data={"name": f"{entry['id']}/2", "on": "true", "back": url}, follow_redirects=False)
+    assert answer.status_code == 303 and answer.headers["location"] == url
+    assert simulation.stars(entry["id"]) == {2}
+    page = client.get("/simulation").text
+    assert page.index('data-group="starred"') < page.index(f'href="{url}"') and "Remove the star" in page
+    assert 'aria-pressed="true"' in client.get(url).text
+    client.post("/marks/case/star", data={"name": f"{entry['id']}/2", "on": "false", "back": url})
+    assert simulation.stars(entry["id"]) == set() and 'data-group="starred"' not in client.get("/simulation").text
+    simulation.star(entry["id"], 2, True)
+    simulation.delete(entry["id"])
+    assert simulation.stars(entry["id"]) == set()
+    with pytest.raises(LookupError):
+        simulation.star(entry["id"], 2, True)

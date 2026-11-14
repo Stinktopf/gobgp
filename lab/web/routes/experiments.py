@@ -162,9 +162,9 @@ def builder_values(e: Experiment | None, original: str = "") -> dict:
         "variants": [v.model_dump() for v in e.variants],
         "topologies": e.topologies, "scenarios": e.scenarios, "paired": e.paired,
         "cpus": e.cluster.cpus, "memory_mb": e.cluster.memory_mb, "memory_min_mb": e.cluster.memory_min_mb or "", "router_limit_mb": e.cluster.router_limit_mb,
-        "hold_time": e.bgp.hold_time, "keepalive": e.bgp.keepalive, "connect_retry": e.bgp.connect_retry, "mrai": e.bgp.mrai, "refresh": e.bgp.refresh,
+        "hold_time": e.bgp.hold_time, "keepalive": e.bgp.keepalive, "connect_retry": e.bgp.connect_retry, "mrai": e.bgp.mrai, "refresh": e.bgp.refresh, "procs": e.bgp.procs,
         "graceful_restart": e.bgp.graceful_restart,
-        "interval": e.sampling.interval, "stable_s": e.sampling.stable_s, "error": "",
+        "interval": e.sampling.interval, "stable_s": e.sampling.stable_s, "profile_s": e.sampling.profile_s, "error": "",
         "sweeps": [{"scenario": w.scenario, "param": w.param, "values": ", ".join(f"{v:g}" for v in w.values)} for w in e.sweeps],
         "primary": e.primary.model_dump() if e.primary else None,
     }
@@ -210,8 +210,10 @@ def parse_builder(form) -> Experiment:
                      **({"memory_min_mb": number("memory_min_mb")} if form.get("memory_min_mb") else {}),
                      **({"router_limit_mb": number("router_limit_mb")} if form.get("router_limit_mb") else {})},
             bgp={"hold_time": number("hold_time"), "keepalive": number("keepalive"), "connect_retry": number("connect_retry"), "mrai": number("mrai", float), **({"refresh": number("refresh", float)} if form.get("refresh") else {}),
+                 **({"procs": number("procs")} if form.get("procs") else {}),
                  "graceful_restart": form.get("graceful_restart") == "on"},
-            sampling={"interval": number("interval", float), "stable_s": number("stable_s", float)},
+            sampling={"interval": number("interval", float), "stable_s": number("stable_s", float),
+                      **({"profile_s": number("profile_s", float)} if form.get("profile_s") else {})},
             sweeps=_sweeps(form),
             primary={"metric": str(form.get("primary_metric", "")).strip(), "baseline": str(form.get("primary_baseline", "")).strip(),
                      "variants": [v.strip() for v in str(form.get("primary_variants", "")).split(",") if v.strip()]} if form.get("primary_metric") else None,
@@ -242,8 +244,7 @@ def host_notes(e: Experiment) -> str:
     whole = len(skips) == len(e.topologies)
     lines.append(f"This host runs at most {limit}, " + ("so the experiment cannot start here." if whole else "so the experiment runs without them."))
     items = "".join(f"<li>{escape(line)}</li>" for line in lines)
-    return ('<ul id="host-notes" hx-swap-oob="true" class="mb-6 space-y-1 rounded-lg bg-amber-50 px-4 py-2.5 text-sm text-amber-900 '
-            f'dark:bg-amber-950/40 dark:text-amber-200" aria-label="Limits of this host">{items}</ul>')
+    return f'<ul id="host-notes" hx-swap-oob="true" class="notice notice-warn mb-6 space-y-1" aria-label="Limits of this host">{items}</ul>'
 
 
 def mixed_notes(e: Experiment) -> list[str]:

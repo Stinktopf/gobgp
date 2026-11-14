@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -319,6 +320,8 @@ func (c *bgpCollector) Describe(out chan<- *prometheus.Desc) {
 	out <- bgpObgpBlockedDesc
 }
 
+var countAdvertised = os.Getenv("GOBGP_METRICS_ADVERTISED") != "0"
+
 func (c *bgpCollector) Collect(out chan<- prometheus.Metric) {
 	bgpServer, err := c.server.GetBgp(context.Background(), &api.GetBgpRequest{})
 	if err != nil {
@@ -326,7 +329,10 @@ func (c *bgpCollector) Collect(out chan<- prometheus.Metric) {
 		return
 	}
 
-	req := &api.ListPeerRequest{EnableAdvertised: true}
+	// The routes advertised to a peer are counted by building what it gets, a walk over the table per peer,
+	// inside a management operation that holds back the processing of BGP messages meanwhile. Scraped every
+	// second on a large router, that slows the router it measures. GOBGP_METRICS_ADVERTISED=0 leaves them out.
+	req := &api.ListPeerRequest{EnableAdvertised: countAdvertised}
 	err = c.server.ListPeer(context.Background(), req, func(p *api.Peer) {
 		peerState := p.GetState()
 		peerAddr := peerState.GetNeighborAddress()
@@ -429,12 +435,14 @@ func (c *bgpCollector) Collect(out chan<- prometheus.Metric) {
 				float64(afiState.GetAccepted()),
 				labelValues...,
 			)
-			out <- prometheus.MustNewConstMetric(
-				bgpRoutesAdvertisedDesc,
-				prometheus.GaugeValue,
-				float64(afiState.GetAdvertised()),
-				labelValues...,
-			)
+			if countAdvertised {
+				out <- prometheus.MustNewConstMetric(
+					bgpRoutesAdvertisedDesc,
+					prometheus.GaugeValue,
+					float64(afiState.GetAdvertised()),
+					labelValues...,
+				)
+			}
 		}
 	})
 	if err != nil {

@@ -145,6 +145,10 @@ type fsmOutgoingMsg struct {
 	// Refresh asks the peer for its routes of these families (RFC 2918),
 	// after the paths, so behind every withdrawal this session carries.
 	Refresh []bgp.Family
+	// Answer marks the paths as the answer to a route refresh of these
+	// families with Enhanced Route Refresh (RFC 7313): framed by its begin
+	// and end, and not held back by the MRAI, so that the end comes last.
+	Answer []bgp.Family
 }
 
 const (
@@ -1019,6 +1023,9 @@ func capabilitiesFromConfig(pConf *oc.Neighbor) []bgp.ParameterCapabilityInterfa
 	fqdn, _ := os.Hostname()
 	caps := make([]bgp.ParameterCapabilityInterface, 0, 4)
 	caps = append(caps, bgp.NewCapRouteRefresh())
+	if table.OperaEnhancedRefresh() { // refresh pruning asks again only once an answer has ended
+		caps = append(caps, bgp.NewCapEnhancedRouteRefresh())
+	}
 	caps = append(caps, bgp.NewCapFQDN(fqdn, ""))
 
 	if pConf.Config.SendSoftwareVersion || pConf.Config.PeerType == oc.PEER_TYPE_INTERNAL {
@@ -1664,6 +1671,22 @@ func (h *fsmHandler) sendMessageloop(ctx context.Context, conn net.Conn, stateRe
 		}
 		return nil
 	}
+	sendAnswer := func(families []bgp.Family, paths []*table.Path) error {
+		for _, f := range families {
+			if err := send(bgp.NewBGPRouteRefreshMessage(f.Afi(), bgp.BGP_ROUTE_REFRESH_BEGIN, f.Safi())); err != nil {
+				return err
+			}
+		}
+		if err := sendPaths(paths); err != nil {
+			return err
+		}
+		for _, f := range families {
+			if err := send(bgp.NewBGPRouteRefreshMessage(f.Afi(), bgp.BGP_ROUTE_REFRESH_END, f.Safi())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	fsm.lock.Lock()
 	limit := newMRAI(time.Duration(fsm.pConf.Timers.Config.MinimumAdvertisementInterval*float64(time.Second)), func(f bgp.Family) bool {
 		return fsm.familyMap.Load().(map[bgp.Family]bgp.BGPAddPathMode)[f]&bgp.BGP_ADD_PATH_SEND > 0
@@ -1689,7 +1712,11 @@ func (h *fsmHandler) sendMessageloop(ctx context.Context, conn net.Conn, stateRe
 		case o := <-h.outgoing.Out():
 			switch m := o.(type) {
 			case *fsmOutgoingMsg:
-				if err := sendPaths(limit.add(m.Paths, time.Now())); err != nil {
+				if len(m.Answer) > 0 {
+					if err := sendAnswer(m.Answer, limit.answer(m.Paths)); err != nil {
+						return nil
+					}
+				} else if err := sendPaths(limit.add(m.Paths, time.Now())); err != nil {
 					return nil
 				}
 				for _, family := range m.Refresh {

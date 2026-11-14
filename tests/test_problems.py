@@ -1,4 +1,4 @@
-from lab import analysis, config, problems, results
+from lab import analysis, config, problems, results, scenario
 from lab.config import Experiment
 
 OOM = "brussels, lyon took more than 512 MB and restarted"
@@ -27,7 +27,7 @@ def test_problems_say_which_runs_and_why_grouped_by_cause(lab_files):
     assert groups[3]["title"].endswith("then completed") and groups[3]["runs"][0]["run"] == second.index
 
 
-def test_the_runs_tab_lists_the_problems_and_the_header_links_to_them(client, lab_files, monkeypatch):
+def test_the_runs_tab_lists_the_problems_and_the_header_tells_them(client, lab_files, monkeypatch):
     dataset, _ = result_with_problems()
     # The fake runs have no samples to analyse.
     monkeypatch.setattr(analysis, "run_summary", lambda d: {})
@@ -35,7 +35,7 @@ def test_the_runs_tab_lists_the_problems_and_the_header_links_to_them(client, la
     monkeypatch.setattr(analysis, "to_measure", lambda d: 0)
     page = client.get(f"/results/{dataset.name}?tab=runs").text
     assert 'id="problems"' in page and "Routers took more than their memory" in page and "Attempt 2: x /noise/pause" in page
-    assert "completed only after a failed attempt" in page and "tab=runs#problems" in page
+    assert "completed only after a failed attempt" in page
     assert "r1 misses 1 of 1 prefixes" in page
     assert "Did not pass." not in page  # not finished: no verdict yet
     dataset.write_status({**dataset.status, "state": "finished"})
@@ -52,6 +52,9 @@ def test_checks_that_fail_alike_in_many_runs_are_one_row():
     assert problems.spans([1, 2, 3, 5, 7, 8]) == "1 to 3, 5, 7 to 8"
 
 
+ANNOUNCE_AND_CHECK = scenario.parse({"name": "s", "steps": [{"announce": {"rate": 1, "for": 1, "lifetime": 86400}}, {"expect": {"router": "all"}}]})
+
+
 def test_a_run_that_reaches_less_than_bgp_or_loops_or_never_rests_broke_a_property(monkeypatch):
     from lab.results import RunKey
 
@@ -63,10 +66,12 @@ def test_a_run_that_reaches_less_than_bgp_or_loops_or_never_rests_broke_a_proper
     runs = {RunKey("t", "bgp", "s", 1): {"status": "completed", "events": [final({"r1": 1, "r3": 1})]},
             RunKey("t", "obgp-rp", "s", 1): {"status": "completed", "events": [
                 final({"r1": 1, "r3": 0}, looping=[p]),
-                {"name": "expect", "t": 8, "passed": False, "allowed": True, "routers": ["r3"], "prefixes": "all", "problems": ["r3 misses 1 of 1 prefixes"]}]}}
-    dataset = type("D", (), {"experiment": e, "keys": lambda self: list(runs), "is_done": lambda self, k: k in runs, "run": lambda self, k: runs[k]})()
+                {"name": "expect", "step": "1", "t": 8, "passed": False, "allowed": True, "routers": ["r3"], "prefixes": "all", "problems": ["r3 misses 1 of 1 prefixes"]}]}}
+    monkeypatch.setattr(type(e), "scenario_of", lambda self, case: ANNOUNCE_AND_CHECK)
+    meta = {"predictions": {"t|s": {"obgp-rp": {"runs": 20, "converged": 20, "failed": [3]}}}}
+    dataset = type("D", (), {"experiment": e, "meta": meta, "keys": lambda self: list(runs), "is_done": lambda self, k: k in runs, "run": lambda self, k: runs[k]})()
 
-    # BGP at rest: the fewer routes of r3 are compared, and the check allowed to fail for r3 foretold them.
+    # BGP at rest: the fewer routes of r3 are compared, and the check allowed to fail for r3, which the simulator failed too, foretold them.
     monkeypatch.setattr(analysis, "run_summary", lambda d: {})
     found = {(x["variant"], x["cause"]): x for x in rested(problems.broken(dataset))}
     assert set(found) == {("obgp-rp", "loops"), ("obgp-rp", "reach")}
@@ -78,11 +83,18 @@ def test_a_run_that_reaches_less_than_bgp_or_loops_or_never_rests_broke_a_proper
     found = {(x["variant"], x["cause"]) for x in rested(problems.broken(dataset))}
     assert found == {("bgp", "rest-end"), ("obgp-rp", "loops"), ("obgp-rp", "reference")}
     titles = {g["title"] for g in problems.grouped(rested(problems.broken(dataset)))}
-    # Without a prediction BGP's restlessness is told, not judged.
-    assert titles == {"Routes still change at the end, no prediction", "Loops at rest", "No BGP run at rest to compare with"}
+    # The simulator answered for OBGP, not for BGP: its restlessness has no answer, which fails like one not predicted.
+    assert titles == {"Routes still change at the end, no answer of the simulator", "Loops at rest, not predicted", "No BGP run at rest to compare with, not predicted"}
+    # BGP's run still to come: nothing is judged against it or alone, only what OBGP's run shows by itself.
+    dataset.is_done = lambda k: k.variant != "bgp"
+    dataset.keys = lambda: [k for k in runs if k.variant != "bgp"]
+    assert {(x["variant"], x["cause"]) for x in rested(problems.broken(dataset))} == {("obgp-rp", "loops")}
+    for k in ("is_done", "keys"):
+        delattr(dataset, k)
+    # Never asked, BGP's restlessness is told, not judged.
+    dataset.status, dataset.meta = {"state": "finished"}, {}
     told = rested(problems.broken(dataset))
     assert next(x for x in told if x["cause"] == "rest-end")["predicted"] is None
-    dataset.status, dataset.meta = {"state": "finished"}, {}
     assert problems.verdict(dataset, told)["reasons"] == ["1 run broke a property the simulator did not predict"]  # OBGP's, not BGP's
 
 
@@ -105,7 +117,7 @@ def test_black_holes_and_stale_routes_count_without_bgp_and_the_way_to_rest_is_c
         str(obgp): {"loops_s": 1.0 + resolution + 0.5, "holes_s": 3.0 + resolution, "blocked_s": resolution + 1.5, "blocked_max": 2}})
     found = {(x["variant"], x["cause"]): x["message"] for x in rested(problems.broken(dataset))}
     assert set(found) == {("bgp", "rest-end"), ("obgp-rp", "holes-alone"), ("obgp-rp", "stale-alone"), ("obgp-rp", "loops-way"), ("obgp-rp", "blocked")}
-    assert "BGP of this seed 1 s" in found["obgp-rp", "loops-way"] and "up to 2 prefixes" in found["obgp-rp", "blocked"]
+    assert "BGP at most 1 s in 1 runs" in found["obgp-rp", "loops-way"] and "up to 2 prefixes" in found["obgp-rp", "blocked"]
     assert "beyond the 1 s refresh pruning waits by design" in found["obgp-rp", "blocked"]
     # Blocking within the wait for a route refresh is the design, not a problem.
     monkeypatch.setattr(analysis, "run_summary", lambda d: {str(bgp): {"oscillates": 1}, str(obgp): {"blocked_s": 1.0, "blocked_max": 2}})
@@ -117,6 +129,16 @@ def test_black_holes_and_stale_routes_count_without_bgp_and_the_way_to_rest_is_c
     monkeypatch.setattr(analysis, "run_summary", lambda d: {str(bgp): {"oscillates": 1, "loops_s": 22.4, "holes_s": 0.0},
                                                             str(obgp): {"loops_s": 12.5, "holes_s": 3.7}})
     assert ("obgp-rp", "holes-way") not in {(x["variant"], x["cause"]) for x in rested(problems.broken(dataset))}
+    # Holes each shorter than the resolution, longer than BGP's in sum: no more than reading the routers one after another.
+    monkeypatch.setattr(analysis, "run_summary", lambda d: {
+        str(bgp): {"oscillates": 1, "loops_s": 0.0, "holes_s": 1.076, "loops_beyond_s": 0.0, "holes_beyond_s": 0.0},
+        str(obgp): {"loops_s": 0.0, "holes_s": 1.78, "loops_beyond_s": 0.0, "holes_beyond_s": 0.0}})
+    assert ("obgp-rp", "holes-way") not in {(x["variant"], x["cause"]) for x in rested(problems.broken(dataset))}
+    monkeypatch.setattr(analysis, "run_summary", lambda d: {
+        str(bgp): {"oscillates": 1, "loops_s": 0.0, "holes_s": 1.0, "loops_beyond_s": 0.0, "holes_beyond_s": 0.3},
+        str(obgp): {"loops_s": 0.0, "holes_s": 1.0, "loops_beyond_s": 0.0, "holes_beyond_s": 0.3 + resolution + 0.5}})
+    found = {(x["variant"], x["cause"]): x["message"] for x in rested(problems.broken(dataset))}
+    assert "each time longer than the resolution" in found["obgp-rp", "holes-way"]
     # A final check skipped for a large table is told.
     runs[obgp] = {"status": "completed", "events": [{"name": "final", "t": 9, "stable": True, "prefixes": 3000, "skipped": "more than 2000 prefixes"}]}
     assert ("obgp-rp", "unchecked") in {(x["variant"], x["cause"]) for x in rested(problems.broken(dataset))}
@@ -148,6 +170,12 @@ def test_paths_against_the_relations_count_beyond_what_bgp_leaks(monkeypatch):
     monkeypatch.setattr(analysis, "run_summary", lambda d: {})
     # The leak BGP has too, by the scenario's policies, is no problem: only what OBGP adds.
     assert [(x["cause"], x["message"]) for x in rested(problems.broken(dataset))] == [("policy", "r2 routes 3 prefixes against the relations, BGP 0")]
+    assert [x["predicted"] for x in rested(problems.broken(dataset))] == [False]
+    # Where the simulator saw the mode leak in some order, the leak is predicted, with or without BGP at rest.
+    dataset.meta = {"predictions": {"t|s": {"obgp-rp": {"converged": 20, "runs": 20, "findings": {"leaked": 2}}}}}
+    assert [x["predicted"] for x in rested(problems.broken(dataset))] == [True]
+    runs[RunKey("t", "bgp", "s", 1)]["events"][0]["stable"] = False
+    assert [(x["cause"], x["predicted"]) for x in rested(problems.broken(dataset)) if x["variant"] == "obgp-rp"] == [("policy-alone", True)]
 
 
 def test_a_check_foretells_only_its_own_kind_and_the_simulator_foretells_unrest(monkeypatch):
@@ -196,10 +224,20 @@ def test_expect_none_counts_withdrawn_routes_still_held():
     assert check_routes(e, set(), {"r1": {}}, None) == []
 
 
-def test_a_loss_foretold_by_a_check_of_some_origins_is_predicted():
-    run = {"events": [{"name": "expect", "allowed": True, "routers": ["x-c"], "prefixes": "all", "of": "one-table-sources",
+def test_a_loss_foretold_by_a_check_of_some_origins_is_predicted_only_where_the_simulator_failed_it(monkeypatch):
+    from lab.results import RunKey
+
+    run = {"events": [{"name": "expect", "step": "1", "allowed": True, "routers": ["x-c"], "prefixes": "all", "of": "one-table-sources",
                        "problems": ["x-c misses 30 of 30 prefixes"]}]}
-    assert problems._predicted(run, {"x-c"}, "reach")
+    e = Experiment.model_validate({"name": "x", "topologies": ["noble-eu"], "scenarios": ["fill-60"], "variants": [{"name": "obgp-rp", "mode": "obgp-rp"}]})
+    monkeypatch.setattr(type(e), "scenario_of", lambda self, case: ANNOUNCE_AND_CHECK)
+    key = RunKey("t", "obgp-rp", "s", 1)
+    told = lambda failed: type("D", (), {"experiment": e, "path": f"p{failed}", "meta": {"predictions": {"t|s": {"obgp-rp": {"runs": 20, "converged": 20, "failed": failed}}}}})()
+    assert problems._predicted(told([2]), key, run, {"x-c"}, "reach") is True
+    # The scenario allows it, the simulator never fails it: not predicted. Without an answer on the check: none.
+    assert problems._predicted(told([0]), key, run, {"x-c"}, "reach") is False
+    assert problems._predicted(told([]), key, run, {"x-c"}, "reach") is None
+    assert problems.allowed_predicted(told([2]), key, run) is True and problems.allowed_predicted(told([0]), key, run) is False
 
 
 def test_a_loop_on_the_way_the_simulator_saw_is_predicted():
@@ -242,22 +280,32 @@ def test_a_finished_result_passes_only_without_errors_unmeasured_runs_and_unfore
     where = {"topology": "t", "variant": "v", "scenario": "s"}
     d = lambda state, meta={}, done=True: type("D", (), {"status": {"state": state}, "meta": meta, "keys": lambda self: [1],
                                                        "is_done": lambda self, k: done})()
-    assert problems.verdict(d("running"), []) == {"passed": None, "reasons": []}
-    assert problems.verdict(d("finished"), []) == {"passed": True, "reasons": []}
+    assert problems.verdict(d("running"), []) == {"passed": None, "reasons": [], "told": []}
+    assert problems.verdict(d("finished"), []) == {"passed": True, "reasons": [], "told": []}
     # A foretold property and a retried run do not fail it.
     ok = [{**where, "run": 1, "kind": "property", "predicted": True}, {**where, "run": 2, "kind": "retried"}]
     assert problems.verdict(d("finished"), ok)["passed"] is True
     found = ok + [{**where, "run": 3, "kind": "error"}, {**where, "run": 4, "kind": "unmeasured"}, {**where, "run": 5, "kind": "unmeasured"},
-                  {**where, "run": 6, "kind": "check"}, {**where, "run": 6, "kind": "check"},
+                  {**where, "run": 6, "kind": "check", "predicted": False}, {**where, "run": 6, "kind": "check", "predicted": False},
                   {**where, "run": 7, "kind": "property", "predicted": False}]
     assert problems.verdict(d("finished"), found) == {"passed": False, "reasons": [
-        "1 run ended in an error", "2 runs not measured", "1 run failed a check", "1 run broke a property the simulator did not predict"]}
+        "1 run ended in an error", "2 runs not measured", "1 run failed a check the simulator did not predict", "1 run broke a property the simulator did not predict"],
+        "told": []}
+    # Without an answer, after an error or a timeout, a failed check fails it. Where the simulator cannot play it, it is told.
+    unanswered = {**where, "run": 8, "kind": "check", "predicted": None, "unanswered": True}
+    cannot = {**where, "run": 9, "kind": "property", "predicted": None, "unanswered": False, "why": "mixed mode"}
+    assert problems.verdict(d("finished"), ok + [unanswered, cannot]) == {"passed": False, "reasons": ["1 run failed a check the simulator gave no answer for"],
+                                                                           "told": ["1 run failed a check or broke a property the simulator cannot play, not predictable"]}
+    assert problems.verdict(d("finished"), ok + [cannot])["passed"] is True
+    assert problems.look({"status": "failed"}, [unanswered]) == "failed" and problems.look({"status": "failed"}, [cannot]) == "unjudged"
+    # The runner marks a run failed on any failed check: one the simulator predicted looks predicted.
+    assert problems.look({"status": "failed"}, [{**where, "run": 1, "kind": "check", "predicted": True}]) == "allowed"
 
 
 def test_a_result_without_a_run_fails_and_an_imported_one_is_not_judged():
     d = lambda meta={}, done=True: type("D", (), {"status": {"state": "finished"}, "meta": meta, "keys": lambda self: [1],
                                                  "is_done": lambda self, k: done})()
-    assert problems.verdict(d(done=False), []) == {"passed": False, "reasons": ["no run ran on this host"]}
+    assert problems.verdict(d(done=False), []) == {"passed": False, "reasons": ["no run ran on this host"], "told": []}
     assert problems.verdict(d({"imported": {"from": "original/"}}), [])["passed"] is None
 
 
@@ -274,5 +322,28 @@ def test_without_a_prediction_only_bgp_and_mixed_modes_go_unjudged(monkeypatch):
     monkeypatch.setattr(analysis, "run_summary", lambda d: {str(k): {"oscillates": 1} for k in runs})
     told = rested(problems.broken(dataset))
     assert {x["variant"]: x["predicted"] for x in told if x["cause"] == "rest-end"} == {"bgp": None, "obgp-rp": False, "random-rp": None}
-    # OBGP is to come to rest: without a prediction its restlessness still fails the verdict.
+    # OBGP is to come to rest: without a prediction its restlessness still fails the verdict. Never asked, BGP is told.
     assert problems.verdict(dataset, told)["reasons"] == ["1 run broke a property the simulator did not predict"]
+    # Asked, the simulator failed on BGP: no answer, which fails as well. One it cannot translate is told.
+    dataset.meta = {"predictions": {"t|s": {"unsupported": ["the simulator took longer than 1 h"]}}}
+    from lab import simulate
+    monkeypatch.setattr(simulate, "to_instances", lambda *a: [])
+    monkeypatch.setattr(simulate.topologies, "load", lambda name: {})
+    monkeypatch.setattr(type(e), "scenario_of", lambda self, case: ANNOUNCE_AND_CHECK)
+    problems._CANNOT.clear()
+    told = rested(problems.broken(dataset))
+    assert {x["variant"]: x.get("unanswered") for x in told if x["cause"] == "rest-end"} == {"bgp": True, "obgp-rp": None, "random-rp": False}
+    assert "1 run broke a property the simulator gave no answer for" in problems.verdict(dataset, told)["reasons"]
+
+    def cannot(*a):
+        raise simulate.Unsupported(["step 3 (replay): no counterpart in the simulator"])
+    monkeypatch.setattr(simulate, "to_instances", cannot)
+    problems._CANNOT.clear()
+    told = rested(problems.broken(dataset))
+    assert {x["variant"]: x.get("unanswered") for x in told if x["cause"] == "rest-end"} == {"bgp": False, "obgp-rp": None, "random-rp": False}
+    # Fewer routes than BGP in a case it cannot play: told, as OBGP does not promise BGP's reach.
+    runs[RunKey("t", "bgp", "s", 1)]["events"] = [{**final, "stable": True, "held": {"r1": 1}}]
+    runs[RunKey("t", "obgp-rp", "s", 1)]["events"] = [{**final, "stable": True, "held": {"r1": 0}}]
+    monkeypatch.setattr(analysis, "run_summary", lambda d: {})
+    reach = [x for x in problems.broken(dataset) if x["cause"] == "reach"]
+    assert [(x["variant"], x["predicted"], x.get("unanswered")) for x in reach] == [("obgp-rp", None, False)]

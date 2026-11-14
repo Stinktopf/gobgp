@@ -11,8 +11,8 @@
 // iBGP in a full mesh or through route reflectors, with next-hop-self at the
 // border, and forward over the IGP. gobgpd compares no IGP costs, so they
 // only steer forwarding. A route server adds no AS and leaves the next hop,
-// as gobgpd's. Not modeled: timers such as MRAI and hold time, more than
-// one prefix.
+// as gobgpd's. Not modeled: timers such as hold time and the MRAI's, of
+// which only its coalescing is (Instance.MRAI), more than one prefix.
 package obgpsim
 
 import (
@@ -31,7 +31,8 @@ import (
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
 
-// Mode is the decision process all routers run.
+// Mode is the decision process all routers run, or the name of a mixed mode
+// of the instance, see Instance.Mixed.
 type Mode string
 
 const (
@@ -81,8 +82,12 @@ func (m Mode) options() table.OperaOptions {
 
 // calculate runs the decision of router r.
 func (n *network) calculate(r int, p *table.Path) {
+	n.use(r)
+	if n.routers[r].dest.OperaRedundant(p) { // as gobgpd skips it
+		return
+	}
 	n.routers[r].dest.Calculate(logger, p)
-	if n.perNeighbor() {
+	if n.perNeighbor(r) {
 		allows := map[string]bool{}
 		for _, j := range n.peers(r) {
 			if !n.internal(r, j) {
@@ -98,7 +103,28 @@ func (n *network) calculate(r int, p *table.Path) {
 // them.
 var PerNeighbor bool
 
-func (n *network) perNeighbor() bool { return PerNeighborMode(n.mode) }
+func (n *network) perNeighbor(r int) bool { return PerNeighborMode(n.modeOf(r)) }
+
+// modeOf is the mode router r runs: its own in a mixed mode, else the one of all.
+func (n *network) modeOf(r int) Mode {
+	if n.modes != nil {
+		return n.modes[r]
+	}
+	return n.mode
+}
+
+// use sets the OBGP settings of router r's mode before the table code
+// decides for r, as each router of the lab is a gobgpd of its own. Only in a
+// mixed mode: with one mode for all they stay as play set them.
+func (n *network) use(r int) {
+	if n.modes == nil {
+		return
+	}
+	if o := n.modes[r].options(); o != n.options {
+		table.SetOperaOptions(o)
+		n.options = o
+	}
+}
 
 // PerNeighborMode tells whether mode m runs with a table per eBGP neighbor.
 func PerNeighborMode(m Mode) bool {
@@ -113,7 +139,7 @@ func (n *network) allows(r, j int, p *table.Path) bool {
 	if p.IsWithdraw {
 		return false
 	}
-	ownSplit = n.mode != BGPPN
+	ownSplit = n.modeOf(r) != BGPPN
 	defer func() { ownSplit = false }()
 	return n.offerEBGP(r, j, p) != nil
 }
@@ -124,9 +150,10 @@ var ownSplit bool
 // syncTables brings router r's tables per neighbor up to date with its
 // export policy, as gobgpd's operaSync, and drops those of neighbors down.
 func (n *network) syncTables(r int) {
-	if !n.perNeighbor() {
+	if !n.perNeighbor(r) {
 		return
 	}
+	n.use(r)
 	d := n.routers[r].dest
 	for _, l := range n.inst.Links {
 		for k, j := range l {
@@ -147,8 +174,9 @@ func (n *network) syncTables(r int) {
 
 // best is the path router i forwards on.
 func (n *network) best(i int) *table.Path {
+	n.use(i)
 	d := n.routers[i].dest
-	if n.perNeighbor() {
+	if n.perNeighbor(i) {
 		d.OperaForward()
 		return d.OperaForwarding()
 	}
@@ -157,7 +185,8 @@ func (n *network) best(i int) *table.Path {
 
 // exportTo is the path router i offers eBGP neighbor j before filters.
 func (n *network) exportTo(i, j int) *table.Path {
-	if n.perNeighbor() && !n.internal(i, j) {
+	if n.perNeighbor(i) && !n.internal(i, j) {
+		n.use(i)
 		return n.routers[i].dest.OperaExport(fmt.Sprint(j))
 	}
 	return n.exportPath(i)
@@ -204,6 +233,12 @@ type Session struct {
 // deny-import (set_import), local-pref (set_preference, From the neighbor,
 // To the router), igp (the cost of the link From-To), originate (router From
 // announces the prefix too, Value 1, or withdraws it, Value 0) and expect.
+// With graceful restart (Instance.GracefulRestart): down with Value 1 a
+// silent failure, both ends keep the routes stale, with Value 2 To drops
+// the packets of From and keeps its routes stale, From drops To's; restart
+// (router From, Value 1 gracefully: its peers keep its routes stale; the
+// lab's up steps bring its sessions back) and expire (the restart time of
+// the link From-To ends, its stale routes go).
 type Event struct {
 	After int  `json:"after"`
 	Any   bool `json:"any,omitempty"`
@@ -215,7 +250,7 @@ type Event struct {
 	Kind    string `json:"kind"`
 	From    int    `json:"from,omitempty"`
 	To      int    `json:"to,omitempty"`
-	Value   int    `json:"value,omitempty"` // prepend: copies, deny-*: 1 on, 0 off, local-pref: the value, 0 for the default, igp: the cost, 0 takes the link away
+	Value   int    `json:"value,omitempty"` // prepend: copies, deny-*: 1 on, 0 off, local-pref: the value, 0 for the default, igp: the cost, 0 takes the link away, down and restart: see above
 	// expect: as the lab's step checks the best routes of Routers.
 	Routers    []int  `json:"routers,omitempty"`
 	Prefixes   string `json:"prefixes,omitempty"` // all, none or any; empty: all
@@ -223,6 +258,13 @@ type Event struct {
 	Avoid      *int   `json:"avoid,omitempty"`
 	Forwarding bool   `json:"forwarding,omitempty"`
 	Consistent bool   `json:"consistent,omitempty"` // every AS sends its neighbors in other ASes one path
+	// Step: the lab's step of an expect, as lab/simulate.py names it, e.g. 6.0#0. Only carried.
+	Step string `json:"step,omitempty"`
+	// Group: events of one lab step whose order the lab does not control, as
+	// the sessions that come back after a restart. Of the events next to each
+	// other with the same Group, other than 0, any comes next, drawn when one
+	// is due: it takes the place, and with it After, Any and Bounded, of the first.
+	Group int `json:"group,omitempty"`
 }
 
 // Verdict is what an expect event found, as the lab's expect step reports it.
@@ -274,9 +316,44 @@ type Instance struct {
 	// Route servers pass their clients' paths on as they came, as gobgpd's:
 	// one table for all clients, for each client the best path with BGP or
 	// the worst admitted with OBGP of the others, then its export filter.
-	RouteServers []int   `json:"route_servers,omitempty"`
-	Events       []Event `json:"events,omitempty"`
-	Seed         int64   `json:"seed"`
+	RouteServers []int `json:"route_servers,omitempty"`
+	// Mixed are modes that run a mode per router, by name, as the lab's
+	// hybrid and random variants: the mode of each router. Run plays one by
+	// its name, Check besides the pure modes when named.
+	Mixed map[Mode][]Mode `json:"mixed,omitempty"`
+	// MRAI: an update still on a session to another AS gives way to a newer
+	// one or a withdrawal for the same path ID, see send. As the lab with an
+	// MRAI, coalescing without its timer.
+	MRAI bool `json:"mrai,omitempty"`
+	// GracefulRestart: every session has graceful restart, as the lab's
+	// option, see the events down (Value 1 and 2) and restart.
+	GracefulRestart bool    `json:"graceful_restart,omitempty"`
+	Events          []Event `json:"events,omitempty"`
+	Seed            int64   `json:"seed"`
+}
+
+// Validate tells what of the instance the simulator cannot play: a mixed
+// mode needs a mode for every router, and NS-BGP on all routers or none, as
+// it forwards by ingress.
+func (inst *Instance) Validate() error {
+	for name, modes := range inst.Mixed {
+		if len(modes) != inst.Routers {
+			return fmt.Errorf("mixed mode %s: %d modes for %d routers", name, len(modes), inst.Routers)
+		}
+		ns := 0
+		for _, m := range modes {
+			if !slices.Contains(BothTables, m) {
+				return fmt.Errorf("mixed mode %s: unknown mode %s", name, m)
+			}
+			if m == BGPPN {
+				ns++
+			}
+		}
+		if ns > 0 && ns < len(modes) {
+			return fmt.Errorf("mixed mode %s: NS-BGP on some routers only", name)
+		}
+	}
+	return nil
 }
 
 // AS is the AS number of AS index i, which is router i unless Instance.AS
@@ -319,7 +396,7 @@ type Result struct {
 	Steps     int          `json:"steps"`
 	Best      [][]uint32   `json:"best"`     // the AS path each router uses, nil for none
 	NextHop   []int        `json:"next_hop"` // its BGP next hop, -1 for none, the router itself for the origin
-	Exported  [][]uint32   `json:"exported"` // what each router offers its eBGP neighbors before per-neighbor filters
+	Exported  [][]uint32   `json:"exported"` // what each router offers its eBGP neighbors before per-neighbor filters, the full path
 	Offered   [][][]uint32 `json:"offered"`  // what each router sends its neighbors in other ASes, own prepends taken off: as the lab sees it
 	Checks    []Verdict    `json:"checks,omitempty"`
 	Costs     []int        `json:"costs,omitempty"` // of the links at the end, igp events applied
@@ -351,11 +428,19 @@ type Hop struct {
 	NextHop int      `json:"next_hop"`
 }
 
-// ingress is where router i sends packets from each eBGP neighbor with
-// NS-BGP, nil in the other modes. Packets of a route server's clients come
+// trimIngress is nil where no router forwards by ingress.
+func trimIngress(in []map[int]Hop) []map[int]Hop {
+	if slices.ContainsFunc(in, func(m map[int]Hop) bool { return m != nil }) {
+		return in
+	}
+	return nil
+}
+
+// ingress is where router i sends packets from each eBGP neighbor with a
+// table per neighbor, NS-BGP and OBGP alike, nil with one table. Packets of a route server's clients come
 // straight from them, on the route i sends the route server.
 func (n *network) ingress(i int) map[int]Hop {
-	if n.mode != BGPPN {
+	if !n.perNeighbor(i) {
 		return nil
 	}
 	out, viaRS := map[int]Hop{}, map[int]Hop{}
@@ -408,6 +493,7 @@ type message struct {
 	id       uint32 // the path ID, 0 unless several paths share a session
 	withdraw bool
 	refresh  bool // a request for the current routes, from the receiver's peer
+	eor      bool // End-of-RIB: the sender sent all its routes after the session came back
 	route    route
 }
 
@@ -417,24 +503,35 @@ type router struct {
 }
 
 type network struct {
-	inst      *Instance
-	mode      Mode
-	rng       *rand.Rand
-	routers   []*router
-	up        map[session]bool // eBGP and IGP links, both directions
-	ibgp      map[session]bool // iBGP sessions, both directions
-	client    map[session]bool // (reflector, client)
-	queues    map[session][]message
-	received  map[session]map[uint32]route     // Adj-RIB-In before import policy
-	stamps    map[session]map[uint32]time.Time // when a route arrived, kept while it is resent unchanged
-	policy    map[session]*Session
-	relation  map[session]Relation // what To is to From
-	asked     map[session]bool     // refresh requests still unanswered
-	origins   map[int]*table.Path  // what each router announcing the prefix itself announces
-	byAddress map[netip.Addr]int
-	byID      map[netip.Addr]int
-	checks    []Verdict
-	costs     []int // of the links, changed by igp events
+	inst     *Instance
+	mode     Mode
+	modes    []Mode             // per router in a mixed mode, else nil
+	options  table.OperaOptions // the settings last set, in a mixed mode
+	rng      *rand.Rand
+	routers  []*router
+	up       map[session]bool // eBGP and IGP links, both directions
+	ibgp     map[session]bool // iBGP sessions, both directions
+	client   map[session]bool // (reflector, client)
+	queues   map[session][]message
+	sends    map[session]int                  // messages put on each session so far; not in the state of a cycle
+	sentAt   map[session][]int                // per queued message, the step that sent it; not in the state of a cycle
+	step     int                              // steps so far, as the replay counts them
+	cur      int                              // the step being played, 0 before the first
+	received map[session]map[uint32]route     // Adj-RIB-In before import policy
+	stamps   map[session]map[uint32]time.Time // when a route arrived, kept while it is resent unchanged
+	policy   map[session]*Session
+	relation map[session]Relation // what To is to From
+	asked    map[session]bool     // refresh requests still unanswered
+	// Graceful restart: per session the routes the receiver keeps stale,
+	// by path ID, and per router restarting gracefully the peers whose
+	// End-of-RIB it still waits for before it sends its routes.
+	stale      map[session]map[uint32]bool
+	restarting map[int]map[int]bool
+	origins    map[int]*table.Path // what each router announcing the prefix itself announces
+	byAddress  map[netip.Addr]int
+	byID       map[netip.Addr]int
+	checks     []Verdict
+	costs      []int // of the links, changed by igp events
 	// Path timestamps: GoBGP breaks ties between eBGP paths by age in whole
 	// seconds, so the time must not depend on the machine. Between two
 	// messages a second may pass or not, ticks decides with a generator of
@@ -478,11 +575,16 @@ func Trace(inst *Instance, mode Mode, w io.Writer) Result {
 // Step is one delivered message and the state of every router after it,
 // for tools that replay a run.
 type Step struct {
-	From    int           `json:"from"`
-	To      int           `json:"to"`
-	Kind    string        `json:"kind"` // update, withdraw, refresh, or event for a change from outside
-	Path    []uint32      `json:"path,omitempty"`
-	Event   *Event        `json:"event,omitempty"` // the change from outside, From and To -1
+	From  int      `json:"from"`
+	To    int      `json:"to"`
+	Kind  string   `json:"kind"` // update, withdraw, refresh, end-of-rib, or event for a change from outside
+	Path  []uint32 `json:"path,omitempty"`
+	Event *Event   `json:"event,omitempty"` // the change from outside, From and To -1
+	// Sent: the step at which this one was sent, 0 at the start, so that one
+	// sent before its sender changed its mind shows as such. Waiting: the messages still
+	// on the session after it, sessions being FIFO as BGP over TCP.
+	Sent    int           `json:"sent"`
+	Waiting int           `json:"waiting"`
 	Routers []RouterState `json:"routers"`
 	Loop    []int         `json:"loop,omitempty"` // the routers of a forwarding loop now
 }
@@ -503,6 +605,17 @@ type RouterState struct {
 	Out      []Sent     `json:"out"`      // per neighbor, what it is sent now, or why nothing
 	// Ingress: with NS-BGP, where it sends packets from each eBGP neighbor.
 	Ingress map[int]Hop `json:"ingress,omitempty"`
+	// Tables: with a table per eBGP neighbor, what the table towards each one holds, by neighbor.
+	Tables map[int]View `json:"tables,omitempty"`
+}
+
+// View is the table a router keeps towards one eBGP neighbor: its admitted and
+// set-aside paths, as AS paths, and the path it offers that neighbor before filters.
+// Under OBGP the worst admitted path is that table's threshold.
+type View struct {
+	Admitted [][]uint32 `json:"admitted"`
+	SetAside [][]uint32 `json:"set_aside"`
+	Export   []uint32   `json:"export,omitempty"`
 }
 
 // Received is the path a neighbor last sent a router and its fate there:
@@ -516,6 +629,9 @@ type Received struct {
 	// Lost: for an admitted path, the step of BGP's selection at which the
 	// best path wins over it, e.g. "shorter AS path".
 	Lost string `json:"lost,omitempty"`
+	// Stale: kept from a neighbor that restarts gracefully or failed
+	// without a notification, until it sends its routes again.
+	Stale bool `json:"stale,omitempty"`
 	// Over: the session, "ebgp", "ibgp", "confed" between members of a
 	// confederation, "rs" with a route server, or "igp" for a link inside
 	// the AS without a BGP session.
@@ -541,6 +657,8 @@ func kindOf(m message) string {
 	switch {
 	case m.refresh:
 		return "refresh"
+	case m.eor:
+		return "end-of-rib"
 	case m.withdraw:
 		return "withdraw"
 	}
@@ -548,7 +666,7 @@ func kindOf(m message) string {
 }
 
 func pathOf(m message) []uint32 {
-	if m.refresh || m.withdraw {
+	if m.refresh || m.withdraw || m.eor {
 		return nil
 	}
 	return m.route.path
@@ -562,22 +680,24 @@ func (n *network) record(steps *[]Step, st Step) {
 		out := [][]uint32{}
 		for _, p := range ps {
 			if !p.IsWithdraw {
-				out = append(out, p.GetAsList())
+				out = append(out, flat(p)) // the full path, confederation segments too
 			}
 		}
 		return out
 	}
 	for i, r := range n.routers {
+		n.use(i)
 		rs := RouterState{NextHop: -1, Forward: -1, Admitted: paths(r.dest.GetAllKnownPathList()), SetAside: paths(r.dest.OperaSetAside())}
 		if best := n.best(i); best != nil && !best.IsWithdraw {
 			rs.Best, rs.NextHop = flat(best), n.nexthop(i, best)
 			rs.Forward = n.forward(i, rs.NextHop, rs.Best)
 		}
 		if p := n.exportPath(i); p != nil {
-			rs.Exported = p.GetAsList()
+			rs.Exported = flat(p)
 		}
 		rs.Waits = rs.Best == nil && len(r.dest.OperaWaiting()) > 0
 		rs.In, rs.Out, rs.Ingress = n.ins(i), n.outs(i), n.ingress(i)
+		rs.Tables = n.views(i)
 		st.Routers = append(st.Routers, rs)
 	}
 	*steps = append(*steps, st)
@@ -590,9 +710,9 @@ func (n *network) forward(i, hop int, path []uint32) int {
 		return hop
 	}
 	switch {
-	case (Tunnel || n.mode == BGPPN) && len(path) == 0:
+	case (Tunnel || n.modeOf(i) == BGPPN) && len(path) == 0:
 		return hop
-	case Tunnel || n.mode == BGPPN:
+	case Tunnel || n.modeOf(i) == BGPPN:
 		return tunnelExit(n.inst, hop, path)
 	}
 	if n.igp == nil {
@@ -628,6 +748,27 @@ func (n *network) over(i, j int) string {
 	return "ebgp"
 }
 
+// views is what router i's table towards each eBGP neighbor holds, nil with one table.
+func (n *network) views(i int) map[int]View {
+	if !n.perNeighbor(i) {
+		return nil
+	}
+	n.use(i)
+	out := map[int]View{}
+	for _, j := range n.neighbors(i) {
+		if n.internal(i, j) {
+			continue
+		}
+		adm, aside := n.routers[i].dest.OperaViewState(fmt.Sprint(j))
+		v := View{Admitted: adm, SetAside: aside}
+		if p := n.exportTo(i, j); p != nil && !p.IsWithdraw {
+			v.Export = flat(p)
+		}
+		out[j] = v
+	}
+	return out
+}
+
 // ins is, per neighbor, what it last sent router i and its fate there.
 func (n *network) ins(i int) []Received {
 	d := n.routers[i].dest
@@ -649,7 +790,7 @@ func (n *network) ins(i int) []Received {
 		}
 		for _, id := range ids {
 			r := n.received[s][id]
-			got := Received{From: j, Path: slices.Concat(r.confed, r.path, r.set), Over: over} // as GetAsList: the AS_SET at the end
+			got := Received{From: j, Path: slices.Concat(r.confed, r.path, r.set), Over: over, Stale: n.stale[s][id]} // as GetAsList: the AS_SET at the end
 			pol := n.policy[s]
 			switch p := n.pathOf(s, id, false); {
 			case slices.Contains(slices.Concat(r.confed, r.path, r.set), n.localAS(i, j)) || n.internal(j, i) && (r.originator == i || slices.Contains(r.clusters, i)):
@@ -661,11 +802,12 @@ func (n *network) ins(i int) []Received {
 			case in(d.GetAllKnownPathList(), p):
 				got.Fate = "admitted"
 				if best := n.best(i); best != nil && !best.IsWithdraw {
+					n.use(i)
 					got.Lost = table.DecidingStep(best, p)
 				}
 			case in(d.OperaSetAside(), p):
 				got.Fate = "set aside"
-			case n.mode.Base() == OBGPHard || n.mode == OBGPPaper:
+			case n.modeOf(i).Base() == OBGPHard || n.modeOf(i) == OBGPPaper:
 				got.Fate = "pruned" // hard pruning deleted it, and it stays out until the neighbor sends anew
 			default:
 				got.Fate = "dropped"
@@ -692,8 +834,38 @@ func (n *network) outs(i int) []Sent {
 				r := routes[id]
 				out = append(out, Sent{To: j, Path: slices.Concat(r.confed, r.path, r.set)})
 			}
+		case n.routeServer(i):
+			// A route server offers each client what advertise sends it, not what it would export over eBGP.
+			routes := map[uint32]route{}
+			if n.modeOf(i) != OBGPPaper {
+				routes = n.offerRSAll(i, j)
+			} else if r := n.offerRS(i, j); r != nil {
+				routes[0] = *r
+			}
+			if len(routes) == 0 {
+				_, why := n.offerWhy(i, j, n.exportTo(i, j))
+				if why == "" {
+					why = notNothing
+				}
+				out = append(out, Sent{To: j, Not: why})
+			}
+			for _, id := range slices.Sorted(maps.Keys(routes)) {
+				r := routes[id]
+				out = append(out, Sent{To: j, Path: slices.Concat(r.confed, r.path, r.set)})
+			}
 		default:
-			if r, why := n.offerWhy(i, j, n.exportTo(i, j)); r != nil {
+			p := n.exportTo(i, j)
+			r, why := n.offerWhy(i, j, p)
+			// With a table per neighbor a path the export filter drops never enters the table
+			// towards j: the reason is the filter's, as with one table.
+			if r == nil && p == nil && n.perNeighbor(i) {
+				if q := n.exportPath(i); q != nil {
+					if _, w := n.offerWhy(i, j, q); w == notFilter {
+						why = w
+					}
+				}
+			}
+			if r != nil {
 				out = append(out, Sent{To: j, Path: slices.Concat(r.confed, r.path, r.set)})
 			} else {
 				out = append(out, Sent{To: j, Not: why})
@@ -729,9 +901,12 @@ func play(inst *Instance, mode Mode, maxSteps int, trace io.Writer, record *[]St
 	defer table.SetOperaOptions(old)
 
 	n := &network{inst: inst, mode: mode, rng: rand.New(rand.NewSource(inst.Seed)), ticks: rand.New(rand.NewSource(inst.Seed ^ 0x5eed)),
-		up: map[session]bool{}, ibgp: map[session]bool{}, client: map[session]bool{}, queues: map[session][]message{}, asked: map[session]bool{},
+		up: map[session]bool{}, ibgp: map[session]bool{}, client: map[session]bool{}, queues: map[session][]message{}, sends: map[session]int{}, stale: map[session]map[uint32]bool{}, restarting: map[int]map[int]bool{}, sentAt: map[session][]int{}, asked: map[session]bool{},
 		received: map[session]map[uint32]route{}, stamps: map[session]map[uint32]time.Time{}, policy: map[session]*Session{}, relation: map[session]Relation{},
 		byAddress: map[netip.Addr]int{}, byID: map[netip.Addr]int{}, origins: map[int]*table.Path{}}
+	if m, ok := inst.Mixed[mode]; ok {
+		n.modes, n.options = m, mode.options()
+	}
 	nlri, _ := bgp.NewIPAddrPrefix(prefix)
 	for i := 0; i < inst.Routers; i++ {
 		n.routers = append(n.routers, &router{dest: table.NewDestination(nlri, 64), sent: map[session]map[uint32]string{}})
@@ -789,10 +964,13 @@ func play(inst *Instance, mode Mode, maxSteps int, trace io.Writer, record *[]St
 				restless++
 			}
 			since = steps
+			n.cur = n.step + 1
+			drawGroup(events, n.rng)
 			n.apply(events[0])
 			if record != nil && events[0].Kind != "expect" {
 				e := events[0]
 				n.record(record, Step{From: -1, To: -1, Kind: "event", Event: &e})
+				n.step = len(*record) // as the replay counts its steps, events included
 			}
 			events = events[1:]
 			pending = n.pending()
@@ -809,13 +987,20 @@ func play(inst *Instance, mode Mode, maxSteps int, trace io.Writer, record *[]St
 		m := n.queues[s][0]
 		n.queues[s] = n.queues[s][1:]
 		ticked := n.tick()
+		sent := 0
+		if q := n.sentAt[s]; len(q) > 0 {
+			sent, n.sentAt[s] = q[0], q[1:]
+		}
+		n.cur = n.step + 1
 		n.deliver(s, m)
 		steps++
+		n.step = steps
 		if trace != nil {
 			n.trace(trace, steps, s, m)
 		}
 		if record != nil {
-			n.record(record, Step{From: s.from, To: s.to, Kind: kindOf(m), Path: pathOf(m)})
+			n.record(record, Step{From: s.from, To: s.to, Kind: kindOf(m), Path: pathOf(m), Sent: sent, Waiting: len(n.queues[s])})
+			n.step = len(*record)
 		}
 		if Transient {
 			n.classify()
@@ -849,6 +1034,24 @@ func play(inst *Instance, mode Mode, maxSteps int, trace io.Writer, record *[]St
 	return r, nil
 }
 
+// drawGroup puts a random one of the events of the group of events[0] in
+// its place, with the timing of the place: the lab's step chooses no order
+// among them. Without a group of two or more it draws nothing.
+func drawGroup(events []Event, rng *rand.Rand) {
+	g := events[0].Group
+	k := 1
+	for g != 0 && k < len(events) && events[k].Group == g {
+		k++
+	}
+	if k < 2 {
+		return
+	}
+	j := rng.Intn(k)
+	first, drawn := events[0], events[j]
+	drawn.After, drawn.Any, drawn.Bounded, first.After, first.Any, first.Bounded = first.After, first.Any, first.Bounded, drawn.After, drawn.Any, drawn.Bounded
+	events[0], events[j] = drawn, first
+}
+
 // trace writes one delivered message and how every router forwards after it:
 // its best AS path, "local" at the origin, and the router it forwards to,
 // inside an AS the exit.
@@ -857,6 +1060,8 @@ func (n *network) trace(w io.Writer, step int, s session, m message) {
 	switch {
 	case m.refresh:
 		what = "route refresh"
+	case m.eor:
+		what = "end of RIB"
 	case m.withdraw:
 		what = "withdraw"
 	}
@@ -869,7 +1074,7 @@ func (n *network) trace(w io.Writer, step int, s session, m message) {
 		case best.IsLocal():
 			fmt.Fprintf(w, "  %d: local", i)
 		default:
-			fmt.Fprintf(w, "  %d: %v > %d", i, best.GetAsList(), n.nexthop(i, best))
+			fmt.Fprintf(w, "  %d: %v > %d", i, flat(best), n.nexthop(i, best))
 		}
 	}
 	fmt.Fprintln(w)
@@ -943,15 +1148,14 @@ func (n *network) circle() []int {
 			r.Best, r.NextHop = append(r.Best, nil), append(r.NextHop, -1)
 		} else {
 			path := []uint32{} // enough to follow, but for the exit of a tunnel
-			if Tunnel || n.mode == BGPPN {
+			if Tunnel || n.perNeighbor(i) {
 				path = flat(best)
 			}
 			r.Best, r.NextHop = append(r.Best, path), append(r.NextHop, n.nexthop(i, best))
 		}
-		if in := n.ingress(i); in != nil {
-			r.Ingress = append(r.Ingress, in)
-		}
+		r.Ingress = append(r.Ingress, n.ingress(i))
 	}
+	r.Ingress = trimIngress(r.Ingress)
 	if n.igp == nil {
 		n.igp = shortest(n.inst, n.costs)
 	}
@@ -1105,6 +1309,7 @@ func (n *network) peerInfo(from, to int) *table.PeerInfo {
 // exportPath is what router i offers its eBGP neighbors: the best path for
 // BGP, the worst admitted path for OBGP, by the code gobgpd uses.
 func (n *network) exportPath(i int) *table.Path {
+	n.use(i)
 	u := &table.Update{KnownPathList: n.routers[i].dest.GetAllKnownPathList()}
 	p, _ := u.GetExportChanges(table.GLOBAL_RIB_NAME, 0)
 	if p != nil && (p.IsWithdraw || p.IsNexthopInvalid) {
@@ -1252,7 +1457,8 @@ func (n *network) offerWhy(i, j int, p *table.Path) (*route, string) {
 func (n *network) offerIBGP(i, j int) map[uint32]route {
 	out := map[uint32]route{}
 	var p *table.Path
-	if n.mode.plain() {
+	n.use(i)
+	if n.modeOf(i).plain() {
 		p = n.routers[i].dest.GetBestPath(table.GLOBAL_RIB_NAME, 0)
 	} else {
 		p = n.exportPath(i)
@@ -1331,9 +1537,12 @@ func asPath(r route) []bgp.AsPathParamInterface {
 }
 
 func (n *network) advertise(i int) {
+	if n.restarting[i] != nil { // a router restarting gracefully defers its routes until it has all of its peers'
+		return
+	}
 	for _, j := range n.peers(i) {
 		want := map[uint32]route{}
-		if n.routeServer(i) && n.mode != OBGPPaper {
+		if n.routeServer(i) && n.modeOf(i) != OBGPPaper {
 			want = n.offerRSAll(i, j)
 		} else if n.routeServer(i) {
 			if r := n.offerRS(i, j); r != nil {
@@ -1366,10 +1575,10 @@ func (n *network) advertise(i int) {
 			switch {
 			case !ok && was:
 				delete(sent, id)
-				n.queues[s] = append(n.queues[s], message{id: id, withdraw: true})
+				n.send(s, message{id: id, withdraw: true})
 			case ok && (!was || last != key(r)):
 				sent[id] = key(r)
-				n.queues[s] = append(n.queues[s], message{id: id, route: r})
+				n.send(s, message{id: id, route: r})
 			}
 		}
 	}
@@ -1378,6 +1587,7 @@ func (n *network) advertise(i int) {
 // askRefresh sends the neighbors router i waits for a route refresh request,
 // once per wait, behind what the session already carries.
 func (n *network) askRefresh(i int) {
+	n.use(i)
 	for _, src := range n.routers[i].dest.OperaWaiting() {
 		j := n.byAddress[src.Address]
 		s := session{i, j}
@@ -1385,7 +1595,7 @@ func (n *network) askRefresh(i int) {
 			continue
 		}
 		n.asked[s] = true
-		n.queues[s] = append(n.queues[s], message{refresh: true})
+		n.send(s, message{refresh: true})
 	}
 }
 
@@ -1393,12 +1603,37 @@ func (n *network) askRefresh(i int) {
 // withdrawal where it offers nothing (RFC 7313: what is not sent again is gone).
 func (n *network) answerRefresh(j, i int) {
 	s := session{j, i}
-	delete(n.routers[j].sent, s)
-	before := len(n.queues[s])
-	n.advertise(j)
-	if len(n.queues[s]) == before {
-		n.queues[s] = append(n.queues[s], message{id: 0, withdraw: true})
+	if n.restarting[j] != nil { // its routes all follow once it has its peers'
+		return
 	}
+	delete(n.routers[j].sent, s)
+	before := n.sends[s]
+	n.advertise(j)
+	if n.sends[s] == before {
+		n.send(s, message{id: 0, withdraw: true})
+	}
+}
+
+// send puts message m on session s, behind what it carries. With an MRAI
+// an update that still waits there for the same path ID gives way, as
+// gobgpd's holds back an advertisement until the interval ends and drops it
+// for a newer advertisement or withdrawal of the route (pkg/server/mrai.go):
+// the newer message goes behind all others, as gobgpd's newer one does
+// behind those that wait. Only on sessions to another AS, as the lab sets
+// it. Coalescing, not timing: an update that gobgpd sends at once as the
+// first of its interval waits here as well.
+func (n *network) send(s session, m message) {
+	if n.inst.MRAI && !m.refresh && !n.internal(s.from, s.to) {
+		if k := slices.IndexFunc(n.queues[s], func(q message) bool { return !q.refresh && !q.withdraw && q.id == m.id }); k >= 0 {
+			n.queues[s] = slices.Delete(n.queues[s], k, k+1)
+			if k < len(n.sentAt[s]) {
+				n.sentAt[s] = slices.Delete(n.sentAt[s], k, k+1)
+			}
+		}
+	}
+	n.queues[s] = append(n.queues[s], m)
+	n.sentAt[s] = append(n.sentAt[s], n.cur)
+	n.sends[s]++
 }
 
 func (n *network) deliver(s session, m message) {
@@ -1406,6 +1641,11 @@ func (n *network) deliver(s session, m message) {
 		n.answerRefresh(s.to, s.from)
 		return
 	}
+	if m.eor {
+		n.endOfRIB(s)
+		return
+	}
+	delete(n.stale[s], m.id)               // sent anew: no longer stale
 	delete(n.asked, session{s.to, s.from}) // the neighbor answered or sent anew
 	routes := n.received[s]
 	if routes == nil {
@@ -1509,6 +1749,9 @@ func (n *network) pathOf(s session, id uint32, dropped bool) *table.Path {
 			stamp = n.now()
 		}
 		p = table.NewPath(bgp.RF_IPv4_UC, info, bgp.PathNLRI{NLRI: nlri, ID: id}, false, attrs, stamp, false)
+		if n.stale[s][id] {
+			p.MarkStale(true) // as gobgpd's Adj-RIB-In marks the routes it keeps
+		}
 	}
 	return p
 }
@@ -1556,7 +1799,8 @@ func (n *network) offerRS(rs, j int) *route {
 	}
 	u := &table.Update{KnownPathList: known}
 	var p *table.Path
-	if n.mode.plain() {
+	n.use(rs)
+	if n.modeOf(rs).plain() {
 		p, _, _ = u.GetChanges(table.GLOBAL_RIB_NAME, 0, false)
 	} else {
 		p, _ = u.GetExportChanges(table.GLOBAL_RIB_NAME, 0)
@@ -1593,8 +1837,17 @@ func (n *network) apply(e Event) {
 		n.originate(e.From, e.Value != 0)
 	case "down":
 		for _, d := range []session{s, {e.To, e.From}} {
+			// Without a notification, a receiver that finds the session gone by
+			// its hold timer keeps the routes stale: both ends after a cut
+			// (Value 1), To only where it drops the packets of From (Value 2).
+			if n.inst.GracefulRestart && (e.Value == 1 || e.Value == 2 && d == s) {
+				n.keepStale(d)
+				continue
+			}
+			delete(n.stale, d)
 			n.up[d] = false
 			n.queues[d] = nil
+			n.sentAt[d] = nil // the send times of the messages lost with the session
 			ids := []uint32{0}
 			for id := range n.received[d] {
 				ids = append(ids, id)
@@ -1614,6 +1867,21 @@ func (n *network) apply(e Event) {
 		n.syncTables(e.To)
 		n.advertise(e.From)
 		n.advertise(e.To)
+		// After its routes, an End-of-RIB where the other end waits for it: it
+		// holds stale routes of the sender or restarts and waits to send its own.
+		for _, d := range []session{s, {e.To, e.From}} {
+			if n.restarting[d.from] == nil && (len(n.stale[d]) > 0 || n.restarting[d.to][d.from]) {
+				n.send(d, message{eor: true})
+			}
+		}
+	case "restart": // router From restarts, with Value 1 gracefully: its peers keep its routes
+		n.restart(e.From, n.inst.GracefulRestart && e.Value == 1)
+	case "expire": // the restart time of the session From-To ends while it is down: the stale routes go
+		for _, d := range []session{s, {e.To, e.From}} {
+			if !n.up[d] {
+				n.dropStale(d, true)
+			}
+		}
 	case "prepend":
 		set(func(p *Session) { p.Prepend = e.Value })
 		n.advertise(e.From)
@@ -1667,6 +1935,112 @@ func (n *network) apply(e Event) {
 	default:
 		panic(fmt.Sprintf("unknown event %q", e.Kind))
 	}
+}
+
+// keepStale takes session d down, From to To, while To keeps the routes
+// of From stale, as gobgpd's peer with graceful restart: they stay in the
+// table, marked, until From sends its routes again and its End-of-RIB, or
+// the restart time ends. To's table towards From goes, as gobgpd's.
+func (n *network) keepStale(d session) {
+	n.up[d] = false
+	n.queues[d] = nil
+	n.sentAt[d] = nil
+	delete(n.routers[d.from].sent, d)
+	ids := slices.Sorted(maps.Keys(n.received[d]))
+	if len(ids) > 0 && n.stale[d] == nil {
+		n.stale[d] = map[uint32]bool{}
+	}
+	for _, id := range ids {
+		n.stale[d][id] = true
+	}
+	for _, id := range ids { // gobgpd selects again with the stale paths
+		n.importPath(d, id, false)
+	}
+}
+
+// dropStale removes the routes of session d that To keeps stale: as not
+// sent again after an End-of-RIB, as gobgpd withdraws them, or bySession
+// once the restart time ends, as gobgpd drops the session's routes.
+func (n *network) dropStale(d session, bySession bool) {
+	for _, id := range slices.Sorted(maps.Keys(n.stale[d])) {
+		delete(n.received[d], id)
+		delete(n.stamps[d], id)
+		delete(n.stale[d], id)
+		p := n.pathOf(d, id, bySession)
+		if !bySession {
+			p.SetDropped(true)
+		}
+		n.calculate(d.to, p)
+		n.advertise(d.to)
+		n.askRefresh(d.to)
+	}
+	delete(n.stale, d)
+}
+
+// endOfRIB is To receiving From's End-of-RIB: the routes From did not send
+// again are gone, and a restarting To that has all of its peers' sends its
+// own, each followed by its End-of-RIB where a peer keeps its routes stale.
+func (n *network) endOfRIB(s session) {
+	n.dropStale(s, false)
+	if w := n.restarting[s.to]; w != nil {
+		delete(w, s.from)
+		if len(w) == 0 {
+			delete(n.restarting, s.to)
+			n.advertise(s.to)
+			for _, j := range n.peers(s.to) {
+				if d := (session{s.to, j}); len(n.stale[d]) > 0 {
+					n.send(d, message{eor: true})
+				}
+			}
+		}
+	}
+}
+
+// restart is router r restarting: its sessions to other ASes go down, it
+// starts with an empty table and announces its own prefix again. Gracefully
+// its peers keep its routes stale and it sends its routes only once it has
+// the End-of-RIB of every peer whose session was up, as gobgpd with -r.
+// Otherwise its peers drop its routes, as after a notification.
+func (n *network) restart(r int, graceful bool) {
+	waits := map[int]bool{}
+	for _, j := range n.peers(r) {
+		if n.internal(r, j) {
+			continue
+		}
+		waits[j] = true
+		in := session{j, r} // what r received from j: gone with r's table
+		n.up[in] = false
+		n.queues[in], n.sentAt[in] = nil, nil
+		delete(n.routers[j].sent, in)
+		delete(n.received, in)
+		delete(n.stamps, in)
+		delete(n.stale, in)
+		delete(n.asked, session{r, j})
+		out := session{r, j}
+		if graceful {
+			n.keepStale(out)
+			continue
+		}
+		n.up[out] = false
+		n.queues[out], n.sentAt[out] = nil, nil
+		delete(n.routers[r].sent, out)
+		delete(n.stale, out)
+		ids := slices.Sorted(maps.Keys(n.received[out]))
+		delete(n.received, out)
+		for _, id := range slices.Compact(append([]uint32{0}, ids...)) {
+			n.importPath(out, id, true)
+		}
+	}
+	nlri, _ := bgp.NewIPAddrPrefix(prefix)
+	n.routers[r].dest = table.NewDestination(nlri, 64)
+	n.routers[r].sent = map[session]map[uint32]string{}
+	if graceful && len(waits) > 0 {
+		n.restarting[r] = waits
+	}
+	if n.origins[r] != nil {
+		n.originate(r, true)
+	}
+	n.syncTables(r)
 }
 
 func (n *network) result(converged bool, steps int) Result {
@@ -1726,12 +2100,10 @@ func (n *network) snapshot() Result {
 		}
 		var exported []uint32
 		if p := n.exportPath(i); p != nil {
-			exported = p.GetAsList()
+			exported = flat(p)
 		}
 		r.Exported = append(r.Exported, exported)
-		if in := n.ingress(i); in != nil {
-			r.Ingress = append(r.Ingress, in)
-		}
+		r.Ingress = append(r.Ingress, n.ingress(i))
 		var offered [][]uint32
 		for _, j := range n.peers(i) {
 			if n.internal(i, j) || n.routeServer(i) { // a route server is no AS on the path
@@ -1749,5 +2121,6 @@ func (n *network) snapshot() Result {
 		}
 		r.Offered = append(r.Offered, offered)
 	}
+	r.Ingress = trimIngress(r.Ingress)
 	return r
 }

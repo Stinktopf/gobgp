@@ -282,6 +282,20 @@ func getValidation(v map[*table.Path]*table.Validation, p *table.Path) *table.Va
 	}
 }
 
+// toLookupOption maps the API's lookup type to the table's. The API counts
+// from an unspecified type, the table from exact: a plain conversion made an
+// exact lookup a longer-prefix one, which walks the whole table.
+func toLookupOption(t api.TableLookupPrefix_Type) apiutil.LookupOption {
+	switch t {
+	case api.TableLookupPrefix_TYPE_LONGER:
+		return apiutil.LOOKUP_LONGER
+	case api.TableLookupPrefix_TYPE_SHORTER:
+		return apiutil.LOOKUP_SHORTER
+	default:
+		return apiutil.LOOKUP_EXACT
+	}
+}
+
 func (s *server) listPath(ctx context.Context, r *api.ListPathRequest, fn func(*api.Destination)) error {
 	family := bgp.Family(0)
 	if r.Family != nil {
@@ -299,7 +313,7 @@ func (s *server) listPath(ctx context.Context, r *api.ListPathRequest, fn func(*
 			req.Prefixes = append(req.Prefixes, &apiutil.LookupPrefix{
 				Prefix:       p.Prefix,
 				RD:           p.Rd,
-				LookupOption: apiutil.LookupOption(p.Type),
+				LookupOption: toLookupOption(p.Type),
 			})
 		}
 	}

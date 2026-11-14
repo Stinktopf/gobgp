@@ -92,7 +92,8 @@ func (c *cycles) after(step int, state []byte, pending []session) int {
 
 // state is everything of the network that decides what comes next, in a
 // canonical form: the routers' tables with their OBGP state, what each
-// session carries and holds, the refreshes asked, the origins' paths. Times
+// session carries and holds, the refreshes asked, the origins' paths, the
+// routes kept stale and the End-of-RIBs a restarting router waits for. Times
 // count only in their order: gobgpd compares the age of paths in whole
 // seconds, and every new path is younger than all others. ok is false where
 // the tables hold something it cannot compare, a function or a channel.
@@ -150,6 +151,19 @@ func (n *network) state() (out []byte, ok bool) {
 	for _, i := range slices.Sorted(mapKeys(n.origins)) {
 		fmt.Fprintf(&w.buf, "origin %d ", i)
 		w.walk(reflect.ValueOf(n.origins[i]))
+	}
+	// Graceful restart: the routes kept stale and the End-of-RIBs a restarting router waits for, where there are any.
+	stale := map[session]bool{}
+	for s, ids := range n.stale {
+		if len(ids) > 0 {
+			stale[s] = true
+		}
+	}
+	for _, s := range sessions(stale) {
+		fmt.Fprintf(&w.buf, "stale %d %d %v\n", s.from, s.to, slices.Sorted(mapKeys(n.stale[s])))
+	}
+	for _, r := range slices.Sorted(mapKeys(n.restarting)) {
+		fmt.Fprintf(&w.buf, "restarting %d %v\n", r, slices.Sorted(mapKeys(n.restarting[r])))
 	}
 	w.time(n.second())
 	return w.finish(), !w.opaque

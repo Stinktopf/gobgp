@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from .. import (
     analysis,
+    marks,
     scenario,
 )
 from .. import host as hostload
@@ -224,12 +225,61 @@ def created(stamp, style: str = "created") -> Markup | str:
     return Markup(f'<time datetime="{when.isoformat(timespec="seconds")}" data-clock="{style}">{shown}</time>')
 
 
-def sparkline(values: list[float], top: float, width: int = 320, height: int = 64) -> str:
-    """SVG polyline points for a small live chart scaled to top."""
-    if len(values) < 2:
-        return ""
-    step = width / (len(values) - 1)
-    return " ".join(f"{i * step:.1f},{height - 4 - (v / top) * (height - 8):.1f}" for i, v in enumerate(values))
+SETUP = ("deploying", "starting cluster", "building", "asking the simulator")  # phases before the scenario's steps
+RATE_S = 10  # the updates per second over the last seconds of the live samples
+
+
+def live_run(status: dict, experiment) -> dict:
+    """What the live view of the running result shows: the run, its phase,
+    the latest means of its routers and what is wrong now. From status.json, which the runner writes."""
+    samples = [s for s in status.get("live") or [] if isinstance(s.get("t"), (int, float))]
+    current = status.get("current") or ""
+    names, _, index = current.partition("#")
+    topology, variant, scenario_name = ([*names.split("/"), "", ""][:3]) if current else ("", "", "")
+    variants = [v.name for v in experiment.variants] if experiment else []
+    out: dict = {"topology": topology, "variant": variant, "scenario": scenario_name, "repetition": index,
+                 "repetitions": experiment.runs if experiment else None,
+                 "destinations": None, "paths": None, "peak": None, "updates_s": None, "quiet_s": None, "rest_s": None}
+
+    phase = (status.get("phase") or "").strip()
+    if not phase:
+        out["phase"], out["tone"] = ("Starting" if not current else "Between steps"), "setup"
+    elif phase.startswith("waiting"):
+        out["phase"], out["tone"] = phase[0].upper() + phase[1:], "wait"
+    elif phase.startswith(SETUP):
+        out["phase"], out["tone"] = ("Deploying the routers" if phase == "deploying" else phase[0].upper() + phase[1:]), "setup"
+        if phase == "deploying" and (d := status.get("deploy")):
+            out["phase"] = f"Deploying the routers, {d.get('running', 0)} of {d.get('total', 0)} running, {d.get('ready', 0)} ready"
+    elif phase == "until stable":
+        out["phase"], out["tone"] = "Waiting for rest", "rest"
+    else:
+        out["phase"], out["tone"] = phase[0].upper() + phase[1:], "step"
+    try:
+        started = datetime.fromisoformat(status["run_started"])
+        out["elapsed_s"] = max(0.0, (datetime.now(started.tzinfo) - started).total_seconds())
+    except (KeyError, TypeError, ValueError):
+        out["elapsed_s"] = None
+
+    if samples:
+        last = samples[-1]
+        out["destinations"], out["paths"] = last.get("destinations"), last.get("paths")
+        out["peak"] = max(s.get("destinations") or 0 for s in samples)
+        # The last change of a counter: how long the routers have been quiet, against the quiet time of rest.
+        keys = ("destinations", "paths", "updates_rx")
+        changed = next((s for prev, s in zip(reversed(samples[:-1]), reversed(samples)) if any(prev.get(k) != s.get(k) for k in keys)), samples[0])
+        out["quiet_s"] = last["t"] - changed["t"]
+        out["rest_s"] = experiment.quiet_s(variant if variant in variants else None) if experiment else None
+        recent = [s for s in samples if s["t"] >= last["t"] - RATE_S and s.get("updates_rx") is not None]
+        if len(recent) > 1 and recent[-1]["t"] > recent[0]["t"]:
+            out["updates_s"] = max(0.0, recent[-1]["updates_rx"] - recent[0]["updates_rx"]) / (recent[-1]["t"] - recent[0]["t"])
+
+    problems = []
+    if (attempt := status.get("attempt")) and attempt > 1:
+        problems.append((f"Attempt {attempt} of {status.get('attempts') or attempt}", f"Attempt {attempt - 1}: {status.get('failure') or 'failed'}"))
+    if errors := status.get("errors"):
+        problems.append((f"{errors} run{'s' if errors != 1 else ''} broke off with an error", "The runs of the result tell why"))
+    out["problems"] = problems
+    return out
 
 
 def area(lower: list[float], upper: list[float], top: float, width: int = 320, height: int = 64) -> str:
@@ -379,10 +429,41 @@ templates.env.globals["router_metrics"] = analysis.ROUTER_METRICS
 # The level the interval of a median reaches with n runs, in percent; None below 3.
 templates.env.filters["interval_level"] = lambda n: round(100 * ci["level"], 1) if (ci := analysis.median_ci(list(range(int(n or 0))))) else None
 templates.env.filters["created"] = created
+
+
+def linked(text: str) -> Markup:
+    """Plain text with its web addresses as links, nothing else of it as HTML."""
+    out, at = [], 0
+    for m in re.finditer(r"https?://[^\s<>\"']*[^\s<>\"'.,;:!?)\]]", text or ""):
+        url = Markup.escape(m.group(0))
+        out += [Markup.escape(text[at:m.start()]), Markup(f'<a class="hit underline" href="{url}" target="_blank" rel="noopener">{url}</a>')]
+        at = m.end()
+    return Markup("").join([*out, Markup.escape((text or "")[at:])])
+
+
+templates.env.filters["linked"] = linked
+
+
+IDENTIFIER = re.compile(r"(?<![\w-])(-pn|bgp|[a-z][a-z0-9]*(?:-[a-z0-9]+)+)(?![\w-])")
+
+
+def identifiers(text: str) -> Markup:
+    """Words in sans, the identifiers among them, e.g. modes, in mono:
+    "bgp and every OBGP mode" sets only bgp in mono."""
+    out, at = [], 0
+    for m in IDENTIFIER.finditer(text or ""):
+        out += [Markup.escape(text[at:m.start()]), Markup('<span class="font-mono">') + Markup.escape(m.group(0)) + Markup("</span>")]
+        at = m.end()
+    return Markup("").join([*out, Markup.escape((text or "")[at:])])
+
+
+templates.env.filters["identifiers"] = identifiers
+templates.env.globals["marks_of"] = lambda kind, name: marks.of(kind, name)
+templates.env.globals["mark_counts"] = lambda kind: marks.counts(kind)
 templates.env.globals["created"] = created
 templates.env.filters["metric_value"] = metric_value
 templates.env.filters["compact"] = lambda n: f"{n:,.0f}" if abs(n) < 1e6 else f"{n / 1e6:,.1f}M"
-templates.env.globals["sparkline"] = sparkline
+templates.env.globals["live_run"] = live_run
 templates.env.globals["area"] = area
 templates.env.globals["line"] = line
 templates.env.globals["ceiling"] = ceiling

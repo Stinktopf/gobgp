@@ -46,8 +46,9 @@ def normal(inst: dict) -> dict:
     out["router_asns"] = [asns[a] for a in as_of]
     out["ibgp"] = sorted(sorted(c.get("reflectors", [])) for c in out.get("ibgp", []))
     # The lab's until_stable waits at most its timeout: once quiet, the same as the simulator's wait for quiet.
+    # The step a check stands for is the lab's, which the simulator only carries.
     out["events"] = [{"prefixes": "all", **e} if e["kind"] == "expect" else e for e in
-                     ({k: v for k, v in e.items() if k != "bounded"} for e in out.get("events", []))]
+                     ({k: v for k, v in e.items() if k not in ("bounded", "step")} for e in out.get("events", []))]
     for key in ("customers", "peers", "leakers"):
         if key in out:
             out[key] = sorted(map(lambda x: sorted(x) if key == "peers" else x, out[key]))
@@ -285,7 +286,7 @@ def test_compare_names_only_what_the_simulator_rules_out(monkeypatch):
         experiment = e
         keys = lambda self: [RunKey("t", v, "s", i) for v, i in runs]
         is_done = lambda self, key: True
-        run = lambda self, key: {"status": "completed", "events": [{"name": "expect", "passed": runs[key.variant, key.index]}]}
+        run = lambda self, key: {"status": "completed", "events": [{"name": "expect", "step": "1", "passed": runs[key.variant, key.index]}]}
     monkeypatch.setattr(simulate, "run", lambda inst, seeds, **k: {
         "bgp": {"runs": seeds, "converged": seeds, "failed": [3]}, "obgp-rp": {"runs": seeds, "converged": seeds, "failed": [0]}})
     monkeypatch.setattr("lab.analysis.run_summary", lambda d: {})
@@ -293,6 +294,46 @@ def test_compare_names_only_what_the_simulator_rules_out(monkeypatch):
     by = {r["variant"]: r for r in rows}
     assert by["bgp"]["lab_failed"] == [1] and by["bgp"]["deviations"] == []  # both happen, with the order of messages
     assert by["obgp"]["deviations"] == ["check 1 failed in 2 of 2 runs, the simulator never fails it"]
+
+
+PARALLEL = {"name": "s", "steps": [{"announce": {"rate": 1, "for": 1, "lifetime": 86400}}, {"until_stable": {"timeout": 60}},
+                                   {"parallel": [{"expect": {"router": "all"}}, {"wait": 1}, {"expect": {"router": "all", "prefixes": "none"}}]},
+                                   {"repeat": {"times": 2, "every": 5, "steps": [{"expect": {"router": "all"}}]}}]}
+
+
+def test_a_check_is_matched_by_its_step_not_by_its_place_in_time(monkeypatch):
+    from lab import analysis
+    from lab.config import Experiment
+    from lab.results import RunKey
+
+    t, _ = simulate.from_instance(EXPORT_FILTER)
+    sc = scenarios.parse(PARALLEL)
+    assert simulate.expect_keys(sc) == ["2.0#0", "2.2#0", "3.repeat.0#0", "3.repeat.0#1"]
+    # The translation names the step of each check as the lab does.
+    inst = simulate.to_instance(t, sc)
+    assert [e["step"] for e in inst["events"] if e["kind"] == "expect"] == simulate.expect_keys(sc)
+    # The lab ends the second check of the parallel step first: it still is the second, by its step.
+    events = [{"name": "expect", "step": "2.2", "t": 5.0, "passed": False}, {"name": "expect", "step": "2.0", "t": 5.2, "passed": True},
+              {"name": "expect", "step": "3.repeat.0", "t": 6, "passed": True}, {"name": "expect", "step": "3.repeat.0", "t": 11, "passed": False}]
+    assert [k for _, k in analysis.expect_keys(events)] == ["2.2#0", "2.0#0", "3.repeat.0#0", "3.repeat.0#1"]
+    monkeypatch.setattr(simulate.topologies, "load", lambda name: t)
+    e = Experiment.model_validate({"name": "x", "topologies": ["t"], "scenarios": ["s"], "runs": 1, "variants": [{"name": "obgp", "mode": "obgp-rp"}]})
+    monkeypatch.setattr(type(e), "scenario_of", lambda self, case: sc)
+
+    class Fake:
+        experiment = e
+        meta = {"predictions": {"t|s": {"obgp-rp": {"runs": 20, "converged": 20, "settled": 20, "failed": [0, 20, 0, 20]}}}}
+        keys = lambda self: [RunKey("t", "obgp", "s", 1)]
+        is_done = lambda self, key: True
+        run = lambda self, key: {"status": "failed", "events": events}
+    monkeypatch.setattr(simulate, "run", lambda inst, seeds, **k: {"obgp-rp": {"runs": seeds, "converged": seeds, "failed": [0, seeds, 0, seeds]}})
+    monkeypatch.setattr("lab.analysis.run_summary", lambda d: {})
+    [row], _ = simulate.compare(Fake(), seeds=10)
+    assert row["lab_failed"] == [0, 1, 0, 1] and row["deviations"] == []
+    from lab import problems
+    failed = analysis.failed_checks(Fake())
+    assert [(c["key"], problems.check_predicted(Fake(), RunKey("t", "obgp", "s", 1), c["key"])) for c in failed] == [
+        ("2.2#0", True), ("3.repeat.0#1", True)]
 
 
 def test_a_route_server_translates_both_ways():
@@ -345,8 +386,10 @@ def test_predictions_sum_the_parts_per_mode_and_say_where_the_simulator_cannot_p
     # The way to rest is summed as well: in how many orders a mode looped on the way.
     # A summary without settled, from before steps were bounded, counts as settled where it converged.
     assert out["bad-gadget|fill-60"] == {"bgp": {"converged": 2, "settled": 2, "runs": 20, "findings": {"transient-loop": 6}},
-                                         "obgp-rp": {"converged": 20, "settled": 20, "runs": 20}, "obgp-rp-pn": {"converged": 20, "settled": 20, "runs": 20}}
-    assert out["noble-eu|fill-60"] == {"unsupported": ["too large here"]}
+                                         "obgp-rp": {"converged": 20, "settled": 20, "runs": 20}, "obgp-rp-pn": {"converged": 20, "settled": 20, "runs": 20},
+                                         # A hybrid needs the routers its topology marks: the pure modes play without.
+                                         "hybrid-rp": {"unsupported": ["variant hybrid-rp: the topology marks no router to run OBGP in hybrids"]}}
+    assert out["noble-eu|fill-60"] == {"unsupported": ["too large here"], "hybrid-rp": {"unsupported": ["too large here"]}}
     assert calls == [True, True]  # one pass per part, both tables at once
 
 
@@ -401,17 +444,25 @@ def test_a_step_comes_once_quiet_after_until_stable_and_at_any_point_else():
     assert moments[:3] == [("down", "before"), ("expect", "quiet"), ("up", "any")]
     assert events[1].get("bounded") and not events[2].get("bounded")  # until_stable waits at most its timeout
     fulda = list(t["routers"]).index("fulda")
-    restart = [(e["kind"], e["from"], e["to"]) for e in events[4:]]
-    # The link to toronto is down already: the restart takes the other two down and back up, that one stays down.
+    restart = [(e["kind"], e["from"], e.get("to"), e.get("value"), e.get("group")) for e in events[4:]]
+    # A restart starts with a fresh table and takes all sessions down at once. The link to toronto is down
+    # already: the other two come back, in any order, that one stays down.
     toronto = list(t["routers"]).index("toronto")
-    assert [k for k, _, _ in restart] == ["down"] * 2 + ["up"] * 2 and all(fulda in (a, b) and toronto not in (a, b) for _, a, b in restart)
+    assert restart[0] == ("restart", fulda, None, 0, None)
+    ups = restart[1:]
+    assert [k for k, *_ in ups] == ["up"] * 2 and all(fulda in (a, b) and toronto not in (a, b) for _, a, b, _, _ in ups)
+    assert ups[0][4] and ups[0][4] == ups[1][4]
 
 
 def test_up_restores_what_is_down_and_a_repetition_hits_the_same_link():
     _, events = _played("lab-smoke", "smoke-all@rate=1")
     downs = [(e["from"], e["to"]) for e in events if e["kind"] == "down"]
     ups = [(e["from"], e["to"]) for e in events if e["kind"] == "up"]
-    assert sorted(downs) == sorted(ups)  # everything that went down came back
+    # A restart takes its sessions down itself, they come back right after it.
+    after = {events[i + 1]["group"] for i, e in enumerate(events[:-1]) if e["kind"] == "restart"}
+    back = [(e["from"], e["to"]) for e in events if e["kind"] == "up" and e.get("group") in after]
+    assert len(back) == 3
+    assert sorted(downs + back) == sorted(ups)  # everything that went down came back
     *_, first, second = downs  # the two repetitions of the random cut
     assert first == second
 
@@ -441,22 +492,35 @@ def test_a_step_in_either_form_has_the_type_of_its_kind():
     assert type(scenarios.Step.model_validate({"kind": "up", "args": {"link": "a-b"}}).args) is scenarios.Up
 
 
-def test_a_silent_failure_with_graceful_restart_has_no_prediction(monkeypatch):
-    from lab.config import Experiment
+def test_graceful_restart_keeps_stale_routes_on_both_sides(monkeypatch):
+    from lab.config import Bgp
 
     t, _ = simulate.from_instance(EXPORT_FILTER)
-    monkeypatch.setattr(simulate.topologies, "load", lambda name: t)
-    monkeypatch.setattr(simulate, "run", lambda inst, seeds, **k: {"bgp": {"runs": seeds, "converged": seeds, "findings": {}}})
-    steps = {"session": [{"announce": {"rate": 1, "for": 1}}, {"down": {"link": "r0-r1"}}],
-             "cut": [{"announce": {"rate": 1, "for": 1}}, {"down": {"link": "r0-r1", "mode": "cut"}}]}
-    monkeypatch.setattr(Experiment, "scenario_of", lambda self, case: scenarios.parse({"name": case, "steps": steps[case]}))
-    for graceful in (False, True):
-        e = Experiment.model_validate({"name": "x", "topologies": ["t"], "scenarios": ["session", "cut"], "runs": 1,
-                                       "bgp": {"graceful_restart": graceful}, "variants": [{"name": "bgp", "mode": "bgp"}]})
-        out = simulate.predictions(e, seeds=2)
-        assert "unsupported" not in out["t|session"]  # closed with a notification: no stale routes
-        assert ("unsupported" in out["t|cut"]) == graceful  # the hold timer ends it: gobgpd keeps the routes
-
+    gr = Bgp(graceful_restart=True, hold_time=9, keepalive=3)
+    play = lambda steps, bgp=gr: simulate.to_instance(t, scenarios.parse({"name": "x", "steps": steps}), bgp=bgp)
+    announce = {"announce": {"rate": 1, "for": 1, "lifetime": 86400}}
+    stable = {"until_stable": {"timeout": 10}}
+    # A graceful restart: one event, the sessions back at any point after.
+    inst = play([announce, stable, {"restart": {"router": "r1", "graceful": True}}])
+    assert inst["graceful_restart"] and [(e["kind"], e.get("value")) for e in inst["events"]] == [("restart", 1), ("up", None), ("up", None)]
+    assert len({e.get("group") for e in inst["events"][1:]} - {None}) == 1  # the sessions come back in any order
+    with pytest.raises(simulate.Unsupported, match="without graceful restart"):
+        play([announce, {"restart": {"router": "r1", "graceful": True}}], Bgp())
+    # A silent failure keeps the routes stale, a notification does not: without graceful restart nothing changes.
+    for mode, value in (("session", None), ("cut", 1), ("oneway", 2)):
+        steps = [announce, stable, {"down": {"link": "r0-r1", "mode": mode}}, stable, {"up": {"link": "r0-r1"}}]
+        assert [e.get("value") for e in play(steps)["events"] if e["kind"] == "down"] == [value]
+        assert [e.get("value") for e in play(steps, None)["events"] if e["kind"] == "down"] == [None]
+    # Never back: the stale routes expire before a step that surely starts later, max(30, hold) after the hold time.
+    late = [announce, stable, {"down": {"link": "r0-r1", "mode": "cut"}}, {"wait": 60}, {"expect": {"router": "r1"}}]
+    assert [e["kind"] for e in play(late)["events"]] == ["down", "expire", "expect"]
+    with pytest.raises(simulate.Unsupported, match="may expire before or after"):
+        play([*late[:3], {"wait": 35}, {"expect": {"router": "r1"}}])
+    with pytest.raises(simulate.Unsupported, match="expire after the last step"):
+        play(late[:3])
+    # Back soon: the End-of-RIB removes what is not sent again, no expiry.
+    soon = play([announce, stable, {"down": {"link": "r0-r1", "mode": "cut"}}, {"wait": 5}, {"up": {"link": "r0-r1"}}])
+    assert [e["kind"] for e in soon["events"]] == ["down", "up"]
 
 def test_a_result_that_does_not_run_is_predicted_again(monkeypatch):
     calls = []
@@ -530,9 +594,43 @@ def test_simulator_and_lab_agree_only_in_never_sometimes_and_always(monkeypatch)
     assert cells["bgp"]["simulator"] == "sometimes" and cells["bgp"]["lab"] == "sometimes" and cells["bgp"]["signal"] is None
     assert cells["bgp"]["endless"] == 12 and cells["bgp"]["interval"] == [round(x, 4) for x in analysis.clopper_pearson(2, 3)]
     assert cells["obgp-rp"]["simulator"] == "never" and cells["obgp-rp"]["signal"] == "the lab found no rest where the simulator always rested"
-    assert cells["hybrid-rp"]["simulator"] is None and "mixed mode" in cells["hybrid-rp"]["why_not"]
+    assert cells["hybrid-rp"]["simulator"] is None and cells["hybrid-rp"]["why_not"] == "no prediction"
     assert found["per_variant"]["bgp"]["answers"] == {"simulator sometimes, lab sometimes": 1}
     assert found["per_variant"]["obgp-rp"]["signals"] == 1 and found["per_variant"]["hybrid-rp"]["not_translated"] == 1
+
+
+def test_simulator_and_lab_agree_on_deviations_at_rest(monkeypatch):
+    from lab import analysis
+    from lab.config import Experiment
+    from lab.results import RunKey
+
+    e = Experiment.model_validate({"name": "x", "topologies": ["t"], "scenarios": ["s"], "runs": 3,
+                                   "variants": [{"name": "bgp", "mode": "bgp"}, {"name": "obgp-hp", "mode": "obgp-hp"}]})
+    keys = [RunKey("t", v, "s", i) for v in ("bgp", "obgp-hp") for i in (1, 2, 3)]
+    meta = {"predictions": {"t|s": {"bgp": {"converged": 20, "runs": 20, "findings": {}},
+                                    "obgp-hp": {"converged": 20, "runs": 20, "findings": {"unreachable": 15, "leaked": 20}}}}}
+    final = lambda held, loops=0: {"name": "final", "t": 9, "stable": True, "prefixes": 1, "held": held, "loops": loops,
+                                   "holed": [], "valleys": {"r1": 1}}
+    runs = {k: {"status": "completed", "events": [final({"r1": 1, "r2": 1})]} for k in keys}
+    runs[RunKey("t", "obgp-hp", "s", 3)]["events"] = [final({"r1": 1, "r2": 1}, loops=1)]  # a loop the simulator never saw
+    dataset = type("D", (), {"experiment": e, "meta": meta, "keys": lambda self: keys, "is_done": lambda self, k: True,
+                             "run": lambda self, k: runs[k]})()
+    monkeypatch.setattr(analysis, "run_summary", lambda d: {str(k): {"oscillates": 0, "settle_s": 1.0} for k in keys})
+    monkeypatch.setattr(simulate.topologies, "load", lambda name: {"routers": {"r1": {"leak": True}}})
+    cells = {c["variant"]: c for c in simulate.agreement(dataset)["cells"]}
+    lost = cells["obgp-hp"]["deviations"]["unreachable"]
+    # 15 of 20 orders lose the route, no run does: sometimes and never, no signal, as shares do not compare.
+    assert (lost["simulator"], lost["orders_with"], lost["lab"], lost["runs"], lost["signal"]) == ("sometimes", 15, "never", 3, None)
+    assert cells["obgp-hp"]["deviations"]["loop"]["signal"] == "the lab showed loop where the simulator never did"
+    assert cells["obgp-hp"]["deviations"]["leaked"]["simulator"] == "always" and cells["obgp-hp"]["deviations"]["leaked"]["signal"] is None
+    assert cells["bgp"]["deviations"]["unreachable"]["lab"] is None  # BGP is the reference, not compared with itself
+    # Without leakers the simulator does not look for leaks: no answer, nothing compared.
+    monkeypatch.setattr(simulate.topologies, "load", lambda name: {"routers": {"r1": {}}})
+    assert simulate.agreement(dataset)["cells"][0]["deviations"]["leaked"]["simulator"] is None
+    # Without BGP at rest in the run of the same seed a lost route is not judged.
+    runs[RunKey("t", "bgp", "s", 1)]["events"] = [{**final({"r1": 1, "r2": 1}), "stable": False}]
+    cells = {c["variant"]: c for c in simulate.agreement(dataset)["cells"]}
+    assert cells["obgp-hp"]["deviations"]["unreachable"]["runs"] == 2
 
 
 def test_the_exact_interval_of_a_share():
@@ -561,3 +659,126 @@ def test_a_search_takes_every_cpu_the_lab_may_use(monkeypatch, tmp_path):
     monkeypatch.setattr(cluster, "free", lambda: (_ for _ in ()).throw(OSError("no host")))
     simulate.search(routers=3, seeds=2)
     assert "-workers" not in asked[-1]  # the simulator's own default
+
+
+def test_a_mixed_variant_runs_the_modes_the_runner_deploys():
+    from lab import modes
+    from lab.config import Experiment
+
+    t = topology.load("adversarial")
+    e = Experiment.model_validate({"name": "x", "topologies": ["adversarial"], "scenarios": ["lifecycle"], "seed": 3, "variants": [
+        {"name": "h", "mode": "hybrid-sp"}, {"name": "r", "mode": "random-rp", "share": 0.5},
+        {"name": "r-pn", "mode": "random-rp", "share": 0.5, "per_neighbor": True}, {"name": "p", "mode": "random-paper", "share": 0.25, "per_neighbor": True},
+        {"name": "none", "mode": "random-hp", "share": 0.01, "per_neighbor": True}]})
+    h, r, r_pn, p, none = e.variants
+    assert [simulate.sim_mode(v) for v in e.variants] == ["hybrid-sp", "random-rp-50", "random-rp-pn-50", "random-paper-pn-25", "random-hp-pn-1"]
+    names = list(t["routers"])
+    # As the runner: modes.assign with the run's seed, experiment seed * 1000 + run index.
+    for index in (1, 2):
+        drawn = modes.assign("random-rp", t["routers"], 0.5, 3000 + index)
+        assert simulate.router_modes(r, t, 3000 + index) == [drawn[n] for n in names]
+        # With tables per neighbor the OBGP routers get them, the BGP routers keep one table, as Cluster.deploy.
+        assert simulate.router_modes(r_pn, t, 3000 + index) == [{"obgp-rp": "obgp-rp-pn", "bgp": "bgp"}[drawn[n]] for n in names]
+    assert simulate.router_modes(h, t, 1) == ["obgp-sp" if t["routers"][n].get("obgp") else "bgp" for n in names]
+    assert "obgp-paper-pn" not in simulate.router_modes(p, t, 3001)  # the paper's OBGP keeps one table
+    assert set(simulate.router_modes(none, t, 3001)) == {"bgp-pn"}  # all BGP with tables: NS-BGP
+
+
+def test_predictions_of_a_random_variant_are_per_run_and_the_pure_modes_per_cell(monkeypatch):
+    from lab import problems
+    from lab.config import Experiment
+    from lab.results import RunKey
+
+    t = topology.load("adversarial")
+    monkeypatch.setattr(simulate.topologies, "load", lambda name: t)
+    e = Experiment.model_validate({"name": "x", "topologies": ["adversarial"], "scenarios": ["lifecycle"], "runs": 2, "variants": [
+        {"name": "bgp", "mode": "bgp"}, {"name": "hybrid-rp", "mode": "hybrid-rp"}, {"name": "random-rp", "mode": "random-rp", "share": 0.5}]})
+    monkeypatch.setattr(simulate, "to_instances", lambda topology, sc, seed, index, bgp=None: [("", {"routers": len(t["routers"])})])
+    played = []
+
+    def run(inst, seeds, modes=None, **k):
+        played.append((modes, inst.get("mixed")))
+        return {m: {"converged": seeds, "runs": seeds} for m in (modes or ["bgp", "obgp-rp"])}
+    monkeypatch.setattr(simulate, "run", run)
+    out = simulate.predictions(e, seeds=4, workers=1)
+    assert set(out) == {"adversarial|lifecycle", "adversarial|lifecycle#1", "adversarial|lifecycle#2"}
+    assert set(out["adversarial|lifecycle"]) == {"bgp", "hybrid-rp"} and set(out["adversarial|lifecycle#1"]) == {"random-rp-50"}
+    mixed = [m for modes, m in played if modes == ["random-rp-50"]]
+    assert [m["random-rp-50"] for m in mixed] == [simulate.router_modes(e.variants[2], t, e.seed * 1000 + i) for i in (1, 2)]
+    dataset = type("D", (), {"experiment": e, "meta": {"predictions": out}})()
+    for v in ("bgp", "hybrid-rp", "random-rp"):
+        assert problems.prediction(dataset, RunKey("adversarial", v, "lifecycle", 2)) == {"converged": 4, "settled": 4, "runs": 4}
+    # Played again for a run that contradicts it: only that run's key and mode.
+    played.clear()
+    again = simulate.predictions(e, seeds=4, workers=1, only={"adversarial|lifecycle#2": {"random-rp-50"}})
+    assert set(again) == {"adversarial|lifecycle#2"} and [m for m, _ in played] == [["random-rp-50"]]
+
+
+def test_an_mrai_plays_as_coalescing_of_the_updates_that_wait(monkeypatch):
+    from lab.config import Experiment
+
+    t, _ = simulate.from_instance(EXPORT_FILTER)
+    monkeypatch.setattr(simulate.topologies, "load", lambda name: t)
+    monkeypatch.setattr(Experiment, "scenario_of", lambda self, case: scenarios.parse({"name": case, "steps": [{"announce": {"rate": 1, "for": 1}}]}))
+    for mrai in (0, 2):
+        played = []
+        monkeypatch.setattr(simulate, "run", lambda inst, seeds, **k: played.append(inst) or {"bgp": {"runs": seeds, "converged": seeds}})
+        e = Experiment.model_validate({"name": "x", "topologies": ["t"], "scenarios": ["s"], "runs": 1, "bgp": {"mrai": mrai},
+                                       "variants": [{"name": "bgp", "mode": "bgp"}]})
+        simulate.predictions(e, seeds=2)
+        assert [inst.get("mrai", False) for inst in played] == [bool(mrai)]
+
+
+@pytest.mark.skipif(not shutil.which("go"), reason="needs go")
+def test_the_sessions_after_a_restart_come_back_in_any_order(lab_files):
+    # adversarial, lifecycle: after r's restart without grace, p2 gets nothing where p1's session comes back
+    # first, as in the lab's runs. In a fixed order of the sessions the simulator hardly saw it.
+    from lab.config import DIRECTORY, Experiment, file_of
+
+    e = Experiment.load(file_of(DIRECTORY, "semantics-adversarial"))
+    [(_, inst)] = simulate.to_instances(topology.load("adversarial"), scenarios.load("lifecycle"), e.seed, 1, e.bgp)
+    out = simulate.run(inst, seeds=40, modes=["obgp-rp"])
+    assert 0 < out["obgp-rp"]["failed"][-1] < 40
+    assert out["bgp"]["failed"][-1] == 0
+
+
+def test_the_steps_of_a_parallel_come_in_any_order_after_its_moment():
+    # The lab starts them at once: one at the moment of the step, the others at any point among its messages.
+    from lab import scenario as sc_mod
+    from lab import simulate as sim
+
+    topology = {"roles": {"origins": ["a"]},
+                "routers": {"a": {"asn": 1, "neighbors": [{"name": "c"}, {"name": "b"}]}, "b": {"asn": 2, "neighbors": [{"name": "a"}, {"name": "c"}]},
+                            "c": {"asn": 3, "neighbors": [{"name": "a"}, {"name": "b"}]}}}
+    index = {r: i for i, r in enumerate(topology["routers"])}
+    steps = lambda *inner: sc_mod.parse({"name": "t", "steps": [{"announce": {"rate": 1, "for": 1}}, {"until_stable": {"timeout": 10}},
+                                                               {"parallel": list(inner)}]})
+    acts = [e for e in sim._events(steps({"down": {"link": "a-b"}}, {"down": {"link": "b-c"}}), topology, index, "a")[0] if e["kind"] == "down"]
+    assert [bool(e.get("bounded")) for e in acts] == [True, False] and acts[1]["any"]
+    assert acts[0]["group"] == acts[1]["group"]
+    checks = [e for e in sim._events(steps({"expect": {"router": "b"}}, {"expect": {"router": "c"}}), topology, index, "a")[0] if e["kind"] == "expect"]
+    assert all(e.get("bounded") and "group" not in e for e in checks)  # checks only: at rest, as before
+
+
+def test_an_agent_is_told_when_predicting_again_goes_on(monkeypatch):
+    import threading
+
+    from lab.web import agent
+
+    release, calls = threading.Event(), []
+    monkeypatch.setattr(agent, "_result", lambda name: name)
+    monkeypatch.setattr(agent, "verdict", lambda d: {"passed": True})
+    monkeypatch.setattr(agent.tokens, "record", lambda text: None)
+    monkeypatch.setattr(simulate, "predict_again", lambda d: calls.append(d) or release.wait(5))
+    monkeypatch.setattr(agent, "PREDICT_AGAIN_WAIT_S", 0.05)
+    assert agent.predict_again("r")["state"] == "predicting"
+    assert agent.predict_again("r")["state"] == "predicting" and calls == ["r"]  # the same answer, not a second
+    release.set()
+    monkeypatch.setattr(agent, "PREDICT_AGAIN_WAIT_S", 5)
+    assert agent.predict_again("r") == {"result": "r", "verdict": {"passed": True}}  # the answer under way, or a new one
+    for thread in list(agent._predicting.values()):
+        thread.join(5)
+    assert agent.predict_again("r") == {"result": "r", "verdict": {"passed": True}} and len(calls) >= 2
+    monkeypatch.setattr(simulate, "predict_again", lambda d: (_ for _ in ()).throw(ValueError("r runs")))
+    with pytest.raises(ValueError, match="r runs"):
+        agent.predict_again("r")

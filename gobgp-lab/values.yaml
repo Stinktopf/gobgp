@@ -4,7 +4,11 @@
 image:
   pullPolicy: Never
 routers: {}
-# Memory per router, in MiB: the request reserves it, so that routers that
-# do not fit stay pending instead of overloading the node, and the limit
-# ends a single router that takes too much. The lab sets both.
+# Memory per router, in MiB: the limit ends a single router that takes too
+# much. The node reports the host's memory, so the request holds no router
+# back: the lab checks before a run that the routers fit. The lab sets both.
 memory: {}
+# Seconds between two readiness probes, longer among many routers. The lab sets it.
+probe: {}
+# The routers whose pods a deploy creates, all when empty.
+deploy: []

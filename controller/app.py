@@ -14,7 +14,6 @@ import math
 import os
 import random
 import signal
-import socket
 import subprocess
 import threading
 import time
@@ -35,7 +34,6 @@ POD_IP = os.environ["POD_IP"]
 ROUTER_NAME = os.environ["ROUTER_NAME"]
 ASN = int(os.environ["ASN"])
 ROUTER_ID = os.environ["ROUTER_ID"]
-NAMESPACE = os.environ["POD_NAMESPACE"]
 NEIGHBORS = json.loads(os.environ["NEIGHBORS_JSON"])
 # Set by the chart from the experiment; a missing one fails at the start.
 SEED = os.environ["LAB_SEED"]
@@ -47,11 +45,11 @@ LEAK = os.environ.get("LEAK") == "true"
 # A member of a confederation: ASN is its member AS, the world sees CONFEDERATION.
 CONFEDERATION = int(os.environ["CONFEDERATION"]) if os.environ.get("CONFEDERATION") else None
 CONFED_MEMBERS = json.loads(os.environ.get("CONFED_MEMBERS") or "[]")
-# NS-BGP: a table per eBGP neighbor with OBGP off. The router sends packets
-# from a neighbor on the route it sends that neighbor, so the lab follows
-# those too, see lab/forwarding.py.
-NS_BGP = (os.environ.get("GOBGP_OPERA_EXPORT", "").lower() == "neighbor"
-          and os.environ.get("GOBGP_OPERA_ENABLED", "").lower() not in ("1", "true"))
+# A table per eBGP neighbor, NS-BGP with OBGP off, OBGP per neighbor with it
+# on. The router sends packets from a neighbor on the route it sends that
+# neighbor, so the lab follows those too, see lab/forwarding.py.
+INGRESS = os.environ.get("GOBGP_OPERA_EXPORT", "").lower() == "neighbor"
+PROCS = int(os.environ.get("GOBGPD_PROCS") or 0)  # threads that run Go code in gobgpd, 0 for one per CPU
 
 # Gao-Rexford: a neighbor's relation to this router gives the Local
 # Preference of its routes, unless the topology sets one, and a community
@@ -76,18 +74,28 @@ stub = gobgp_pb2_grpc.GoBgpServiceStub(grpc.insecure_channel(GOBGP_API))
 # gobgpd
 
 
-def resolve_neighbors() -> dict[str, str]:
-    """Waits until every neighbor service resolves and returns name -> IP."""
-    addresses: dict[str, str] = {}
-    while len(addresses) < len(NEIGHBORS):
-        for n in NEIGHBORS:
-            if n["name"] not in addresses:
-                try:
-                    addresses[n["name"]] = socket.gethostbyname(f"{n['name']}.{NAMESPACE}.svc")
-                except OSError:
-                    pass
-        time.sleep(1)
-    return addresses
+NEIGHBORS_FILE = "/var/lib/lab/neighbors.json"  # on a volume of the pod: a restarted container keeps the addresses
+told = threading.Event()  # set once the lab sent the addresses of the neighbors
+
+
+def await_neighbors() -> dict[str, str]:
+    """Waits until the lab sends the addresses of the neighbors and returns
+    name -> IP. The lab reads them from the pods once all run, so routers ask
+    no DNS and need no Service each. A restarted container takes those it was
+    sent before, from the pod's volume."""
+    if not NEIGHBORS:
+        return {}
+    try:
+        with open(NEIGHBORS_FILE) as f:
+            addresses = json.load(f)
+    except (OSError, ValueError):
+        addresses = None
+    with daemon.lock:
+        if not told.is_set() and isinstance(addresses, dict) and set(addresses) == {n["name"] for n in NEIGHBORS}:
+            daemon.addresses = addresses
+            told.set()
+    told.wait()
+    return daemon.addresses
 
 
 GOBGPD_NICE = 5  # gobgpd runs below the controller, which samples it
@@ -116,7 +124,7 @@ class Daemon:
         self.lock = threading.Lock()
 
     def boot(self) -> None:
-        self.addresses = resolve_neighbors()
+        self.addresses = await_neighbors()
         self.start()
         threading.Thread(target=self._watch, daemon=True).start()
 
@@ -135,9 +143,13 @@ class Daemon:
                 return
             self._write()
             flags = ["-r"] if graceful else []
+            if PROCS:
+                flags += ["--cpus", str(PROCS)]
             # Below the controller: on CPUs shared by many routers that
             # oscillate, the samples still come on time.
-            self.process = subprocess.Popen(["nice", "-n", str(GOBGPD_NICE), "gobgpd", "--api-hosts", GOBGP_API, "-f", GOBGP_CONFIG, *flags])
+            self.process = subprocess.Popen(["nice", "-n", str(GOBGPD_NICE), "gobgpd", "--api-hosts", GOBGP_API, "-f", GOBGP_CONFIG,
+                                             # Warnings only: a line per session change of hundreds of routers goes through the node's Docker.
+                                             "-l", "warn", *flags])
             self.started = time.time()
             self.generation += 1  # a new daemon: its next hops are told whole, see hops_changed
 
@@ -516,13 +528,33 @@ def heap_watch(rss_mb: float | None) -> None:
     threading.Thread(target=take, daemon=True).start()
 
 
+CPU: dict = {}  # the CPU profile asked for: seconds, taken (wall clock), profile (bytes) or error
+
+
+def cpu_profile(seconds: float) -> None:
+    """Takes one CPU profile of gobgpd over the next seconds, in a thread of
+    its own, so that it shows where a busy router spends its time. One per
+    run: a second request while one is taken or kept changes nothing."""
+    if CPU:
+        return
+    CPU["seconds"] = seconds
+
+    def take() -> None:
+        try:
+            with urllib.request.urlopen(f"http://localhost:6060/debug/pprof/profile?seconds={seconds:g}", timeout=seconds + 60) as r:
+                CPU.update(taken=time.time(), profile=r.read())
+        except OSError as e:
+            CPU["error"] = str(e)[:200]
+    threading.Thread(target=take, daemon=True).start()
+
+
 def memory() -> dict:
     """From the Prometheus metrics of gobgpd: the paths OBGP sets aside, the
     prefixes it knows and those blocked, a valid path set aside and no route, the paths
     received from all peers (the Adj-RIB-In), the resident memory, the heap
     in use, its objects and the CPU seconds so far. A daemon without OBGP's
     counts gives None for them."""
-    with urllib.request.urlopen(GOBGP_METRICS, timeout=1) as response:
+    with urllib.request.urlopen(GOBGP_METRICS, timeout=30) as response:
         text = response.read().decode()
     out = {"suppressed": None, "known": None, "blocked": None, "adj_in": 0, "rss_mb": None, "heap_mb": None, "heap_objects": None, "cpu_s": None}
     for line in text.splitlines():
@@ -544,6 +576,20 @@ def memory() -> dict:
         elif name == "process_cpu_seconds_total":
             out["cpu_s"] = round(float(value), 2)
     return out
+
+
+def read_memory(cache: dict) -> None:
+    """The metrics of gobgpd into the cache, and how long reading them took. Busy, the last values stand:
+    memory changes slowly."""
+    started = time.monotonic()
+    try:
+        found = memory()
+        heap_watch(found.get("rss_mb"))
+        cache["memory"] = found
+    except OSError:
+        pass
+    finally:  # whatever ends the read, the next one may come
+        cache.update(memory_took=time.monotonic() - started, memory_running=False)
 
 
 def lengths(cache: dict, key: tuple) -> None:
@@ -571,14 +617,14 @@ def hops() -> dict[str, str]:
     route comes from and its next hop, "neighbor|next hop", "." for a prefix
     it announces itself. With NS-BGP each also with the first AS of the
     route, "neighbor|next hop|AS", and then per eBGP neighbor the route sent
-    to it, ";neighbor>..." each."""
+    to it, ";neighbor>..." each, and ";=a,b" for the neighbors sent the route it uses itself."""
     names, out = {ip: name for name, ip in daemon.addresses.items()}, {}
     only = [gobgp_pb2.TableLookupPrefix(prefix=p, type=gobgp_pb2.TableLookupPrefix.TYPE_EXACT) for p in WATCHED or []]
 
     def hop(route: dict) -> str:
         if route["from"] is None and not route["as_path"]:
             return "."
-        first = f"|{route['as_path'][0]}" if NS_BGP and route["as_path"] else ""
+        first = f"|{route['as_path'][0]}" if INGRESS and route["as_path"] else ""
         return f"{route['from'] or ''}|{route['next_hop'] or ''}{first}"
 
     held = {}
@@ -588,10 +634,14 @@ def hops() -> dict[str, str]:
             continue
         held[r.destination.prefix] = r.destination.paths
         out[r.destination.prefix] = hop(route_of(path, names))
-    if NS_BGP:
+    if INGRESS:
         for prefix, sent in ingress(only, held, names).items():
             if prefix in out:
-                out[prefix] += "".join(f";{n}>{hop(route)}" for n, route in sorted(sent.items()))
+                # Most neighbors get the route the router uses itself: those are named once, after "=", so that a
+                # large router with a hundred neighbors writes a few names per prefix, not a hundred routes.
+                own, routes = out[prefix], {n: hop(route) for n, route in sorted(sent.items())}
+                same = [n for n, v in routes.items() if v == own]
+                out[prefix] += "".join(f";{n}>{v}" for n, v in routes.items() if v != own) + (f";={','.join(same)}" if same else "")
     return out
 
 
@@ -606,10 +656,12 @@ def route_of(path, names: dict) -> dict:
 
 
 def ingress(only: list, held: dict, names: dict) -> dict[str, dict[str, dict]]:
-    """NS-BGP: per prefix and eBGP neighbor the route the router sends it, as
-    it holds it. The Adj-RIB-Out names where a route came from but carries
-    the next hop and AS path as sent, so they come from the held path of that
-    neighbor, one each without Add-Path."""
+    """With a table per neighbor: per prefix and eBGP neighbor the route the
+    router sends it, as it holds it. The Adj-RIB-Out names where a route came
+    from but carries the next hop and AS path as sent, so they come from the
+    held path of that neighbor, one each without Add-Path. OBGP may send a
+    path it only set aside in its main table: then from the path as sent,
+    its own AS taken off, towards the neighbor it came from."""
     out: dict[str, dict[str, dict]] = {}
     for n in NEIGHBORS:
         if internal(n) or n["name"] not in daemon.addresses:
@@ -622,6 +674,11 @@ def ingress(only: list, held: dict, names: dict) -> dict[str, dict[str, dict]]:
             own = next((p for p in held.get(r.destination.prefix, []) if p.neighbor_ip == sent.neighbor_ip and not p.is_withdraw), None)
             if own is not None:
                 out.setdefault(r.destination.prefix, {})[n["name"]] = route_of(own, names)
+            elif sent.neighbor_ip:
+                route = route_of(sent, names)
+                while route["as_path"] and route["as_path"][0] == ASN:
+                    route["as_path"].pop(0)
+                out.setdefault(r.destination.prefix, {})[n["name"]] = route | {"next_hop": sent.neighbor_ip}
     return out
 
 
@@ -660,10 +717,14 @@ def hops_changed(cache: dict, table, key: tuple) -> str:
     return "~" if last and not current else " ".join(changed)
 
 
+LENGTHS_LARGE = 20_000  # paths of a table whose lengths are read only once it held still
+LENGTHS_STILL_S = 3
+
+
 def sample(cache: dict) -> dict:
     """The counters of gobgpd. Path lengths are recomputed apart when the
-    table changed, at most once a second or, on large tables, every five
-    times the time they took: they read every path. Once the table holds
+    table changed, at most once a second and every five times the time they
+    took, on large tables once the table held still: they read every path. Once the table holds
     still, they are exact again. The memory is read when the table changed
     or once a second."""
     table = stub.GetTable(gobgp_pb2.GetTableRequest(table_type=GLOBAL, family=IPV4), timeout=5)
@@ -676,29 +737,38 @@ def sample(cache: dict) -> dict:
             down.append(name)
     rx, tx = sum(v[0] for v in by_peer.values()), sum(v[1] for v in by_peer.values())
     key = (table.num_destination, table.num_path, rx)
+    now = time.monotonic()
+    if cache.get("seen") != key:
+        cache.update(seen=key, seen_at=now)
+    # A large table is read once it held still: read while routes change, its paths took the CPU and the
+    # lock of Python the samples need, and the largest routers sampled at a fifth of their rate. Until
+    # then its lengths are unknown, not those of an older table.
+    large = table.num_path > LENGTHS_LARGE
+    cache.setdefault("lengths", dict.fromkeys(["path_len_min", "path_len_avg", "path_len_max"], 0))
     every = max(1.0, 5 * cache.get("lengths_took", 0))
-    if cache.get("key") != key and not cache.get("lengths_running") and time.monotonic() - cache.get("lengths_at", -every) >= every:
-        cache.update(lengths_running=True, lengths_at=time.monotonic())
-        cache.setdefault("lengths", dict.fromkeys(["path_len_min", "path_len_avg", "path_len_max"], 0))
+    due = now - cache["seen_at"] >= LENGTHS_STILL_S if large else now - cache.get("lengths_at", -every) >= every
+    if cache.get("key") != key and not cache.get("lengths_running") and due:
+        cache.update(lengths_running=True, lengths_at=now)
         threading.Thread(target=lengths, args=(cache, key), daemon=True).start()
-    if cache.get("memory_key") != key or time.monotonic() - cache.get("memory_at", 0) >= 1:
-        try:
-            cache["memory"] = memory()
-            heap_watch(cache["memory"].get("rss_mb"))
-        except OSError:  # busy: the last values stand, memory changes slowly
-            cache.setdefault("memory", dict.fromkeys(["suppressed", "known", "blocked", "adj_in", "rss_mb", "heap_mb", "heap_objects", "cpu_s"]))
-        cache.update(memory_key=key, memory_at=time.monotonic())
+    # The metrics of gobgpd apart as well, when the table changed or once a second, and at most every five
+    # times what reading them took: read in line, a slow scrape held up the sample, as the path lengths did.
+    cache.setdefault("memory", dict.fromkeys(["suppressed", "known", "blocked", "adj_in", "rss_mb", "heap_mb", "heap_objects", "cpu_s"]))
+    often = max(1.0, 5 * cache.get("memory_took", 0))
+    if not cache.get("memory_running") and (cache.get("memory_key") != key or now - cache.get("memory_at", -1.0) >= 1) \
+            and now - cache.get("memory_at", -often) >= often:
+        cache.update(memory_running=True, memory_key=key, memory_at=now)
+        threading.Thread(target=read_memory, args=(cache,), daemon=True).start()
     # The next hops that changed, on small tables only: a loop on the way
     # starts with a change of a route. Empty means unchanged.
     # With NS-BGP a route sent to a neighbor changes also when the router
     # sends without receiving, as when a session comes up: read then too, or
     # the analysis would see a black hole until the next read, up to 5 s on.
-    changed_hops = hops_changed(cache, table, (*key, tx) if NS_BGP else key)
+    changed_hops = hops_changed(cache, table, (*key, tx) if INGRESS else key)
     return {
         "destinations": table.num_destination,
         "paths": table.num_path,
         "hops": changed_hops,
-        **cache["lengths"],
+        **(cache["lengths"] if not large or cache.get("key") == key else dict.fromkeys(cache["lengths"])),
         **cache["memory"],
         "updates_rx": rx,
         "updates_tx": tx,
@@ -1040,6 +1110,34 @@ def ready(response: Response):
     return {"established": established, "neighbors": len(NEIGHBORS)}
 
 
+class NeighborsRequest(BaseModel):
+    addresses: dict[str, str]
+
+
+@app.post("/neighbors/addresses", summary="The addresses of the neighbors, which the lab sends once all pods run. gobgpd starts then")
+def neighbor_addresses(request: NeighborsRequest):
+    names = {n["name"] for n in NEIGHBORS}
+    if set(request.addresses) != names:
+        raise HTTPException(400, f"the addresses of exactly these neighbors are needed: {', '.join(sorted(names)) or 'none'}")
+    try:
+        for ip in request.addresses.values():
+            ipaddress.IPv4Address(ip)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    with daemon.lock:
+        if told.is_set():
+            if daemon.addresses != request.addresses:  # a neighbor's pod was replaced: its sessions need a new deploy
+                raise HTTPException(409, "the neighbors had other addresses before")
+            return {"told": True}
+        os.makedirs(os.path.dirname(NEIGHBORS_FILE), exist_ok=True)
+        with open(NEIGHBORS_FILE + ".tmp", "w") as f:
+            json.dump(request.addresses, f)
+        os.replace(NEIGHBORS_FILE + ".tmp", NEIGHBORS_FILE)
+        daemon.addresses = dict(request.addresses)
+        told.set()
+    return {"told": True}
+
+
 @app.get("/sessions", summary="Whether the session to each neighbor is established")
 def sessions():
     names = {ip: name for name, ip in daemon.addresses.items()}
@@ -1310,6 +1408,19 @@ def heap():
     return {"rss_mb": HEAP["rss_mb"], "taken": HEAP["taken"], "profile": base64.b64encode(HEAP["profile"]).decode()}
 
 
+@app.post("/cpu", summary="Starts one CPU profile of gobgpd over the seconds given")
+def cpu_start(body: dict):
+    cpu_profile(float(body.get("seconds", 30)))
+    return {"seconds": CPU.get("seconds")}
+
+
+@app.get("/cpu", summary="The CPU profile of gobgpd once taken, base64, else its state")
+def cpu():
+    if not CPU.get("profile"):
+        return {k: v for k, v in CPU.items() if k != "profile"}
+    return {"seconds": CPU["seconds"], "taken": CPU["taken"], "profile": base64.b64encode(CPU["profile"]).decode()}
+
+
 @app.get("/routes", summary="The best route to every prefix: the neighbor it comes from, its AS path and next hop, with NS-BGP also per eBGP neighbor the route sent to it")
 def routes():
     names = {ip: name for name, ip in daemon.addresses.items()}
@@ -1321,10 +1432,10 @@ def routes():
         if path is not None and not path.is_withdraw:
             held[r.destination.prefix] = paths
             out[r.destination.prefix] = route_of(path, names)
-    if NS_BGP:  # where packets from each eBGP neighbor go
-        for prefix, sent in ingress([], held, names).items():
-            if prefix in out:
-                out[prefix]["ingress"] = sent
+    if INGRESS:  # where packets from each eBGP neighbor go, none where it sends no route
+        sent = ingress([], held, names)
+        for prefix in out:
+            out[prefix]["ingress"] = sent.get(prefix, {})
     return out
 
 

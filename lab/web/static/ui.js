@@ -393,7 +393,7 @@ document.addEventListener("input", (e) => {
   let none = list?.querySelector("[data-no-matches]");
   if (!none && list && items.length) {
     const table = list.querySelector("tbody");
-    none = table ? UI.el("tr", "empty") : UI.el("p", "muted col-span-full py-10 text-center text-sm", "No matches.");
+    none = table ? UI.el("tr", "empty") : UI.el("p", "empty-state col-span-full", "No matches.");
     if (table) none.append(Object.assign(UI.el("td", "", "No matches."), { colSpan: 99 }));
     none.dataset.noMatches = "";
     (table || list).append(none);

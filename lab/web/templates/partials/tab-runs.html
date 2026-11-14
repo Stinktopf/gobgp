@@ -1,22 +1,30 @@
 {% from "macros.html" import run_dot, run_state, icon %}
+{# The legend names only the states this result has, each explained in its tooltip. #}
+{% set seen = namespace(states=[]) %}
+{% for topo in experiment.topologies %}{% for v in experiment.variants %}{% for s in experiment.cases_of(topo) %}{% for c in grid[topo][v.name][s] %}{% if c.state not in seen.states %}{% set seen.states = seen.states + [c.state] %}{% endif %}{% endfor %}{% endfor %}{% endfor %}{% endfor %}
+{% set legend = [
+  ("completed", "done", "No problem, and the simulator checked this mode and scenario"),
+  ("open", "done, no prediction", "No problem seen, but the simulator cannot play this mode or scenario"),
+  ("allowed", "predicted", "A failed check or broken property the simulator predicted for this mode"),
+  ("unjudged", "problem, no prediction", "A failed check or broken property where the simulator cannot play the mode or scenario"),
+  ("failed", "not predicted", "A failed check or broken property the simulator did not predict, or gave no answer for after an error or a timeout: rest, no loops, the reach of BGP"),
+  ("unmeasured", "not measured", "Completed without a rest value, see Problems"),
+  ("error", "error", "Broke off with an error"),
+  ("running", "running", "Running now"),
+  ("pending", "pending", "Waits its turn"),
+] %}
 <div class="mb-3 flex flex-wrap justify-end gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
-  <span class="flex items-center gap-1.5">{{ run_dot("completed") }} done</span>
-  <span class="flex items-center gap-1.5" data-tip="A failure the simulator predicted for this mode">{{ run_dot("allowed") }} failed as predicted</span>
-  <span class="flex items-center gap-1.5" data-tip="A check failed, or a property broke: rest, no loops, the reach of BGP">{{ run_dot("failed") }} failed</span>
-  <span class="flex items-center gap-1.5" data-tip="Completed without a rest value, see Problems">{{ run_dot("unmeasured") }} not measured</span>
-  <span class="flex items-center gap-1.5">{{ run_dot("error") }} error</span>
-  <span class="flex items-center gap-1.5">{{ run_dot("running") }} running</span>
-  <span class="flex items-center gap-1.5">{{ run_dot("pending") }} pending</span>
+  {% for state, label, tip in legend if state in seen.states %}<span class="flex items-center gap-1.5" data-tip="{{ tip }}">{{ run_dot(state) }} {{ label }}</span>{% endfor %}
 </div>
 {# Variants as rows, so that any number of them fits; a run opens in the replay. The first column stays while the rest scrolls. #}
 {% for topo in experiment.topologies %}
-{% if experiment.topologies | length > 1 %}<h2 class="section-title mt-6 mb-2 font-mono">{{ topo }}</h2>{% endif %}
+{% if experiment.topologies | length > 1 %}<h2 class="section-title mt-6 mb-2">Topology <span class="tag ml-1">{{ topo }}</span></h2>{% endif %}
 <div class="card mb-4 overflow-x-auto">
   <table class="sticky-first w-full text-sm">
     <thead class="border-b border-slate-100 dark:border-white/5">
       <tr class="text-left [&>th]:px-4 [&>th]:py-2.5 [&>th]:font-medium [&>th]:text-slate-500 dark:[&>th]:text-slate-400">
         <th>Variant</th>
-        {% for s in experiment.cases_of(topo) %}<th class="font-mono">{{ s }}</th>{% endfor %}
+        {% for s in experiment.cases_of(topo) %}<th class="font-mono whitespace-nowrap">{{ s }}</th>{% endfor %}
       </tr>
     </thead>
     <tbody class="divide-y divide-slate-100 dark:divide-white/5">
@@ -27,7 +35,7 @@
         {# On a touch screen the cell is the target: a tap lists its runs with what they tell (ui.js). #}
         <td class="pointer-coarse:h-11 pointer-coarse:cursor-pointer" data-runs="{{ v.name }}, {{ s }}"><span class="flex gap-1">
           {% for c in grid[topo][v.name][s] %}{% set r = c.state %}
-          {% if r in ("completed", "allowed", "failed", "unmeasured") %}<a href="?tab=replay&topology={{ topo }}&scenario={{ s }}&run={{ loop.index }}&variant={{ v.name }}" data-dense class="flex rounded-full hover:outline-2 hover:outline-offset-2 hover:outline-uoft-400" aria-label="Replay run {{ loop.index }}" data-tip="Run {{ loop.index }}, {{ run_state(r) }}{% for f in c.facts %}&#10;{{ f }}{% endfor %}">{{ run_dot(r) }}</a>
+          {% if r in ("completed", "allowed", "open", "unjudged", "failed", "unmeasured") %}<a href="?tab=replay&topology={{ topo }}&scenario={{ s }}&run={{ loop.index }}&variant={{ v.name }}" data-dense class="flex rounded-full hover:outline-2 hover:outline-offset-2 hover:outline-uoft-400" aria-label="Replay run {{ loop.index }}" data-tip="Run {{ loop.index }}, {{ run_state(r) }}{% for f in c.facts %}&#10;{{ f }}{% endfor %}">{{ run_dot(r) }}</a>
           {% elif r == "error" %}<span class="flex" data-tip="Run {{ loop.index }}, {{ run_state(r) }}{% for f in c.facts %}&#10;{{ f }}{% endfor %}">{{ run_dot(r) }}</span>
           {% else %}{{ run_dot(r) }}{% endif %}
           {% endfor %}
@@ -40,6 +48,7 @@
 </div>
 {% endfor %}
 
+{% if not result.meta.imported %}
 <h2 class="section-title mt-8 mb-3">Log</h2>
 {% if log %}
 <div class="card max-h-[55vh] overflow-auto py-2 font-mono text-xs leading-relaxed" data-keep-scroll="log" data-stick-bottom>
@@ -49,7 +58,8 @@
   </div>
   {% endfor %}
 </div>
-{% else %}<p class="muted text-sm">No log yet.</p>{% endif %}
+{% else %}<p class="empty-state">No log yet.</p>{% endif %}
+{% endif %}
 
 {# What went wrong, by cause, the largest first: which runs, and what to do. #}
 {% if problem_groups %}
@@ -58,7 +68,7 @@
   {% for g in problem_groups %}
   <details class="card group/problem overflow-hidden" {% if g.kind == "error" and loop.first %}open{% endif %}>
     <summary class="flex cursor-pointer list-none items-start gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
-      <span class="mt-1.5 flex shrink-0">{{ run_dot({"error": "error", "check": "failed", "property": "allowed" if g.runs[0].predicted else "failed", "unmeasured": "unmeasured", "retried": "pending"}[g.kind]) }}</span>
+      <span class="mt-1.5 flex shrink-0">{% set judged = g.runs[0].predicted %}{{ run_dot({"error": "error", "unmeasured": "unmeasured", "retried": "pending"}.get(g.kind) or ("allowed" if judged else "unjudged" if judged is none and not g.runs[0].unanswered else "failed")) }}</span>
       <span class="min-w-0 flex-1">
         <span class="block font-medium">{{ g.title }}</span>
         {% if g.hint %}<span class="muted mt-0.5 block text-sm">{{ g.hint }}</span>{% endif %}

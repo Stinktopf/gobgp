@@ -4,6 +4,7 @@ at least 24 px (WCAG 2.2) and 44 px (Apple) outside dense grids, fields and
 selects of at least 36 px, which cannot have an invisible target around them,
 and no text below 12 px. iOS zooms into fields below 16 px, base.html stops it."""
 
+import contextlib
 import os
 import socket
 import subprocess
@@ -50,11 +51,9 @@ AUDIT = """() => {
 }"""
 
 
-def main() -> None:
-    out = Path(sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="obgp-screens-"))
-    only = sys.argv[2] if len(sys.argv) > 2 else ""
-    out.mkdir(parents=True, exist_ok=True)
-    pages = [only] if only.startswith("/") else PAGES  # a path of its own, e.g. a case of the Simulation
+@contextlib.contextmanager
+def serve():
+    """A web server of its own, with settings of its own and the searches at hand: yields its address."""
     settings = Path(tempfile.mkdtemp(prefix="obgp-screens-settings-"))
     env = {**os.environ, "XDG_CONFIG_HOME": str(settings)}
     searches = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "obgp-lab" / "simulation"
@@ -67,8 +66,6 @@ def main() -> None:
         port = s.getsockname()[1]
     server = subprocess.Popen([sys.executable, "-m", "lab.cli", "serve", "--http", "--port", str(port)], cwd=REPO, env=env,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    base = f"http://127.0.0.1:{port}"
-    wide, faults = [], {}
     try:
         for _ in range(60):
             try:
@@ -76,6 +73,25 @@ def main() -> None:
                 break
             except OSError:
                 time.sleep(0.5)
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.terminate()
+
+
+def login(page, base: str) -> None:
+    page.goto(base + "/login")
+    page.fill("input[name=password]", PASSWORD)
+    page.press("input[name=password]", "Enter")
+    page.wait_for_load_state()
+
+
+def main() -> None:
+    out = Path(sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="obgp-screens-"))
+    only = sys.argv[2] if len(sys.argv) > 2 else ""
+    out.mkdir(parents=True, exist_ok=True)
+    pages = [only] if only.startswith("/") else PAGES  # a path of its own, e.g. a case of the Simulation
+    wide, faults = [], {}
+    with serve() as base:
         with sync_playwright() as p:
             for size, (width, height) in SIZES.items():
                 # A phone reports a coarse pointer and no hover, which touch emulation alone does not.
@@ -85,10 +101,7 @@ def main() -> None:
                     phone = size == "phone"
                     page = browser.new_context(viewport={"width": width, "height": height}, color_scheme=scheme,
                                                is_mobile=phone, has_touch=phone).new_page()
-                    page.goto(base + "/login")
-                    page.fill("input[name=password]", PASSWORD)
-                    page.press("input[name=password]", "Enter")
-                    page.wait_for_load_state()
+                    login(page, base)
                     for path in pages:
                         if only not in path:
                             continue
@@ -102,8 +115,6 @@ def main() -> None:
                         if phone and scheme == "light":
                             faults[path] = page.evaluate(AUDIT)
                 browser.close()
-    finally:
-        server.terminate()
     print(f"Screenshots in {out}")
     for line in dict.fromkeys(wide):
         print(f"Scrolls sideways: {line}")

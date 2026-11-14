@@ -37,8 +37,15 @@ def test_failed_checks_name_the_runs_and_the_first_problem(monkeypatch):
     e = Experiment.load(config.path("lab-smoke"))
     failed = [{"topology": "t", "scenario": "smoke-all", "variant": e.variants[0].name, "run": r, "step": "21", "t": 1.0,
                "routers": ["fulda"], "problems": ["fulda holds 2 prefixes"]} for r in (1, 2)]
+    from lab import problems
+
     monkeypatch.setattr(analysis, "failed_checks", lambda _: failed)
+    monkeypatch.setattr(problems, "check_predicted", lambda d, key, step: False)
     assert notify._failed_checks(None, e) == f"`{e.variants[0].name}` 2 runs, fulda holds 2 prefixes"
+    monkeypatch.setattr(problems, "check_predicted", lambda d, key, step: True if key.index == 1 else None)
+    assert notify._failed_checks(None, e) == f"`{e.variants[0].name}` 1 run, fulda holds 2 prefixes"
+    monkeypatch.setattr(problems, "check_predicted", lambda d, key, step: True)
+    assert notify._failed_checks(None, e) is None
     monkeypatch.setattr(analysis, "failed_checks", lambda _: [])
     assert notify._failed_checks(None, e) is None
 
@@ -109,6 +116,7 @@ def test_unforeseen_broken_properties_and_the_end_of_a_search_are_told(lab_files
 
     found = [{"kind": "property", "cause": "loops", "predicted": False, "topology": "t", "variant": "v", "scenario": "s", "run": r} for r in (1, 2)]
     monkeypatch.setattr(problems, "broken", lambda d: found + [{**found[0], "cause": "reach", "predicted": True},
+                                                               {**found[0], "cause": "holes", "predicted": None},  # not predictable
                                                                {**found[0], "kind": "unmeasured", "cause": "unmeasured"}])
     assert notify._properties(None) == "Loops at rest 2 runs"
     notify.save({"discord": "https://discord.com/api/webhooks/1/abc"})
@@ -151,3 +159,32 @@ def test_the_run_counts_tell_runs_not_measured_apart(monkeypatch):
     d = type("D", (), {"statuses": lambda self: runs, "run": lambda self, k: {"events": []}})()
     monkeypatch.setattr(analysis, "run_summary", lambda d: {str(keys[0]): {"oscillates": 0, "settle_s": 1.0}, str(keys[1]): {"oscillates": 1}})
     assert notify._statuses(d) == "1 done, 2 did not come to rest, 1 not measured"
+
+
+def test_the_run_counts_tell_predicted_failed_checks_apart(monkeypatch):
+    from lab import analysis, problems
+    from lab.results import RunKey
+
+    keys = [RunKey("t", "bgp", "s", i) for i in (1, 2, 3)]
+    d = type("D", (), {"statuses": lambda self: dict.fromkeys(keys, "failed"), "run": lambda self, k: {"events": []}})()
+    monkeypatch.setattr(analysis, "failed_checks", lambda d: [{"topology": "t", "variant": "bgp", "scenario": "s", "run": i, "key": "6.0#0"} for i in (1, 2, 3)])
+    monkeypatch.setattr(problems, "check_predicted", lambda d, key, step: key.index != 3)
+    assert notify._statuses(d) == "2 failed a check as predicted, 1 failed a check"
+
+
+def test_a_broken_connection_says_the_notification_may_have_arrived(monkeypatch):
+    import requests
+
+    from lab import notify
+
+    def refused(*a, **k):
+        raise requests.ConnectionError("HTTPSConnectionPool: Max retries exceeded (Caused by NewConnectionError: Failed to establish a new connection)")
+
+    def broken(*a, **k):
+        raise requests.ConnectionError("('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))")
+
+    monkeypatch.setattr(requests, "post", refused)
+    assert notify.send({"title": "t"}, settings={"discord": "https://example.invalid/x"}) == ["Discord not reachable (ConnectionError)"]
+    monkeypatch.setattr(requests, "post", broken)
+    assert notify.send({"title": "t"}, settings={"discord": "https://example.invalid/x"}) == [
+        "Discord did not answer (ConnectionError), the notification may have arrived"]

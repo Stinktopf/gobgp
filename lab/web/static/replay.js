@@ -4,11 +4,15 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
 
 // Replay of a run on its topology, every variant on one clock from t = 0,
 // by time or by steps (clock.js).
-// Routers glow blue with the updates they receive per second, sized by
-// their admitted, suppressed or received paths, and ringed while they hold
-// every expected prefix. Routers that run OBGP in a hybrid are squares. Links carry
-// moving dashes as fast as their updates; down links are dashed and faded,
-// degraded ones dotted.
+// In the look of the Simulation's map at small size: routers are small cards
+// that fill with blue with the updates they receive per second, sized by
+// their admitted, suppressed or received paths, with a solid border in their
+// colour while they hold every expected prefix and a pale dashed one before.
+// Routers that run OBGP in a hybrid have a double border. Among few routers
+// a link is two belts, one per direction, with running dashes in the
+// sender's colour as fast as its updates; among many one line with blue
+// dashes. Down links are dashed and pale with a rose cross, degraded ones
+// dotted.
 (() => {
   const root = document.getElementById("replay");
   if (!root) return;
@@ -43,8 +47,20 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
 
   // Colours of the tokens, read once per colour scheme.
   function palette() {
-    heat = Graph.ramp("--activity-low", "--activity-high");
-    colors = Object.fromEntries(["--graph-node", "--graph-label", "--graph-edge", "--activity-halo"].map((t) => [t, css(t)]));
+    // A quiet router is a card of the map, white or dark, and the more updates it gets, the bluer.
+    heat = Graph.ramp("--graph-bg", "--activity-high");
+    colors = Object.fromEntries(["--graph-bg", "--graph-node", "--graph-link", "--graph-none-line",
+      "--graph-role", "--graph-problem", "--activity-high", "--activity-halo"].map((t) => [t, css(t)]));
+  }
+
+  // Updates per second per link, "a|b", from those per direction, "a>b".
+  function summed(directed) {
+    const out = {};
+    for (const [key, values] of Object.entries(directed)) {
+      const link = key.split(">").sort().join("|");
+      out[link] = out[link] ? out[link].map((v, i) => v + values[i]) : [...values];
+    }
+    return out;
   }
 
   // Seconds as text; a moment just before 0, e.g. -0.001 s, is 0.0 s.
@@ -82,12 +98,30 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
   function build(name, data) {
     const pane = q(`[data-pane="${name}"]`);
     graphs[name]?.destroy();
-    graphs[name] = Graph.view(q("[data-graph]", pane), data.topology, { node: 11, label: 10, padding: 36, styles: [
-      { selector: "node", style: { "border-color": colors["--graph-label"], "underlay-shape": "ellipse",
-        "underlay-color": colors["--activity-halo"], "text-background-opacity": 0 } },
-      { selector: "node.origin", style: { "background-color": colors["--graph-label"] } },
-      { selector: "edge", style: { "line-dash-pattern": [6, 5] } },
+    // A small topology fills its pane, its routers as large as ever. One legend, under the first pane.
+    graphs[name] = Graph.view(q("[data-graph]", pane), data.topology, { node: 11, label: 10, padding: 36, maxZoom: 4,
+      keyed: pane === q("[data-pane]"), styles: [
+      { selector: "node", style: { "underlay-shape": "round-rectangle", "underlay-color": colors["--activity-halo"], "text-background-opacity": 0.85 } },
+      // A link cut: a rose cross at its middle, as on the Simulation's map.
+      { selector: "edge", style: { "font-weight": 700, "font-family": "ui-sans-serif, system-ui, sans-serif",
+        "text-background-color": colors["--graph-bg"], "text-background-opacity": 1, "text-background-shape": "roundrectangle" } },
+      // A belt per direction, under the link's tags, arrows and cross: those stay on the link, whose own line is hidden.
+      { selector: "edge.lane", style: { "z-index": 1, events: "no" } },
+      { selector: "edge.laned", style: { "z-index": 2, "line-cap": "butt" } },
     ] });
+    // Among few routers each link is two belts, one per direction, as on the Simulation's map, when the
+    // run has the updates per direction. Else one line per link, both directions together.
+    const cy = graphs[name];
+    const prefers = (e, at) => Graph.customPref(e.data(e.source().id() === at ? "prefSource" : "prefTarget"));
+    cy.edges().forEach((e) => e.scratch("prefEnds", [prefers(e, e.source().id()), prefers(e, e.target().id())]));
+    if (Graph.belts(cy) && data.directed) {
+      cy.batch(() => cy.edges().forEach((e) => {
+        e.addClass("laned");
+        // A lane carries routes from p to q: teal at q's end when q prefers them.
+        for (const [p, q] of [[e.source().id(), e.target().id()], [e.target().id(), e.source().id()]])
+          cy.add({ group: "edges", data: { id: `${p}>${q}`, source: p, target: q }, classes: "lane", selectable: false }).scratch("prefEnds", [false, prefers(e, q)]);
+      }));
+    }
     graphs[name].on("zoom", () => draw());
     // A router clicked shows its table over the run, from the frames loaded already.
     graphs[name].on("tap", (e) => {
@@ -128,6 +162,17 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
     box.querySelectorAll("[data-value]").forEach((v) => (v.textContent = i >= 0 ? f[v.dataset.value][i].toLocaleString("en") : ""));
   }
 
+  const tidied = {};  // seconds of play since the labels made room, per variant
+  // Keeping the frame rate, as games do: an element is styled only when its look changed, and once frames take
+  // longer than PACE_S on average, the belts stop moving for this run. They keep their colour, width and dashes.
+  const PACE_S = 1 / 25;
+  const pace = { frame: 1 / 60, still: false };
+  function set(element, look) {
+    const key = JSON.stringify(look);
+    if (element.scratch("look") === key) return;
+    element.scratch("look", key);
+    element.style(look);
+  }
   function draw(dt = 0) {
     for (const [name, run] of Object.entries(runs)) {
       const cy = graphs[name];
@@ -135,8 +180,8 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
       const pane = q(`[data-pane="${name}"]`);
       const at = clock.toRun(run, now);
       const i = frameAt(run, at);
-      const { "--graph-node": node, "--graph-label": text, "--graph-edge": edge } = colors;
-      const zoom = cy.zoom();
+      const { "--graph-link": idle, "--graph-none-line": faint, "--activity-high": live, "--graph-role": role, "--graph-problem": problem } = colors;
+      const zoom = cy.zoom(), base = Graph.linkWidth(cy), calm = Graph.linkOpacity(cy);
       const { links, routers } = failures(run, at);
       const expected = i >= 0 ? run.expected[i] : null;
       let total = 0, complete = 0, watched = 0;
@@ -145,35 +190,73 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
           const f = run.routers[n.id()];
           // Label sizes are set here too: Cytoscape keeps the sizes of the
           // style from before the first zoom of a graph built off screen.
-          if (!f || n.hasClass("origin")) { n.style({ "font-size": 10 / zoom, "text-margin-y": 4 / zoom }); return; }  // not sampled
+          if (!f || n.hasClass("origin")) { set(n, { "font-size": 10 / zoom, "text-margin-y": 4 / zoom }); return; }  // not sampled
           const churn = i >= 0 ? f.churn[i] : 0, paths = i >= 0 ? f[sizeBy()][i] : 0;
           const v = level(churn, scale.churn);
           const off = routers.has(n.id());
           const full = i >= 0 && expected != null && f.destinations[i] === expected;
+          // As on the map: a solid border in its colour once it holds its routes, dashed and pale before.
+          const lacks = i < 0 || (expected != null ? f.destinations[i] < expected : !f.destinations[i]);
           total += churn; watched++; complete += full;
-          const size = (6 + 20 * Math.sqrt(paths / scale.size)) / zoom;
-          n.style({
-            "background-color": off ? "transparent" : heat(v), width: size, height: size,
-            "border-width": (off ? 1.5 : full ? 2 : 0) / zoom, "border-style": off ? "dashed" : "solid",
-            "border-color": off ? node : text,
-            "underlay-opacity": off ? 0 : 0.35 * v, "underlay-padding": (4 + 14 * v) / zoom,
+          const size = (8 + 18 * Math.sqrt(paths / scale.size)) / zoom;
+          const own = n.hasClass("rr") || n.hasClass("rs") ? role : Graph.hue(n) || colors["--graph-node"];
+          const double = n.hasClass("obgp") && !off && !lacks;
+          set(n, {
+            "background-color": off ? colors["--graph-bg"] : heat(v), width: size, height: size, opacity: off ? 0.5 : 1,
+            "border-width": (double ? 3.5 : off || lacks ? 1.25 : 1.75) / zoom, "border-style": double ? "double" : off || lacks ? "dashed" : "solid",
+            "border-color": off || lacks ? faint : own,
+            "underlay-opacity": off ? 0 : 0.25 * v, "underlay-padding": (2 + 8 * v) / zoom,
             "font-size": 10 / zoom, "text-margin-y": 4 / zoom,
           });
         });
         cy.edges().forEach((e) => {
-          const state = links.get(e.id()) || (routers.has(e.source().id()) || routers.has(e.target().id()) ? "down" : null);
-          const rate = i >= 0 && run.links[e.id()] ? run.links[e.id()][i] : 0;
-          const v = state ? 0 : level(rate, scale.link);
-          // Dashes move with the updates on the link.
-          const offset = ((e.scratch("offset") || 0) - dt * 60 * v) % 1100;
-          e.scratch("offset", offset);
-          e.style({
-            "line-color": state ? node : v ? heat(0.25 + 0.75 * v) : edge,
-            "line-style": state === "down" ? "dashed" : state === "degraded" ? "dotted" : v ? "dashed" : "solid",
-            "line-dash-offset": offset, opacity: state === "down" ? 0.5 : 1, width: (state ? 1.5 : 1.5 + 3.5 * v) / zoom,
-          });
+          const from = e.source(), to = e.target(), lane = e.hasClass("lane");
+          const link = lane ? [from.id(), to.id()].sort().join("|") : e.id();
+          const state = links.get(link) || (routers.has(from.id()) || routers.has(to.id()) ? "down" : null);
+          if (e.hasClass("laned")) {
+            // Only its tags, arrows and cross show: a dash of no length draws no line.
+            set(e, { "line-style": "dashed", "line-dash-pattern": [0, 1e5], width: base / zoom, opacity: 1, "underlay-opacity": 0 });
+          } else {
+            const rate = i < 0 ? 0 : lane ? run.directed[e.id()]?.[i] ?? 0 : run.links[e.id()]?.[i] ?? 0;
+            const v = state ? 0 : Math.min(1, level(rate, scale.link));
+            // A belt runs in its sender's colour, among many routers in blue, as fast as its updates, as on the map.
+            const c = lane ? Graph.hue(from) || live : live;
+            const offset = pace.still ? e.scratch("offset") || 0 : ((e.scratch("offset") || 0) - dt * 60 * v) % 1100;
+            e.scratch("offset", offset);
+            // Idle, a Local Preference stays teal on the half at the router that prefers, as in the topology.
+            const [ps, pt] = e.scratch("prefEnds") || [];
+            const teal = !state && !v && (ps || pt);
+            const look = {
+              "line-color": state ? faint : v ? c : idle,
+              "line-fill": teal ? "linear-gradient" : "solid",
+              ...(teal ? { "line-gradient-stop-colors": [ps ? role : idle, ps ? role : idle, pt ? role : idle, pt ? role : idle].join(" "), "line-gradient-stop-positions": "0% 50% 50% 100%" } : {}),
+              "line-style": state === "down" ? "dashed" : state === "degraded" ? "dotted" : v ? "dashed" : "solid",
+              "line-dash-pattern": [4 / zoom, 5 / zoom], "line-dash-offset": offset,
+              opacity: state === "down" ? 0.6 : v ? 0.5 + 0.5 * v : teal ? 1 : calm, width: (base + 1.5 * v) / zoom,
+              "underlay-color": c, "underlay-opacity": v ? 0.18 : 0, "underlay-padding": (1 + 1.5 * v) / zoom,
+            };
+            if (lane) {
+              // On the right of its direction, beside the other: the ends are offsets from the routers' centres.
+              const s = from.position(), t = to.position(), d = Math.hypot(t.x - s.x, t.y - s.y) || 1, gap = 3.5 / zoom;
+              const at = `${(-(t.y - s.y) / d) * gap}px ${((t.x - s.x) / d) * gap}px`;
+              set(e, { ...look, "source-endpoint": at, "target-endpoint": at });
+              return;
+            }
+            set(e, look);
+          }
+          // A cut link has a rose cross and, while it is down, no Local Preference tags.
+          if (state === "down") {
+            e.scratch("cut", true);
+            e.style({ label: "×", "source-label": "", "target-label": "", "font-size": 15 / zoom, color: problem, "text-background-padding": 1 / zoom });
+          } else if (e.scratch("cut")) {
+            e.scratch("cut", false);
+            e.removeStyle("label source-label target-label font-size color text-background-padding");
+          }
         });
       });
+      // The routers' sizes changed: their names and the tags make room again, while playing once a second.
+      tidied[name] = (tidied[name] || 0) + dt;
+      if (!dt || tidied[name] > 1) { tidied[name] = 0; cy.scratch("declutter")?.(); }
       cursor(name, at, i);
       q("[data-stats] span", pane).textContent = i < 0 ? "" : `${seconds(at)}, ${Math.round(total).toLocaleString("en")} upd/s, ${complete}/${watched}`;
     }
@@ -326,10 +409,13 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
     }
     // Without counters there is no activity to show, which is not none.
     if (lane.names.every((name) => runs[name].counters === false)) {
+      // One muted line in the place of the lane, as an empty card elsewhere.
       c.fillStyle = css("--chart-muted");
-      c.font = `11px ${getComputedStyle(document.body).fontFamily}`;
+      c.font = `12px ${getComputedStyle(document.body).fontFamily}`;
       c.textBaseline = "middle";
-      c.fillText("Updates not recorded", 8, h / 2);
+      c.textAlign = "center";
+      c.fillText("Updates not recorded", w / 2, h / 2);
+      c.textAlign = "start";
     }
     // The lane of one variant, in its colour at the left.
     if (lane.own) {
@@ -452,17 +538,29 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
     const p = params(), load = ++loads;
     const url = (variant) => `/results/${root.dataset.result}/replay?${new URLSearchParams({ topology: p.topology, scenario: p.scenario, run: p.run, variant })}`;
     let answers;
+    // A spinner in each pane that waits, which shows it already when the run is chosen.
+    const waiting = visible().filter((v) => !loaded[v]);
+    const spin = (on) => waiting.forEach((v) => {
+      const pane = q(`[data-pane="${v}"]`);
+      if (on) pane.hidden = false;
+      q("[data-loading]", pane).hidden = !on;
+    });
+    spin(true);
     try {
-      answers = await Promise.all(visible().filter((v) => !loaded[v]).map(async (v) => {
+      answers = await Promise.all(waiting.map(async (v) => {
         const response = await fetch(url(v));
         if (!response.ok || !response.headers.get("content-type")?.includes("json")) throw new Error(response.status);
         return [v, await response.json()];
       }));
     } catch {
-      if (load === loads) q("[data-event]").textContent = "Could not load the run. Sign in again or reload.";
+      if (load === loads) {
+        spin(false);
+        q("[data-event]").textContent = "Could not load the run. Sign in again or reload.";
+      }
       return;
     }
     if (load !== loads) return;  // a newer choice is loading
+    spin(false);
     for (const [v, data] of answers) loaded[v] = data;
     show();
   }
@@ -479,6 +577,8 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
       q("[data-missing]", pane).hidden = !data.missing;
       q("[data-status]", pane).textContent = data.status || "";
       if (data.missing) { graphs[name]?.destroy(); delete graphs[name]; q("[data-stats] span", pane).textContent = ""; continue; }
+      // Per link, both directions together, where the replay draws one line: given by older analyses and for many routers.
+      data.links ||= summed(data.directed || {});
       runs[name] = data;
       build(name, data);
       chart(name);
@@ -487,13 +587,16 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
     const peak = (pick) => largest(all.flatMap(pick));
     scale = {
       churn: peak((r) => Object.values(r.routers).flatMap((f) => f.churn)),
-      link: peak((r) => Object.values(r.links).flat()),
+      // Per direction where the runs have it, as the belts show.
+      link: peak((r) => Object.values(r.directed || r.links).flat()),
       // One scale for all sizes, the Adj-RIB-In, so that switching compares.
       size: peak((r) => Object.values(r.routers).flatMap((f) => (r.sizes ? f.adj_in : f.paths))),
     };
-    root.querySelectorAll("[data-size-new]").forEach((label) => (label.hidden = !all.every((r) => r.sizes)));
-    // Older runs have the admitted paths only: those are chosen then, not a hidden one.
-    if (!all.every((r) => r.sizes)) root.querySelector("input[name=size][value=paths]").checked = true;
+    // Older runs have the admitted paths only: those are chosen then, and named without a choice.
+    const sizes = all.every((r) => r.sizes);
+    root.querySelector("[data-size-choice]").hidden = !sizes;
+    root.querySelector("[data-size-only]").hidden = sizes;
+    if (!sizes) root.querySelector("input[name=size][value=paths]").checked = true;
     clock = makeClock();
     end = clock.end;
     now = Math.max(0, Math.min(now, end));
@@ -508,6 +611,10 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
     if (!playing) return;
     const dt = last == null ? 0 : (time - last) / 1000;
     last = time;
+    if (dt) {
+      pace.frame = 0.9 * pace.frame + 0.1 * Math.min(dt, 0.5);
+      if (pace.frame > PACE_S) pace.still = true;
+    }
     now = Math.min(end, now + dt * +root.querySelector("input[name=speed]:checked").value);
     draw(dt);
     if (now >= end) {
@@ -544,6 +651,7 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
   q("[data-scrub]").oninput = (e) => { now = e.target.value / 10; draw(); };
   root.querySelectorAll("[data-param]").forEach((s) => (s.onchange = () => {
     toggle(false); now = 0;
+    Object.assign(pace, { frame: 1 / 60, still: false });  // another run may move again
     for (const v in loaded) delete loaded[v];  // another run
     load();
   }));

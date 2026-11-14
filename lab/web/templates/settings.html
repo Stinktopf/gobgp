@@ -10,8 +10,8 @@
 
 <div class="space-y-8">
   {% if not initial %}
-  <section class="space-y-4" aria-label="Lab">
-    <h2 class="px-1 text-xs font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">Lab</h2>
+  <section class="space-y-4" aria-label="Cluster">
+    <h2 class="group-title">Cluster</h2>
     {% include "partials/cluster.html" %}
     {% set hs, mh = host_settings, machine_host %}
     <form id="budget" method="post" action="/settings/host" class="card scroll-mt-20 space-y-4 p-5">
@@ -60,7 +60,7 @@
   </section>
   {% endif %}
   <section class="space-y-4" aria-label="Access">
-    <h2 class="px-1 text-xs font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">Access</h2>
+    <h2 class="group-title">Access</h2>
     <section id="password" class="card scroll-mt-20 overflow-hidden {{ 'glow-live' if initial }}" aria-label="Password">
       <form method="post" action="/settings/password" class="space-y-3 p-5">
         <div class="flex flex-wrap items-center justify-between gap-2">
@@ -94,12 +94,11 @@
     {% if not initial %}
     {# Tokens for agents: an AI assistant over MCP, or a script over the API. #}
     <section id="agents" class="card scroll-mt-20 overflow-hidden" aria-label="Agents">
-      <div class="space-y-1 p-5 pb-3">
-        <h2 class="section-title">Agents</h2>
-        <p class="muted text-sm" data-tip="Scopes&#10;Read: results and status&#10;Control: also start, stop, update">Tokens for AI agents over MCP, or scripts over the API.</p>
+      <div class="p-5 pb-3">
+        <h2 class="section-title" data-tip="Tokens for AI agents over MCP, or scripts over the API&#10;Read: results and status&#10;Control: also start, stop, update">Agents</h2>
       </div>
       {% if waiting %}
-      <ul class="mx-5 mb-4 divide-y divide-rose-200/60 rounded-lg bg-rose-50 text-sm dark:divide-rose-900/50 dark:bg-rose-950/40" aria-label="Waiting for you">
+      <ul class="mx-5 mb-4 divide-y divide-violet-200/60 rounded-lg bg-violet-50 text-sm dark:divide-violet-900/50 dark:bg-violet-950/40" aria-label="Waiting for you">
         {% for a in waiting %}
         <li class="px-4 py-3">
           <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -147,9 +146,8 @@ export NODE_EXTRA_CA_CERTS=~/.obgp-lab.crt
       {% endif %}
       <form method="post" action="/settings/agents/limits" class="flex flex-wrap items-center gap-2 border-b border-slate-100 px-5 py-3 text-sm dark:border-white/5">
         <label for="agent-queue-h" data-tip="Beyond this, queueing waits for your approval, also with a token that acts at once">Agents may fill the queue for</label>
-        <input id="agent-queue-h" name="queue_h" type="number" min="0" max="720" step="1" value="{{ agent_limits.queue_h | int }}" class="input w-20 tabular-nums">
+        <input id="agent-queue-h" name="queue_h" type="number" min="0" max="720" step="1" value="{{ agent_limits.queue_h | int }}" class="input w-20 tabular-nums" onchange="this.form.requestSubmit()">
         <span class="muted">h</span>
-        <button class="btn">Save</button>
       </form>
       <form method="post" action="/settings/tokens" class="grid gap-3 p-5 sm:grid-cols-[1fr_auto_auto_auto] sm:items-end">
         <label class="block"><span class="label">Name</span><input name="name" required maxlength="60" class="input mt-1" placeholder="e.g. Claude on my laptop"></label>
@@ -163,8 +161,8 @@ export NODE_EXTRA_CA_CERTS=~/.obgp-lab.crt
     </section>
     {% endif %}
   </section>
-  <section class="space-y-4" aria-label="More">
-    <h2 class="px-1 text-xs font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400">More</h2>
+  <section class="space-y-4" aria-label="Lab">
+    <h2 class="group-title">Lab</h2>
     {% if not initial %}
     <form id="notifications" method="post" action="/settings/notify" class="card scroll-mt-20 space-y-3 p-5">
       <h2 class="section-title">Notifications</h2>

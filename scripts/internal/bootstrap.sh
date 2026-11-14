@@ -113,6 +113,35 @@ elif [ "$instances" -lt 1024 ] || [ "$watches" -lt 524288 ]; then
   record "inotify-after $instances $watches"
   record_hash /etc/sysctl.d/90-obgp-lab.conf
 fi
+# One neighbour (ARP) table for all containers of the host: each router holds an entry per BGP neighbour.
+# Full, it drops packets, also of the cluster's own API. Its own file, so that the inotify rollback stays as it is.
+neigh=/proc/sys/net/ipv4/neigh/default
+neigh_conf=/etc/sysctl.d/90-obgp-lab-neigh.conf
+t1="$(cat $neigh/gc_thresh1)" t2="$(cat $neigh/gc_thresh2)" t3="$(cat $neigh/gc_thresh3)"
+if [ "$t3" -lt 16384 ] && [ "$no_sudo" = yes ]; then
+  printf '  %s\n' "The kernel's neighbour table holds $t3 entries and setup does not change it without sudo." \
+    "Topologies with thousands of BGP sessions, such as core-64, cannot run." \
+    "An administrator can raise it, never lowering anything:" \
+    "  printf 'net.ipv4.neigh.default.gc_thresh1 = 8192\\nnet.ipv4.neigh.default.gc_thresh2 = 32768\\nnet.ipv4.neigh.default.gc_thresh3 = 65536\\n' | sudo tee $neigh_conf" \
+    "  sudo sysctl -p $neigh_conf"
+elif [ "$t3" -lt 16384 ]; then
+  if ! grep -q '^neigh-before ' "$log"; then
+    if [ -e "$neigh_conf" ]; then
+      cp "$neigh_conf" "$base/neigh.before"
+      record_hash "$base/neigh.before"
+      record "neigh-existing"
+    fi
+    record "neigh-before $t1 $t2 $t3"
+  fi
+  # Never lower limits set by the administrator of a shared host.
+  [ "$t1" -ge 8192 ] || t1=8192
+  [ "$t2" -ge 32768 ] || t2=32768
+  [ "$t3" -ge 65536 ] || t3=65536
+  printf 'net.ipv4.neigh.default.gc_thresh1 = %s\nnet.ipv4.neigh.default.gc_thresh2 = %s\nnet.ipv4.neigh.default.gc_thresh3 = %s\n' "$t1" "$t2" "$t3" | as_root tee "$neigh_conf" >/dev/null
+  as_root sysctl -p "$neigh_conf"
+  record "neigh-after $t1 $t2 $t3"
+  record_hash "$neigh_conf"
+fi
 ok "Kernel limits checked"
 heading "Tools"
 info "Missing tools will be installed into $bin"

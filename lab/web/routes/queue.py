@@ -2,7 +2,7 @@
 
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from ... import (
@@ -49,6 +49,16 @@ async def queue_order(request: Request):
         raise HTTPException(422)
     jobs.reorder([str(n) for n in names])
     return JSONResponse({"queue": jobs.queue()})
+
+
+@router.post("/queue/next")
+def queue_next(request: Request, name: str = Form(...)):
+    """A waiting result runs next, before the running one, which ends after its current run."""
+    try:
+        jobs.run_next(name)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from None
+    return RedirectResponse(back(request, "/results"), 303)
 
 
 @router.post("/queue/pause")

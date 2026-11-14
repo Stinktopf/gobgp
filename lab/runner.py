@@ -24,21 +24,24 @@ from pathlib import Path
 from statistics import mean
 
 from . import analysis, forwarding, host, modes, mrt, prefixes, rib, scenario
-from .cluster import Cluster, Interrupted, LabError, Routers, fit, router_mb
+from .cluster import NOT_READY, Cluster, HostLimit, Interrupted, LabError, Routers, fit, router_mb
 from .config import Cluster as Resources
 from .config import Experiment
-from .results import COUNTERS, SAMPLE_FIELDS, Dataset, RunKey, now, pause_file
+from .results import COUNTERS, SAMPLE_FIELDS, STOP_FILE, Dataset, RunKey, now, pause_file
 from .scenario import Network, Step
 
 log = logging.getLogger("lab")
 ATTEMPTS = 3
 # The lab is a guest on a shared host: after Docker or the host restarted it
-# waits until Docker has run a while, only starts its own cluster again, and
-# gives up after a while or a few times an hour, pausing the queue.
+# waits until Docker has run a while and only starts its own cluster again.
+# It pauses the queue when Docker does not settle in time, and ends the result
+# as failed when its cluster does not come back after a few starts.
 DOCKER_SETTLED_S = 5 * 60
 RECOVER_WAIT_S = 30 * 60
-RECOVERIES_PER_HOUR = 3
-STOP_FILE = "stop"  # in the folder of a result: a person stopped it; any other end of the runner interrupts it
+RECOVER_STARTS = 3
+# A result whose cluster is lost this often, counted over an automatic restart
+# of the result too, ends as failed: it is played again at most once.
+LOSSES = 2
 
 
 class Cancelled(Exception):
@@ -61,24 +64,24 @@ def settle(stop: threading.Event, status: "Status") -> None:
             raise Cancelled
 
 
-def recover(cluster: Cluster, stop: threading.Event, status: "Status", why: str, recoveries: list[float]) -> None:
+def recover(cluster: Cluster, stop: threading.Event, status: "Status", why: str) -> None:
     """Starts the cluster again after it was lost, as a guest: only its own
-    container, once Docker settled, never while the host shuts down. Gives up
-    after RECOVER_WAIT_S or RECOVERIES_PER_HOUR, pausing the queue."""
-    now_s = time.time()
-    recoveries[:] = [t for t in recoveries if now_s - t < 3600]
-    if len(recoveries) >= RECOVERIES_PER_HOUR:
-        give_up(f"The cluster was lost {len(recoveries) + 1} times within an hour, last: {why}.")
-    recoveries.append(now_s)
+    container, once Docker settled, never while the host shuts down. Pauses
+    the queue when Docker does not settle within RECOVER_WAIT_S, and ends the
+    result with HostLimit after RECOVER_STARTS starts that did not help."""
     log.warning("the cluster is lost (%s): waiting for it, the run is not counted", why)
     deadline = time.monotonic() + RECOVER_WAIT_S
+    starts = 0
     while True:
         status.update(phase=f"waiting for the cluster: {why}")
         if stop.wait(30):
             raise Cancelled
         if host.shutting_down() or not host.docker_running() or host.docker_up_s() < DOCKER_SETTLED_S:
             pass
+        elif starts >= RECOVER_STARTS:
+            raise HostLimit(f"the cluster did not come back after {starts} starts: {why}")
         else:
+            starts += 1
             try:
                 cluster.start()
             except (LabError, RuntimeError) as e:  # Incompatible too: the lab never deletes it here
@@ -88,7 +91,74 @@ def recover(cluster: Cluster, stop: threading.Event, status: "Status", why: str,
                     log.info("the cluster is back")
                     return
         if time.monotonic() > deadline:
-            give_up(f"The cluster did not come back within {RECOVER_WAIT_S // 60} min: {why}.")
+            give_up(f"Docker did not settle within {RECOVER_WAIT_S // 60} min: {why}.")
+
+
+class Losses:
+    """The losses of the cluster within one result, also before an automatic
+    restart of it. The LOSSES-th ends the result with HostLimit."""
+
+    def __init__(self, dataset: Dataset) -> None:
+        last = (dataset.meta.get("interruptions") or [{}])[-1]
+        resumed = dataset.status.get("state") == "interrupted" and last.get("lost")
+        self.reasons: list[str] = [last["cause"]] if resumed else []
+
+    def add(self, why: str) -> None:
+        self.reasons.append(why)
+        if len(self.reasons) >= LOSSES:
+            raise HostLimit(f"the cluster was lost {len(self.reasons)} times in this result, last: {why}")
+
+
+def prepare(cluster: Cluster, dataset: Dataset, stop: threading.Event, status: "Status") -> None:
+    """Starts the cluster and leaves it clean, before anything runs on it:
+    its API answers and its namespace holds no routers of another run. A
+    cluster that cannot be cleaned is the lab's own profile: it is deleted
+    and created anew, once. Results and other containers stay untouched."""
+    from .lifecycle import ensure_cluster
+
+    try:
+        dataset.update(cluster=ensure_cluster(cluster))
+    except Exception:
+        if not (why := cluster.trouble()):
+            raise
+        if not why.startswith(NOT_READY):  # Docker or the container: waits for them as a guest
+            recover(cluster, stop, status, why)
+            dataset.update(cluster=ensure_cluster(cluster))
+    status.update(phase="checking the cluster")
+    if why := cluster.clean():
+        log.warning("the cluster is created anew: %s", why)
+        status.update(phase=f"creating the cluster anew: {why}")
+        cluster.delete()
+        dataset.update(cluster=ensure_cluster(cluster))
+        if why := cluster.clean():
+            raise HostLimit(f"the cluster is not usable even when created anew: {why}")
+
+
+def tidy(cluster: Cluster, status: "Status | None" = None) -> None:
+    """Leaves no routers behind once a result ends, however it ends: their
+    Helm release would survive in etcd and bring them back with every start
+    of the cluster. Where the container runs but its API does not answer,
+    the lab's own profile is deleted, and the next result creates it anew:
+    asked first, so that a silent API is not waited for with Helm."""
+    say = status.update if status else (lambda **_: None)
+    why = cluster.trouble()
+    if not (why and why.startswith(NOT_READY)) or cluster.api_answers():
+        say(phase="removing the routers")
+        try:
+            cluster.undeploy()
+            return
+        except Exception as e:  # noqa: BLE001  cleaning up never ends the runner
+            problem = str(e)[-200:]
+        why = cluster.trouble()
+        if not (why and why.startswith(NOT_READY)) or cluster.api_answers():
+            log.warning("the routers stay until the next result: %s", problem)
+            return
+    log.warning("the Kubernetes API does not answer (%s): the lab's cluster is deleted, the next result creates it anew", why)
+    say(phase="deleting the lab's cluster, its Kubernetes API does not answer")
+    try:
+        cluster.delete()
+    except Exception as e:  # noqa: BLE001
+        log.warning("the lab's cluster could not be deleted: %s", e)
 
 
 def sampled(rows: Iterable[dict]) -> Iterator[dict]:
@@ -108,11 +178,12 @@ def give_up(reason: str) -> None:
     raise Cancelled
 
 
-def interrupted(dataset: Dataset, run: str | None, cause: str) -> None:
-    """Records why and where a result was interrupted, with the boot of the host."""
+def interrupted(dataset: Dataset, run: str | None, cause: str, lost: bool = False) -> None:
+    """Records why and where a result was interrupted, with the boot of the
+    host. lost: by a loss of the cluster, which Losses counts."""
     from .service import boot_id
 
-    entry = {"at": now(), "run": run, "cause": cause, "boot": boot_id()}
+    entry = {"at": now(), "run": run, "cause": cause, "boot": boot_id(), **({"lost": True} if lost else {})}
     dataset.update(interruptions=[*dataset.meta.get("interruptions", []), entry])
     log.warning("interrupted at %s: %s", run or "its start", cause)
 
@@ -147,8 +218,21 @@ def went_on_after_reboot(dataset: Dataset) -> None:
 HEAP_PROFILE_MB = 1024  # as in the controller: above it a router keeps a heap profile
 SILENT_S = 30  # a router that hands over no samples this long fails the run
 STATUS_S = 15  # for the prefixes or sessions of a router, which may be busy with many routes
+FINAL_S, FINAL_TRIES = 120, 2  # the final check may wait: a busy router still answers, a slow one costs no data
 FINAL_PREFIXES = 2000  # the final check reads every route of every router: no Internet tables
 HOPS_MAX = 256  # as in the controller: above, the routers follow the next hops of a sample of the prefixes
+LOG_NAMES = 6  # routers or links a line of the log names, beyond that it counts them
+
+
+def told(details: dict) -> str:
+    """The routers and links of an event as the log tells them: by name, or counted when many."""
+    parts = []
+    for kind, items in (("routers", details.get("routers") or []), ("links", ["–".join(link) for link in details.get("links") or []])):
+        if items:
+            parts.append(", ".join(items) if len(items) <= LOG_NAMES else f"{len(items)} {kind}")
+    return ", ".join(parts)
+
+
 ANNOUNCING = ("announce", "announce_real", "announce_rib", "originate", "replay")
 
 
@@ -250,6 +334,7 @@ def run(dataset: Dataset, stop: threading.Event) -> None:
         keys = [k for k in keys if k.topology not in skipped]
     (dataset.path / STOP_FILE).unlink(missing_ok=True)  # of an earlier stop
     went_on_after_reboot(dataset)
+    losses = Losses(dataset)  # before the status says running
     status = Status(dataset, total=len(keys), done=sum(map(dataset.is_done, keys)))
     status.update(skipped=skipped, limit=here.limit if skipped else None)
     if status.data["done"] == len(keys):
@@ -259,25 +344,21 @@ def run(dataset: Dataset, stop: threading.Event) -> None:
         raise ValueError(here.problem)
     cluster = Cluster(here.cluster)
     routers = None
-    recoveries: list[float] = []  # when the cluster was lost, for RECOVERIES_PER_HOUR
-    try:
-        settle(stop, status)
-        status.update(phase="starting cluster")
-        from .lifecycle import ensure_cluster
+    tags: dict[str, str] = {}
 
-        try:
-            dataset.update(cluster=ensure_cluster(cluster))
-        except Exception:
-            if not (why := cluster.trouble()):
-                raise
-            recover(cluster, stop, status, why, recoveries)
-            dataset.update(cluster=ensure_cluster(cluster))
+    def setup() -> None:
+        """A clean cluster, bound to its CPUs, with the images of all variants: at the start and after a loss."""
+        status.update(phase="starting cluster")
+        prepare(cluster, dataset, stop, status)
         bind(dataset, cluster)
-        tags = {}
         for v in experiment.variants:
             status.update(phase=f"building {v.name} ({dataset.commits[v.name][:12]})")
             tags[v.name] = cluster.build(dataset.commits[v.name])
             log.info("image of %s at %s: %s", v.name, dataset.commits[v.name][:12], tags[v.name])
+
+    try:
+        settle(stop, status)
+        setup()
         cluster.prune(keep=set(tags.values()))
         if "versions" not in dataset.meta:
             dataset.update(versions=cluster.versions())
@@ -317,15 +398,21 @@ def run(dataset: Dataset, stop: threading.Event) -> None:
                     routers.ensure()
                     result, samples = Run(dataset, key, cluster, routers, tags[key.variant], status, stop).execute()
                     break
+                except HostLimit:
+                    raise  # a limit of the shared host: played again, the run would hit it again
                 except LabError as e:
                     if stop.is_set():  # ended from outside: its commands fail as the host shuts down
                         raise Cancelled from e
                     if why := cluster.trouble():
-                        # The cluster failed, not the run: not counted, played again from its start once it is back.
+                        # The cluster failed, not the run: not counted, played again from its start on a clean cluster.
+                        # The second loss in a result ends it.
                         log.warning("%s: attempt %d failed with the cluster, not counted: %s", key, attempt, e)
                         attempt -= 1
-                        recover(cluster, stop, status, why, recoveries)
+                        losses.add(why)
                         routers.close()
+                        routers = None
+                        settle(stop, status)  # as a guest: after Docker restarted, it runs a while first
+                        setup()
                         routers = Routers()
                         started = time.monotonic()
                         continue
@@ -336,9 +423,16 @@ def run(dataset: Dataset, stop: threading.Event) -> None:
             result.update(commit=dataset.commits[key.variant], image=tags[key.variant], attempts=attempt, took_s=round(took, 1))
             if failures:
                 result["failures"] = failures
-            dataset.write_run(key, result, samples)
-            for spool in (dataset.path / key.path).glob(".samples-*"):  # also of attempts that failed
-                shutil.rmtree(spool, ignore_errors=True)
+            try:
+                dataset.write_run(key, result, samples)
+            except (csv.Error, OSError, ValueError) as e:
+                # The run is an error, the result goes on, and the spool stays for a look at the samples.
+                log.warning("%s: its samples could not be written, they stay in the spool: %s", key, e)
+                result = {**result, "status": "error", "message": f"its samples could not be written: {e}"}
+                dataset.write_run(key, result, [])
+            else:
+                for spool in (dataset.path / key.path).glob(".samples-*"):  # also of attempts that failed
+                    shutil.rmtree(spool, ignore_errors=True)
             if result["status"] != "error":
                 try:  # ready for the charts at once
                     analysis.run_bins(dataset, key, result)
@@ -355,9 +449,12 @@ def run(dataset: Dataset, stop: threading.Event) -> None:
             except Exception as e:  # the result keeps its predictions of 20 orders
                 log.warning("no more orders of the simulator: %s", e)
         status.update(state="finished", current=None, run_started=None, phase=None, attempt=None, failure=None)
+    except HostLimit as e:  # ends for good: played again, the result would hit the limit again
+        log.error("the result ends as failed: %s", e)
+        status.update(state="failed", phase=None, current=None, run_started=None, error=str(e))
     except (Cancelled, Interrupted):
         if (dataset.path / STOP_FILE).exists():
-            status.update(state="stopped", phase=None)
+            status.update(state="stopped", phase=None, current=None, run_started=None)
         else:
             try:
                 reason = pause_file().read_text().strip() or "the queue was paused"
@@ -366,19 +463,24 @@ def run(dataset: Dataset, stop: threading.Event) -> None:
             interrupted(dataset, status.data.get("current"), reason)
             status.update(state="interrupted", phase=None)
     except Exception as e:
-        if why := cluster.trouble():  # it failed because the cluster did: goes on later, does not fail
-            interrupted(dataset, status.data.get("current"), f"{why}: {str(e)[-200:]}")
+        if why := cluster.trouble():  # it failed because the cluster did: goes on later once, does not fail
+            if losses.reasons:
+                reason = f"the cluster was lost {len(losses.reasons) + 1} times in this result, last: {why}: {str(e)[-200:]}"
+                log.error("the result ends as failed: %s", reason)
+                status.update(state="failed", phase=None, current=None, run_started=None, error=reason)
+                return
+            interrupted(dataset, status.data.get("current"), f"{why}: {str(e)[-200:]}", lost=True)
             status.update(state="interrupted", phase=None)
             return
-        status.update(state="failed", phase=None, error=str(e))
+        status.update(state="failed", phase=None, current=None, run_started=None, error=str(e))
         raise
     finally:
         if routers:
             routers.close()
-        try:
-            cluster.undeploy()
-        except Exception:
-            pass
+        # The result has ended: what the lab does meanwhile shows as its phase, which ends with it.
+        tidy(cluster, status)
+        if status.data.get("phase"):
+            status.update(phase=None)
 
 
 class Status:
@@ -420,6 +522,8 @@ class Run:
         self.experiment: Experiment = dataset.experiment
         self.key = key
         self.spool = dataset.path / key.path  # where the samples wait until the run ends
+        # Looks at the node during the deploy and when the cluster is lost, see Cluster.diagnose.
+        self.diagnosis = dataset.path / "diagnosis" / "_".join(key.path.parts)
         self.held = (dataset.meta.get("pinned") or {}).get("held") or {}  # the CPUs the cluster is bound to
         self.cluster = cluster
         self.igp: dict[frozenset, int] = {}  # costs igp steps set in this run
@@ -435,6 +539,7 @@ class Run:
         self.events: list[dict] = []
         self.current = threading.local()  # the position of the step a thread plays
         self.measurements: list[dict] = []
+        self.profiled = ""  # the router of the CPU profile, once asked for
         # What is down, and the (router, peer) link ends each failure acted on,
         # so that up undoes exactly that.
         self.stopped: set[str] = set()
@@ -448,12 +553,12 @@ class Run:
     def execute(self) -> tuple[dict, list[dict]]:
         seed = self.experiment.seed * 1000 + self.key.index  # equal for all variants: paired runs
         self.status.samples.clear()
-        self.status.update(phase="deploying", live=[])
+        self.status.update(phase="deploying", live=[], deploy=None)
         deploying = time.monotonic()
         self.modes = self.variant.modes_of(self.topology["routers"], seed)
         self.cluster.deploy(self.key.topology, self.topology, self.tag, self.modes, seed, self.experiment.bgp,
-                            self.variant.refresh_delay or 0, self.variant.per_neighbor)
-        self.routers.pods = self.cluster.pods()
+                            self.routers, self.variant.refresh_delay or 0, self.variant.per_neighbor,
+                            progress=lambda **p: self.status.update(deploy=p), diagnosis=self.diagnosis)
         log.info("%s: deployed in %.0f s, seed %d", self.key, time.monotonic() - deploying, seed)
         watched = [r for r in self.network.routers if r not in self.origins]
         self.status.watched = set(watched)
@@ -463,16 +568,24 @@ class Run:
         load = HostLoad(clock=self.sampler.now, cores=host.cpu_list(self.held["cpus"]) if self.held.get("cpus") else None)
         load.start()
         self.sampler.start()
+        # A full connection tracking or a silent API ends the run, and with it the result.
+        guard = self.cluster.guard(str(self.key), len(self.network.routers), on_lost=self.stop.set, diagnosis=self.diagnosis)
         try:
             self.steps(self.scenario.steps, ())
             self.final()
+            if guard.lost.is_set():
+                raise Cancelled
         except BaseException:
+            guard.stop()
             load.stop()
             try:
                 self.sampler.stop()
             except LabError:
                 pass  # the first problem is the one to report, e.g. a Stop
+            if guard.lost.is_set():
+                raise HostLimit(f"{self.key}: {guard.why}") from None
             raise
+        guard.stop()
         self.sampler.stop()
         load.stop()
         if self.sampler.failed > 0.05 * max(1, self.sampler.count):
@@ -484,8 +597,9 @@ class Run:
             raise LabError(f"routers restarted {restarts} times")
         try:  # before the rows are read: they can be read once
             self.keep_heaps(self.sampler.peak_mb)
+            self.keep_cpu()
         except Exception:  # noqa: BLE001  a diagnosis, never the end of a run
-            log.exception("%s: keeping heap profiles", self.key)
+            log.exception("%s: keeping profiles", self.key)
         addresses, rows = self.cluster.addresses(), self.sampler.rows()
         # Away before the run is written and analysed: routers that oscillate
         # would go on, load the host while the next run waits for quiet and
@@ -530,6 +644,42 @@ class Run:
                 (self.spool / f"heap-{router}.pb.gz").write_bytes(base64.b64decode(h["profile"]))
                 log.info("%s: kept the heap profile of %s at %.0f MiB", self.key, router, h["rss_mb"])
 
+    def busiest(self) -> str:
+        """The router with the most neighbors, the first by name among equals."""
+        return min(self.network.routers, key=lambda r: (-len(self.network.routers[r].get("neighbors", [])), r))
+
+    def profile_cpu(self) -> None:
+        """Starts the CPU profile the experiment asks for, once per run, at the
+        router with the most neighbors: where a busy router spends its time."""
+        seconds = self.experiment.sampling.profile_s
+        if not seconds or self.profiled:
+            return
+        self.profiled = self.busiest()
+        try:
+            self.routers.post(self.profiled, "/cpu", {"seconds": seconds}, timeout=STATUS_S)
+        except LabError as e:
+            log.warning("%s: no CPU profile of %s: %s", self.key, self.profiled, e)
+            return
+        log.info("%s: CPU profile of %s for %g s", self.key, self.profiled, seconds)
+
+    def keep_cpu(self) -> None:
+        """Keeps the CPU profile beside the run, as cpu-<router>.pb.gz."""
+        import base64
+
+        if not (router := self.profiled):
+            return
+        try:
+            c = self.routers.get(router, "/cpu", timeout=STATUS_S)
+        except LabError as e:
+            log.warning("%s: no CPU profile of %s: %s", self.key, router, e)
+            return
+        if not c.get("profile"):
+            log.warning("%s: no CPU profile of %s: %s", self.key, router, c.get("error") or "not taken yet")
+            return
+        self.spool.mkdir(parents=True, exist_ok=True)
+        (self.spool / f"cpu-{router}.pb.gz").write_bytes(base64.b64decode(c["profile"]))
+        log.info("%s: kept the CPU profile of %s", self.key, router)
+
     # The step engine
 
     def steps(self, steps: list[Step], position: tuple) -> None:
@@ -544,6 +694,7 @@ class Run:
         getattr(self, f"do_{step.kind}")(step.args, position)
         if step.kind in ANNOUNCING:
             self.watch_hops()
+            self.profile_cpu()
 
     def watch_hops(self) -> None:
         """Above HOPS_MAX prefixes every router follows the next hops of the
@@ -570,8 +721,7 @@ class Run:
         step = ".".join(map(str, getattr(self.current, "position", ())))
         with self.lock:
             self.events.append({"name": name, "t": round(at, 3), "step": step, **details})
-        what = [*details.get("routers", []), *("–".join(link) for link in details.get("links", []))]
-        log.info("%s: %6.1f s %s %s", self.key, at, name.replace("_", " "), ", ".join(what))
+        log.info("%s: %6.1f s %s", self.key, at, " ".join(filter(None, (name.replace("_", " "), told(details)))))
 
     def wait(self, seconds: float) -> None:
         if self.stop.wait(max(0.0, seconds)):
@@ -978,8 +1128,8 @@ class Run:
             self.event("final", at, stable=stable, prefixes=len(announced), skipped=f"more than {FINAL_PREFIXES} prefixes")
             return
         try:
-            tables = {r: {} if r in self.stopped else self.routers.get(r, "/routes", timeout=STATUS_S) for r in sorted(self.network.routers)}
-        except LabError as e:  # a router too busy to answer: the run stands, its final check does not
+            tables, slowest = self.final_tables()
+        except LabError as e:  # a router that never answers: the run stands, its final check does not
             self.event("final", at, stable=stable, prefixes=len(announced), skipped=f"no routes: {e}")
             return
         # Every prefix announced or still held: a withdrawn route that stays may loop too.
@@ -991,11 +1141,36 @@ class Run:
         between = forwarding.relations(self.network.routers)
         valleys = {r: sum(not route.get("as_set") and forwarding.valley_free(between, int(self.network.routers[r]["asn"]), route["as_path"]) is False
                           for p, route in t.items() if p in announced) for r, t in tables.items()} if between else {}
-        self.event("final", at, stable=stable, prefixes=len(announced),
+        self.event("final", at, stable=stable, prefixes=len(announced), slowest=slowest,
                    valleys={r: n for r, n in valleys.items() if n},
                    held={r: len(announced & set(t)) for r, t in tables.items()},
                    stale={r: len(set(t) - announced) for r, t in tables.items()},
                    loops=len(looping), holes=len(holes), looping=looping, holed=holes, problems=problems[:10])
+
+    def final_tables(self) -> tuple[dict[str, dict], list]:
+        """The routes of every router for the final check, read in parallel,
+        each router asked up to FINAL_TRIES times with FINAL_S to answer. A
+        stopped router holds nothing. Also the slowest router and its
+        seconds. Raises LabError when a router never answers."""
+        def read(r: str) -> tuple[dict, float]:
+            started = time.monotonic()
+            for _ in range(FINAL_TRIES - 1):
+                try:
+                    return self.routers.get(r, "/routes", timeout=FINAL_S), time.monotonic() - started
+                except LabError:
+                    pass
+            return self.routers.get(r, "/routes", timeout=FINAL_S), time.monotonic() - started
+
+        names = [r for r in sorted(self.network.routers) if r not in self.stopped]
+        tables: dict[str, dict] = {r: {} for r in self.stopped if r in self.network.routers}
+        slowest = ["", 0.0]
+        if names:
+            with ThreadPoolExecutor(min(len(names), Routers.POOL)) as pool:
+                for r, (table, took) in zip(names, pool.map(read, names)):
+                    tables[r] = table
+                    if took >= slowest[1]:
+                        slowest = [r, round(took, 1)]
+        return dict(sorted(tables.items())), slowest
 
     def do_expect(self, e: scenario.Expect, position: tuple) -> None:
         at = self.sampler.now()
@@ -1049,7 +1224,7 @@ def check_forwarding(topology: dict, announced: set[str], tables: dict[str, dict
             route = table.get(prefix)
             if route is None:
                 hops[router] = None
-            elif "ingress" in route:  # NS-BGP: per eBGP neighbor, the route sent to it
+            elif "ingress" in route:  # a table per neighbor: per eBGP neighbor, the route sent to it
                 hops[router] = forwarding.Ingress({n: (hop(router, r), (r["as_path"] or [None])[0])
                                                   for n, r in [(None, route), *route["ingress"].items()]})
             else:
@@ -1077,16 +1252,28 @@ def check_consistency(topology: dict, announced: set[str], sent: dict[str, dict]
     return problems
 
 
+def fetch_interval(routers: int, fetch: float, rate: float) -> float:
+    """Seconds between the fetches of the samples of all routers."""
+    return max(fetch, routers / rate)
+
+
 class Sampler(threading.Thread):
     """Collects the samples that every router takes of itself.
 
     The routers sample at t0 + k * interval on their own clock, corrected
     by its measured offset, so all routers sample at the same times. This
-    thread fetches the new samples twice a second, joins them by time and
-    tracks since when nothing changes, for until_stable and the live view.
+    thread fetches the new samples every FETCH seconds, joins them by time
+    and tracks since when nothing changes, for until_stable and the live
+    view. The fetches go through the API server: beyond 100 routers they
+    come less often, at most RATE a second, beyond LARGE routers at most
+    RATE_LARGE, which spares the API of a node full of routers. The samples
+    keep their times, so the resolution stays two sampling intervals: only
+    the live view and until_stable see them later.
     """
 
     FETCH = 0.5
+    RATE = 200  # fetches a second at most, 100 routers every FETCH
+    LARGE, RATE_LARGE = 64, 50
 
     def __init__(self, routers: Routers, watched: list[str], interval: float,
                  on_tick: Callable[[float, dict], None] | None = None, spool: Path | None = None) -> None:
@@ -1094,6 +1281,7 @@ class Sampler(threading.Thread):
         self.routers = routers
         self.watched = watched
         self.interval = interval
+        self.fetch_s = fetch_interval(len(watched), self.FETCH, self.RATE if len(watched) <= self.LARGE else self.RATE_LARGE)
         self.on_tick = on_tick
         # The samples wait on disk, a file per router in the order they came,
         # until rows() merges them: a long run on many routers takes millions.
@@ -1109,6 +1297,7 @@ class Sampler(threading.Thread):
         self.seq = {r: 0 for r in watched}
         self.reached: dict[str, float] = {}
         self.pending: dict[float, dict[str, dict]] = {}
+        self.ahead: dict[str, deque] = {r: deque() for r in watched}  # each router's samples after its current one
         self.last_t: float | None = None
         self.quiet_since: float | None = None
         self.answered: dict[str, float] = {}  # when each router last handed over its samples
@@ -1117,7 +1306,7 @@ class Sampler(threading.Thread):
         self.stopped = threading.Event()
         self.error: Exception | None = None  # what ended the thread early
         self.tick = threading.Condition()
-        self.pool = ThreadPoolExecutor(len(watched))
+        self.pool = ThreadPoolExecutor(min(len(watched), Routers.POOL))
         self.t0 = time.time()
 
     def now(self) -> float:
@@ -1156,7 +1345,7 @@ class Sampler(threading.Thread):
 
     def run(self) -> None:
         try:
-            while not self.stopped.wait(self.FETCH):
+            while not self.stopped.wait(self.fetch_s):
                 self.fetch()
         except Exception as e:  # e.g. a full disk for the live view: the run fails, not silently times out
             self.error = e
@@ -1183,6 +1372,7 @@ class Sampler(threading.Thread):
                     self.peak_mb[router] = max(mb, self.peak_mb.get(router, 0.0))
                 self.count += 1
                 self.pending.setdefault(row["t"], {})[router] = row
+                self.ahead[router].append(row)
                 self.reached[router] = row["t"]
         active = [r for r in self.watched if r not in self.paused]
         if not active or any(r not in self.reached for r in active):
@@ -1190,10 +1380,14 @@ class Sampler(threading.Thread):
         horizon = min(self.reached[r] for r in active)
         with self.tick:
             for t in sorted(t for t in self.pending if t <= horizon):
-                # Busy routers skip times of their own: each stands by its
-                # latest sample, as in analysis.ticks, if not too old.
-                self.current.update(self.pending.pop(t))
-                if any(r not in self.current or t - self.current[r]["t"] > analysis.STALE_S for r in active):
+                # Busy routers skip times of their own: each stands by its latest
+                # sample, as in analysis.ticks, while recent or until a next one
+                # that shows no change. Every router has one up to the horizon.
+                for router, row in self.pending.pop(t).items():
+                    self.current[router] = row
+                    self.ahead[router].popleft()
+                if any(r not in self.current or not analysis.stands(self.current[r], self.ahead[r][0] if self.ahead[r] else None, t)
+                       for r in active):
                     continue
                 latest = {r: self.current[r] for r in active}
                 unchanged = self.latest.keys() == latest.keys() and all(
@@ -1264,5 +1458,5 @@ class Sampler(threading.Thread):
                     return True
                 if self.now() >= deadline:
                     return False
-                self.tick.wait(timeout=self.FETCH)
+                self.tick.wait(timeout=self.fetch_s)
         return False

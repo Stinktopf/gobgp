@@ -63,6 +63,13 @@ func TestParseHost(t *testing.T) {
 	}
 }
 
+func TestToLookupOption(t *testing.T) {
+	assert.Equal(t, apiutil.LOOKUP_EXACT, toLookupOption(api.TableLookupPrefix_TYPE_UNSPECIFIED))
+	assert.Equal(t, apiutil.LOOKUP_EXACT, toLookupOption(api.TableLookupPrefix_TYPE_EXACT))
+	assert.Equal(t, apiutil.LOOKUP_LONGER, toLookupOption(api.TableLookupPrefix_TYPE_LONGER))
+	assert.Equal(t, apiutil.LOOKUP_SHORTER, toLookupOption(api.TableLookupPrefix_TYPE_SHORTER))
+}
+
 func TestToPathApi(t *testing.T) {
 	type args struct {
 		path            *table.Path

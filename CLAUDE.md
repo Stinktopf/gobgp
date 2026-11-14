@@ -6,7 +6,7 @@ GoBGP fork with OBGP (oscillation-free BGP) and a lab that measures it.
 
 - `internal/pkg/table/opera.go`: OBGP itself, `opera_neighbor.go` a table per eBGP neighbor. Its `GOBGP_OPERA_*`
   settings and the lab modes (`obgp-rp`, `-sp`, `-hp`, `-np`, `-paper`, hybrid, random, `bgp-pn` for NS-BGP) are in docs/router.md.
-- `DESIGN.md`: every design decision, why, and whether the proof of [3] covers it. Update it with each new one.
+- `DESIGN.md`: every design decision, why, and whether the proof (LCN 2022, cited at the top of DESIGN.md) covers it. Update it with each new one.
   It also holds what the router supports, where the modes differ and the limitations in detail.
 - `docs/router.md` settings, modes, limitations, `docs/setup.md` operation and host sizes, `docs/evaluation.md` questions, runs, metrics, problems, statistics, threats, `docs/agents.md` agents and their limits, `docs/simulator.md`. The README stays short, each fact in one file only.
 - `pkg/server/mrai.go`: the MRAI, which GoBGP read but never applied, set per experiment with `bgp.mrai`.
@@ -25,6 +25,7 @@ GoBGP fork with OBGP (oscillation-free BGP) and a lab that measures it.
   - `legacy.py`: imports the paper's runs into `results/public/ifip-networking-2026`, run once
   - `caida.py`, `prefixes.py`, `mrt.py`, `rib.py`, `sndlib.py`: Internet data
   - `generate.py`: generated topologies (Erdős–Rényi, Watts–Strogatz, Barabási–Albert, Waxman, Elmokashfi)
+  - `marks.py` stars and notes on results, searches, cases and pages, `web/context.py` what every page and the dock get
   - `notify.py` Discord, ends of results and searches, `update.py` updates from GitHub, `web/` FastAPI, Jinja2, htmx, Tailwind
 - `controller/app.py`: beside gobgpd in every router pod, samples (next hops, a sample of prefixes on large tables, session drops) and executes steps.
 - `gobgp-lab/` Helm chart and topologies, `experiments/`, `scenarios/`.
@@ -40,6 +41,8 @@ Paths below are relative to the repository root. The README starts inside `scrip
 - Tests: `uv run --group dev pytest -q`, `go test ./internal/pkg/table/`, simulator `go test -tags obgpsim ./internal/pkg/obgpsim/`
 - CSS after template changes: `scripts/dev/build-css.sh`
 - Layout: `scripts/dev/screens.sh [dir] [page or /path]` screenshots pages at phone and desktop width, with the local searches
+- README replay image: `uv run --with playwright python scripts/dev/readme-replay.py [result] [seconds]`, from a local result with BAD GADGET
+- README simulator image: `uv run --with playwright --with pillow python scripts/dev/readme-simulator.py [search] [finding] [step]`, from a local search
 - Usage display for Claude Code, opt-in: `scripts/dev/claude-usage/install.sh`.
 - Development web only: `uv run lab serve --http`. Templates reload, Python changes need a restart. The scripts start the server with `--managed`: templates and static files stay as at its start.
 
@@ -67,7 +70,7 @@ Paths below are relative to the repository root. The README starts inside `scrip
 - Writing: the Google developer documentation style and ASD-STE100 as guidance only: one term per concept, precise
   conditions, assumptions, evidence and conclusions kept apart.
 - English everywhere. Texts short and plain, no semicolons in prose. No middle dots (·) as separators in UI texts or labels: commas, short sentences or line breaks instead.
-- Terms as in docs/evaluation.md: *rest* is a state without route changes or updates for the hold time, *settle* the time
+- Terms as in docs/evaluation.md: *rest* is a state without route changes or updates for the quiet time, *settle* the time
   until rest, *converge* to come to rest (also the simulator's `converged`), *oscillate* never to rest. The metric key
   `convergence_s` is Full reach, not rest.
 - One experiment per question of the evaluation, listed with its question in docs/evaluation.md. `ifip-networking-2026`, its

@@ -2,9 +2,9 @@
 
 How OBGP is built in this fork and why, held against the proof it rests on:
 [*Eliminating Routing Loops and Oscillations in BGP Using Total Ordering*](https://doi.org/10.1109/LCN53696.2022.9843706)
-(J.J. Garcia-Luna-Aceves, LCN 2022). Where a decision lies outside the proof, `obgp-sim` backs it: it searches every
-connected topology up to five routers, at five once per graph, with 20 message orders each, for lost routes,
-oscillations and loops.
+(J.J. Garcia-Luna-Aceves, LCN 2022), here *the proof*. Where a decision lies outside it, the simulator
+[`obgp-sim`](docs/simulator.md) backs it. *The paper's code* is OBGP as in the IFIP Networking 2026 paper,
+mode `obgp-paper`.
 
 ## The yardstick
 
@@ -15,9 +15,9 @@ oscillations and loops.
 - **iBGP (I-OBGP):** a designated route reflector orders the routes inside an AS, so that the AS
   advertises one route.
 
-The paper shows: if the order holds at every instant, OBGP is loop-free at every instant and comes to
+The proof shows: if the order holds at every instant, OBGP is loop-free at every instant and comes to
 rest, with a route wherever one is reachable under OBGP, not wherever BGP would find one. Messages in
-flight break that premise, so this fork claims loop freedom at rest only, as the proofs do.
+flight break that premise, so this fork claims loop freedom at rest only.
 
 Each decision below is marked: **holds** (the proof covers it), **outside, simulated** (not covered,
 backed by the simulator), **outside, measured** (backed by the lab) or **outside**.
@@ -52,7 +52,8 @@ A withdrawn path sets the paths that contain its AS sequence aside instead of re
 valid path is left, the router sends the neighbors of those paths a route refresh (RFC 2918) behind its
 own withdrawal. A path comes back only with the neighbor's answer, so it is current. The router's own import policy, lost sessions and attribute-only updates prune
 nothing. An admitted path sent again with the same AS path, as a route refresh answer or with a new
-MED, keeps its place. *Code:* `Pruning` in `opera.go`, `opera_refresh.go` in `pkg/server`, `GOBGP_OPERA_PRUNING`.
+MED, keeps its place. One sent again unchanged, admitted, set aside or pruned in no table and while no
+table waits, is skipped before the decision: it changes no table and goes on to no one. *Code:* `Pruning` in `opera.go`, `opera_refresh.go` in `pkg/server`, `GOBGP_OPERA_PRUNING`.
 
 *Why:* hard pruning cannot tell a withdrawal caused by a neighbor's filter from a real one and loses
 routes behind import and export filters. Refresh pruning loses none there, nor does soft pruning, which
@@ -62,12 +63,15 @@ as rarely as hard pruning, far less often than soft pruning or BGP (`obgp-sim -t
 loops on the way in some network.
 
 *Cost:* a route refresh asks for the whole table of a family, at most once per `GOBGP_OPERA_REFRESH_S`
-(1 s) and neighbor, for all destinations that wait. The answer is stale while a withdrawal is still on
+(1 s) and neighbor, for all destinations that wait. Its unchanged paths cost a lookup each, no
+decision and with tables per neighbor no export policy per neighbor (`OperaRedundant`). With Enhanced
+Route Refresh (RFC 7313) on both ends a request stays open until its answer ends, so a busy neighbor
+is not asked for its whole table again while the last answer is on its way. The end drops the
+routes the answer did not repeat. Neighbors without it, or with `GOBGP_OPERA_ENHANCED_REFRESH=off`, are
+asked every interval as before. The answer is stale while a withdrawal is still on
 its way to that neighbor. `GOBGP_OPERA_REFRESH_DELAY_S` (0 s, the lab compares 1 s) lets the first
-request wait for withdrawals elsewhere and brings the path back that much later. In the lab, refresh
-pruning settled 0.98 to 1.0 s later than BGP after a link flap and a regional outage, with and without
-the delay and with tables per neighbor (`behaviour-failures`, n = 10 per cell, Holm p ≤ 0.03,
-resolution 0.2 s). Neighbors without the route refresh capability get soft pruning. *Proof:* holds
+request wait for withdrawals elsewhere and brings the path back that much later.
+Neighbors without the route refresh capability get soft pruning. *Proof:* holds
 for rest and for loop freedom at rest. Loop freedom on the way does not hold, as for every mode.
 
 ### Native iBGP
@@ -80,7 +84,7 @@ them, loops at rest and sends two routes per AS in some networks with reflectors
 
 *Proof:* outside, simulated. The proof assumes one route per AS. Native iBGP keeps it in every network
 searched, at rest without loops. On the way every mode loops, BGP too, while the routers of an AS
-learn of a change one after the other. The paper's designated route reflector is not built: native
+learn of a change one after the other. The proof's designated route reflector is not built: native
 iBGP needs no configuration and works for full meshes as well as for reflectors.
 
 These loops come from forwarding hop by hop inside the AS, where every router decides again. Over
@@ -96,7 +100,7 @@ the paper's code. *Why:* the same paths compare alike however their sets were wr
 members out of the AS path length. Left out of the order too, a hop between members keeps a path as it
 was, and a member's withdrawal looks like one of the AS behind it: it prunes the direct path from that
 AS as well. Counted, a hop between members makes a path strictly worse, as one between ASes does.
-*Proof:* outside, simulated. The paper orders AS sequences only. Aggregates lose nothing in the
+*Proof:* outside, simulated. The proof orders AS sequences only. Aggregates lose nothing in the
 search. Confederations lose a route in rare cases and loop on the way less often than with members
 left out or with BGP.
 
@@ -117,7 +121,8 @@ built for a neighbor that comes up takes the paths worst first, so that it admit
 those hard pruning took out of the other tables, as their neighbors still send them. There hard
 pruning keeps them aside, never admits them again and drops them once their neighbor sends again.
 A policy change asks for route refreshes where a table is left waiting, and a refresh answer
-withdraws what the neighbor may no longer get. The router forwards on its preferred path among those
+withdraws what the neighbor may no longer get. The router forwards a packet from an eBGP neighbor on
+the path it sends that neighbor, as NS-BGP does, and its own packets on its preferred path among those
 admitted in any table that are no longer than any of its exports. iBGP peers and route server
 clients keep the main table. *Code:*
 `opera_neighbor.go` in `internal/pkg/table` and `pkg/server`, `obgp-sim -per-neighbor`, a lab
@@ -128,10 +133,15 @@ exactly that route. A table per neighbor holds only what that neighbor may get, 
 no longer keeps a longer customer route out of the table towards a provider. It needs no labels: the
 router reads its own export policy, whatever it is built from.
 
-*Why forwarding stays loop-free at rest:* a neighbor that forwards to the router uses a path one AS longer
-than what the router exports to it. The router forwards on a path no longer than any of its exports,
-so the length falls along every hop whatever the policies, as in OBGP itself. The bound can keep a
-router from its preferred path where that path is longer than one of its exports.
+*Why forwarding by ingress:* with one FIB a neighbor's packets follow the router's preferred path, not
+the path sent to that neighbor. The bound that keeps one FIB loop-free, no longer than any export, can
+rule out the customer route a provider was sent, and the provider's packets then cross a peer link: a
+forward valley (`obgp-sim`, kind `forward-valley`), under Gao-Rexford from four routers. By ingress a
+packet follows the AS path the router sent, hop by hop: at rest each router sends a path it holds from
+its next hop, which sent it exactly the rest of that path. So forwarding is loop-free as AS paths are
+and follows the relations as the exports do. The router's own packets join that chain at their next
+hop. *Cost:* a FIB per table, shared where the tables are, and tunnels inside an AS, as NS-BGP.
+gobgpd installs no FIB, so lab and simulator check forwarding by ingress, as for NS-BGP.
 
 *Proof:* outside, simulated. For BGP, [Neighbor-Specific BGP](https://arxiv.org/abs/0906.3846) (Y. Wang,
 M. Schapira, J. Rexford, SIGMETRICS 2009) shows that BGP with a choice per neighbor converges under
@@ -140,15 +150,18 @@ conditions such as Gao-Rexford's and allows more policies.
 *Cost:* each table holds its own entry for every path it is fed, the attributes stay shared. With n
 eBGP neighbors that is up to n² entries per destination. Neighbors whose export policies decided
 alike on every path fed so far share one table, under Gao-Rexford the customers. The first path they
-differ on copies the table, and a table built for a neighbor that comes up joins one in the same
-state, much as routers group neighbors with the same outbound policy into update groups. So a
+differ on copies the table. A table a path brings into the state of another, and a table built for a
+neighbor that comes up, joins that one, much as routers group neighbors with the same outbound policy
+into update groups. So a
 shared table decides exactly as a table of its own. *Proof:* as for tables per neighbor, sharing
 changes nothing.
-*Code:* `OperaFeedAll`, `OperaShare`, tested against tables of their own in every pruning mode.
+*Code:* `OperaFeedAll`, `operaMerge`, `OperaShare`, tested against tables of their own in every pruning mode.
 
 In the search a table per neighbor loses fewer routes than one table under these choices, in every
-pruning mode. No network oscillates or loops at rest. Without export filters a table per neighbor
-sends and forwards as the one table, message by message.
+pruning mode. No network oscillates, loops at rest or forwards against the relations. Without export
+filters a table per neighbor sends as the one table, message by message. With siblings a network of six
+routers can lose a route with a table per neighbor too: the table towards a sibling exports its worst
+path, a peer path, which the sibling may not pass to its provider.
 
 ### NS-BGP as the yardstick
 
@@ -164,14 +177,15 @@ variant `{mode: bgp, per_neighbor: true}`.
 and simulator, so they compare on the same networks.
 
 *Forwarding:* NS-BGP sends a packet from a neighbor on the route it sent that neighbor, through a
-tunnel inside an AS, as its paper does. One FIB cannot. The lab follows next hops rather than
-packets, so lab and simulator follow each packet with the neighbor it came from. Inside
-an AS it goes to the router of the route's next AS beside the border router, or to the origin if that
-is in the AS. The controller reads the route sent to each eBGP neighbor from the Adj-RIB-Out and its
-next hop from the held path. OBGP per neighbor needs none of this: one FIB stays loop-free at rest.
+tunnel inside an AS, as its paper does. One FIB cannot. OBGP per neighbor forwards so as well, see
+[A table per neighbor](#a-table-per-neighbor). The lab reads next hops, not packets, so lab
+and simulator follow each packet together with the neighbor it came from. Inside an AS it goes to the
+border router towards the route's next AS, or to the origin if that is in the AS. The controller reads the route sent to each eBGP neighbor from the Adj-RIB-Out and its
+next hop from the held path, or from the path as sent where OBGP only set it aside. In a mixed mode the
+routers with one table forward on their best route, whoever sent the packet.
 *Code:* `walk` in `oracle.go`, `lab/forwarding.py`, `ingress` in `controller/app.py`.
 
-*Proof:* outside OBGP's proofs. NS-BGP's paper shows that it converges under conditions such as
+*Proof:* outside. NS-BGP's paper shows that it converges under conditions such as
 Gao-Rexford's. In the simulator BAD GADGET built from export filters comes to rest under `bgp-pn`,
 the lab's BAD GADGET, built from preferences, does not.
 
@@ -220,8 +234,11 @@ AS. The paper's code loses more.
   and stripped them towards other reflectors. A client then got its own route back as someone
   else's, and with the withdrawal above each reflector preferred the other's copy, by router ID, so
   they took turns withdrawing. A client's route now carries both towards every iBGP neighbor (RFC
-  4456, 8 and 9). *Proof:* outside, as above. With both changes Abilene passed every check in 4 of 4
-  runs each of BGP and NS-BGP.
+  4456, 8 and 9). *Proof:* outside, as above. With both changes Abilene passed every check
+  in the lab.
+- **Log level warn:** `-l warn` logs only warnings and errors, where GoBGP knew only info and debug.
+  The lab starts gobgpd so: a line per session change of hundreds of routers burdened the node.
+  *Proof:* holds, it changes no decision.
 
 ### Left out
 
@@ -236,7 +253,8 @@ AS. The paper's code loses more.
 ## What the router supports
 
 **Works:** yes as with BGP, limited where it loses routes in some networks. **Proof:** whether the
-proof of rest and of loop freedom at rest covers the feature, see the decisions above. It says nothing
+proof of rest and of loop freedom at rest covers the feature, see the decisions above, *simulated* for
+outside but backed by the simulator. It says nothing
 about lost routes, the last column does, for OBGP with refresh pruning (`obgp-rp`) in the networks searched.
 
 | Feature | Works | Proof | What the simulator found |
@@ -259,13 +277,13 @@ about lost routes, the last column does, for OBGP with refresh pruning (`obgp-rp
 | Route servers, clients filtering on the AS path | limited | holds | rare losses, with Add-Path to the clients |
 | Communities tagged on the way, e.g. not to one AS | limited | holds | some losses, fewer with a table per neighbor |
 | Gao-Rexford relations, also with partial transit or siblings | limited | holds | some losses, fewer with a table per neighbor |
-| Route leaks | limited | holds | some losses, fewer with a table per neighbor |
+| Route leaks | limited | holds | some losses, fewer with a table per neighbor, with one table packets against the relations in rare cases |
 | Other address families, e.g. VPN or EVPN | no | – | they run as plain GoBGP |
 | Add-Path export | no | – | OBGP sends one path per destination |
 
 ## Where the modes differ
 
-Where the modes differ, lost routes, or for iBGP loops and ASes that send different paths:
+Networks that lose a route, for iBGP networks that loop or where an AS sends different paths:
 
 | | `obgp-rp` | `obgp-hp` | `obgp-np` | `obgp-paper` |
 |---|---|---|---|---|

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/osrg/gobgp/v4/internal/pkg/table"
+	"github.com/osrg/gobgp/v4/pkg/apiutil"
 	"github.com/osrg/gobgp/v4/pkg/config/oc"
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
@@ -893,10 +894,10 @@ func TestOperaAllowsJudgesTheOwnPathAsSent(t *testing.T) {
 	assert.True(t, r.s.operaAllows(a, r.path(a, []uint32{1, 9}, false)))
 }
 
-// proofs.md, Theorem 1: a repeat goes on to a neighbor only when it repeats
-// the path the router exports to that neighbor, one AS longer. A repeat of
-// another admitted path, or of a set-aside one, sends nothing.
-func TestOperaRepeatGoesOnOnlyForTheExport(t *testing.T) {
+// A repeat of an admitted path, the export to a neighbor among them, changes
+// no table and goes on to no one, as a route refresh resends most paths
+// unchanged. A repeat of a set-aside one is handled and sends nothing.
+func TestOperaRepeatGoesOnToNoOne(t *testing.T) {
 	r := newOperaRouter(t, table.OperaOptions{Enabled: true, PerNeighbor: true})
 	a, b, c, q := r.peer("10.0.1.1", 1), r.peer("10.0.1.2", 2), r.peer("10.0.1.3", 3), r.peer("10.0.1.4", 4)
 	r.receive(b, []uint32{2, 9}) // admitted first, the worst once [1 9] comes
@@ -908,8 +909,8 @@ func TestOperaRepeatGoesOnOnlyForTheExport(t *testing.T) {
 	r.receive(a, []uint32{1, 9}) // admitted, not the export
 	r.receive(c, []uint32{3, 9}) // set aside
 	assert.Zero(t, r.updates(q))
-	r.receive(b, []uint32{2, 9}) // the export: q gets it again
-	assert.Equal(t, 1, r.updates(q))
+	r.receive(b, []uint32{2, 9}) // the export, unchanged: q gets nothing new
+	assert.Zero(t, r.updates(q))
 	assert.Equal(t, sent(2, 9), r.route(q))
 }
 
@@ -944,6 +945,44 @@ func TestOperaListingTheAdjRibOutChangesNoTable(t *testing.T) {
 	assert.Len(t, listed, 1)
 	assert.Same(t, before, d.OperaExport(q.ID()))
 	assert.Zero(t, r.updates(q))
+}
+
+// A listing of exact prefixes gets from a neighbor's tables what the full
+// listing has for them, without the rest of the table.
+func TestOperaListingExactPrefixesTakesOnlyThose(t *testing.T) {
+	r := newOperaRouter(t, table.OperaOptions{Enabled: true, PerNeighbor: true})
+	a, q := r.peer("10.0.1.1", 1), r.peer("10.0.1.4", 4)
+	r.receive(a, []uint32{1, 9})
+	old := operaPrefix
+	operaPrefix = netip.MustParsePrefix("10.0.2.0/24")
+	t.Cleanup(func() { operaPrefix = old })
+	r.receive(a, []uint32{1, 8})
+	full := r.s.operaExports(q, bgp.RF_IPv4_UC)
+	require.Len(t, full, 2)
+
+	exact := func(p string) []*apiutil.LookupPrefix {
+		return []*apiutil.LookupPrefix{{Prefix: p, LookupOption: apiutil.LOOKUP_EXACT}}
+	}
+	dsts, ok := r.s.operaExactDestinations(bgp.RF_IPv4_UC, exact("10.0.2.0/24"))
+	require.True(t, ok)
+	only := r.s.operaExportsOf(q, dsts)
+	require.Len(t, only, 1)
+	for _, p := range full {
+		if p.GetNlri().String() == "10.0.2.0/24" {
+			assert.Equal(t, p.GetAsList(), only[0].GetAsList())
+		}
+	}
+	dsts, ok = r.s.operaExactDestinations(bgp.RF_IPv4_UC, exact("10.0.3.0/24"))
+	assert.True(t, ok)
+	assert.Empty(t, dsts)
+
+	// a single address or another lookup: the full listing
+	_, ok = r.s.operaExactDestinations(bgp.RF_IPv4_UC, exact("10.0.2.1"))
+	assert.False(t, ok)
+	_, ok = r.s.operaExactDestinations(bgp.RF_IPv4_UC, []*apiutil.LookupPrefix{{Prefix: "10.0.0.0/8", LookupOption: apiutil.LOOKUP_LONGER}})
+	assert.False(t, ok)
+	_, ok = r.s.operaExactDestinations(bgp.RF_IPv4_UC, nil)
+	assert.False(t, ok)
 }
 
 // A neighbor's table is fed from the moment its session comes up until it is

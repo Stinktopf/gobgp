@@ -401,21 +401,36 @@ def _tiers(rels: Relations, ases: list[int]) -> dict[int, int]:
 
 def _place(routers: dict, rels: Relations, ases: list[int], tiers: dict[int, int]) -> None:
     """Tiers from top to bottom, each sorted by where its providers are; a
-    wide tier wraps into rows, so that the names stay apart."""
+    wide tier wraps into rows, so that the names stay apart. Many thin tiers,
+    as the Internet's core has, sit closer and spread across a page at least
+    as wide as it is high, not in a column one router wide."""
     x: dict[int, float] = {}
-    width = min(ROW, max(sum(1 for a in ases if tiers[a] == t) for t in set(tiers.values()))) * GAP
+    levels = sorted(set(tiers.values()))
+    gap = TIER if len(levels) <= 8 else ROW_GAP + 20
+    rows_of = {t: -(-sum(1 for a in ases if tiers[a] == t) // ROW) for t in levels}
+    height = sum(rows_of.values()) * ROW_GAP + (len(levels) - 1) * (gap - ROW_GAP)
+    width = max(min(ROW, max(sum(1 for a in ases if tiers[a] == t) for t in levels)) * GAP, 1.3 * height)
     y = 0.0
-    for t in sorted(set(tiers.values())):
+    for t in levels:
         tier = [a for a in ases if tiers[a] == t]
         above = lambda a: [x[b] for b in rels.providers.get(a, set()) if b in x]
-        tier.sort(key=lambda a: (sum(above(a)) / len(above(a)) if above(a) else width / 2, a))
+        aim = {a: sum(above(a)) / len(above(a)) if above(a) else width / 2 for a in tier}
+        tier.sort(key=lambda a: (aim[a], a))
         rows = [tier[i:i + ROW] for i in range(0, len(tier), ROW)]
         for row in rows:
-            for i, a in enumerate(row):
-                x[a] = (i + 0.5) * width / len(row)
-                routers[f"as{a}"]["position"] = {"x": x[a], "y": y}
+            if len(row) * 2 >= ROW:  # a full row spreads evenly
+                spots = [(i + 0.5) * width / len(row) for i in range(len(row))]
+            else:  # a few routers go below their providers, GAP apart at least, inside the page
+                spots = []
+                for a in row:
+                    spots.append(max(aim[a], spots[-1] + GAP) if spots else aim[a])
+                shift = max(0.0, spots[-1] - (width - GAP / 2))
+                spots = [max(GAP / 2, v - shift) for v in spots]
+            for a, v in zip(row, spots):
+                x[a] = v
+                routers[f"as{a}"]["position"] = {"x": round(v), "y": round(y)}
             y += ROW_GAP
-        y += TIER - ROW_GAP
+        y += gap - ROW_GAP
 
 
 def read_form(part: str, asn: str, country: str, size: str) -> tuple[str, str | int]:

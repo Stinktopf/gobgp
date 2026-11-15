@@ -63,6 +63,13 @@ func TestParseHost(t *testing.T) {
 	}
 }
 
+func TestToLookupOption(t *testing.T) {
+	assert.Equal(t, apiutil.LOOKUP_EXACT, toLookupOption(api.TableLookupPrefix_TYPE_UNSPECIFIED))
+	assert.Equal(t, apiutil.LOOKUP_EXACT, toLookupOption(api.TableLookupPrefix_TYPE_EXACT))
+	assert.Equal(t, apiutil.LOOKUP_LONGER, toLookupOption(api.TableLookupPrefix_TYPE_LONGER))
+	assert.Equal(t, apiutil.LOOKUP_SHORTER, toLookupOption(api.TableLookupPrefix_TYPE_SHORTER))
+}
+
 func TestToPathApi(t *testing.T) {
 	type args struct {
 		path            *table.Path
@@ -512,5 +519,13 @@ func TestNewCommunityCountConditionFromApiStruct(t *testing.T) {
 		if got[:len(tt.wantOp)] != tt.wantOp {
 			t.Fatalf("operator mismatch: got %q want prefix %q", got, tt.wantOp)
 		}
+	}
+}
+
+func TestToPathApiKeepsBest(t *testing.T) {
+	nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	for _, best := range []bool{true, false} {
+		p := &apiutil.Path{Family: bgp.RF_IPv4_UC, Nlri: nlri, Best: best}
+		assert.Equal(t, best, toPathApi(p, false, false, false).Best)
 	}
 }

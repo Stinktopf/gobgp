@@ -149,6 +149,8 @@ func main() {
 	switch opts.LogLevel {
 	case "debug":
 		lvl.Set(slog.LevelDebug)
+	case "warn":
+		lvl.Set(slog.LevelWarn)
 	default:
 		lvl.Set(slog.LevelInfo)
 	}

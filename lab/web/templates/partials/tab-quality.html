@@ -1,0 +1,166 @@
+{% from "macros.html" import icon, loading %}
+<div id="overview" data-result="{{ result.name }}" class="space-y-4">
+    {# What it is, then the topology and scenario: the charts over the time of a run, the table of its runs. #}
+    <h2 class="section-title" data-tip="Sampling and host load. Red: a router below 90 % of the rate, or the host above {{ (100 * busy_host) | round | int }} % of its CPUs">Measurement quality</h2>
+    {% include "partials/result-filters.html" %}
+    <div data-charts data-metrics="quality" data-spread="routers" data-src="/results/{{ result.name }}/series?topology={{ topology }}&scenario={{ scenario }}">
+      <div class="card py-10">{{ loading("Loading the series") }}</div>
+    </div>
+    {% set m = integrity %}
+    {% if sampling_rows or m.noise or m.shifting or m.images %}
+    <section id="quality" class="card min-w-0 p-5">
+      {% if sampling_rows %}
+      {% set many = sampling_rows | map(attribute="topology") | unique | list | length > 1 or sampling_rows | map(attribute="scenario") | unique | list | length > 1 %}
+      {% set with_others = sampling_rows | selectattr("others", "ne", none) | list %}
+      {% set with_cores = sampling_rows | selectattr("others_cores", "ne", none) | list %}
+      {% set with_saturated = sampling_rows | selectattr("saturated", "ne", none) | list %}
+      {% macro hz(x) %}{{ "%.1f" | format(x) if x is not none else "–" }}{% endmacro %}
+      {% macro pct(x) %}{{ "%.0f %%" | format(100 * x) if x is not none else "–" }}{% endmacro %}
+      {% macro sec(x) %}{{ ("%.2g s" | format(x)) if x is not none else "–" }}{% endmacro %}
+      {% set warn = "text-rose-700 dark:text-rose-300" %}
+      {% macro cells(r, set_hz, run=false) %}
+            <td class="text-right whitespace-nowrap">{{ "%g Hz" | format(set_hz) if not run }}</td>
+            <td class="text-right whitespace-nowrap {{ warn if r.below }}">{{ hz(r.hz) }} Hz</td>
+            <td class="whitespace-nowrap {{ warn if r.slow }}" data-tip="{{ 'Below 90 % of the rate. ' if r.slow }}Longest gap: {{ sec(r.gap) }}">{{ hz(r.slowest) }} Hz{% if r.slowest_router and r.slowest < 0.95 * set_hz %} <span class="font-mono text-xs opacity-70">{{ r.slowest_router }}</span>{% endif %}</td>
+            <td class="text-right {{ warn if r.slow }}">{{ sec(r.resolution) }}</td>
+            <td class="text-right">{{ pct(r.cpu_mean) }}</td>
+            <td class="text-right {{ warn if r.busy }}" {% if r.busy %}data-tip="Above {{ (100 * busy_host) | round | int }} % of the CPUs"{% endif %}>{{ pct(r.cpu_max) }}</td>
+            {% if with_saturated %}<td class="text-right">{{ sec(r.saturated) }}</td>{% endif %}
+            {% if with_others %}<td class="text-right">{{ pct(r.others) }}</td>{% endif %}
+            {% if with_cores %}<td class="text-right">{{ pct(r.others_cores) }}</td>{% endif %}
+      {% endmacro %}
+      <div class="overflow-x-auto">
+      <table class="sticky-first w-full text-sm tabular-nums">
+        <thead><tr class="text-left text-xs text-slate-500 dark:text-slate-400 [&>th]:pr-6 [&>th]:pb-2 [&>th]:font-medium [&>th]:whitespace-nowrap">
+          <th>Variant</th>
+          <th class="text-right" data-tip="The rate the experiment set">Set</th>
+          <th class="text-right" data-tip="The median router of the run. For a variant, the median run">Sampled</th>
+          <th data-tip="Slowest router. For a variant, of any run">Slowest router</th>
+          <th class="text-right" data-tip="Two intervals of the slowest router">Resolution</th>
+          <th class="text-right" data-tip="Host CPU, mean of the run. For a variant, the median run">Host CPU</th>
+          <th class="text-right" data-tip="The busiest second of the run. For a variant, of any run">Peak</th>
+          {% if with_saturated %}<th class="text-right" data-tip="Seconds above {{ (100 * busy_host) | round | int }} % of the CPUs">At limit</th>{% endif %}
+          {% if with_others %}<th class="text-right" data-tip="What others than the lab took, on average">Others</th>{% endif %}
+          {% if with_cores %}<th class="text-right" data-tip="What others took of the CPUs the cluster is bound to, on average. For a variant, of any run">On its CPUs</th>{% endif %}
+          <th class="text-right" data-tip="When routes came to rest, if they did">At rest</th>
+          <th class="text-right">Runs</th>
+        </tr></thead>
+        {% for row in sampling_rows %}
+        <tbody class="border-t border-slate-100 dark:border-white/5" data-variant="{{ row.variant }}">
+          <tr class="[&>td]:py-1.5 [&>td]:pr-6">
+            <td class="whitespace-nowrap"><span class="font-mono">{{ row.variant }}</span>{% if many %} <span class="muted text-xs">{{ row.topology }}, {{ row.scenario }}</span>{% endif %}</td>
+            {{ cells(row, row.set_hz) }}
+            <td class="text-right {{ warn if row.rested < row.runs | length }}">{{ row.rested }} of {{ row.runs | length }}</td>
+            <td class="text-right"><button type="button" class="hit inline-flex items-center gap-1 rounded px-1 hover:bg-slate-100 dark:hover:bg-slate-800" aria-expanded="false" data-tip="Show the runs"
+              onclick="const open = this.getAttribute('aria-expanded') !== 'true'; this.setAttribute('aria-expanded', open); this.closest('tbody').querySelectorAll('[data-run]').forEach((r) => (r.hidden = !open))">{{ row.runs | length }}{{ icon("chevron-down", "size-3.5") }}</button></td>
+          </tr>
+          {% for r in row.runs %}
+          <tr data-run hidden class="text-xs text-slate-600 dark:text-slate-300 [&>td]:py-1 [&>td]:pr-6">
+            <td class="pl-4"><a href="?tab=replay&topology={{ row.topology }}&scenario={{ row.scenario }}&run={{ r.index }}&variant={{ row.variant }}" class="hit inline-block hover:underline" data-tip="Replay this run">Run {{ r.index }}</a></td>
+            {{ cells(r, row.set_hz, true) }}
+            <td class="text-right {{ warn if r.settle is none }}">{% if r.settle is none %}{{ "not at rest" if r.no_rest else "not measured" }}{% elif r.resolution and r.settle < r.resolution %}&lt; {{ sec(r.resolution) }}{% else %}after {{ sec(r.settle) }}{% endif %}</td>
+            <td></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        {% endfor %}
+      </table>
+      </div>
+      {% endif %}
+      <div class="mt-4 space-y-1 text-sm text-slate-600 dark:text-slate-300">
+        {% if sampling_rows | selectattr("limit") | list %}<p>At the limit the runs measure the host as much as the protocol. A larger host, a smaller topology or a lower rate helps.</p>{% endif %}
+        {% if m.noise and (100 * m.noise.max) | round | int %}<p>Others used {{ (100 * m.noise.median) | round | int }} % of the host's CPUs, at most {{ (100 * m.noise.max) | round | int }} % in a run.</p>{% endif %}
+        {% if m.shifting %}<p data-tip="Load of others changed most{% for x in m.shifting[:12] %}&#10;{{ x.topology }}, {{ x.scenario }}, {{ x.variant }}: {{ (100 * x.spread) | round | int }} %{% endfor %}">Others' load changed by up to {{ (100 * m.shifting[0].spread) | round | int }} % of the CPUs in {{ m.shifting[0].topology }}, {{ m.shifting[0].scenario }}. Times there compare less well.</p>{% endif %}
+        {% if m.images %}<p data-tip="Images{% for v, tags in m.images.items() %}&#10;{{ v }}: {{ tags | join(', ') }}{% endfor %}">Runs of {{ m.images | list | join(", ") }} ran on different images, e.g. after a resume.</p>{% endif %}
+      </div>
+    </section>
+    {% endif %}
+    {# Simulation and emulation, in the paper's terms: only never, sometimes and always compare, a contradiction at an extreme is marked. #}
+    {% if agree %}
+    {% set warn = "text-rose-700 dark:text-rose-300" %}
+    <section id="simulator" class="card min-w-0 p-5">
+      <h2 class="section-title mb-3" data-tip="Per side: never, sometimes or always not at rest, below that what it showed at rest. The simulator has no timing, so only these outcomes compare. Red: they contradict">Simulation and emulation</h2>
+      <div class="overflow-x-auto">
+      <table class="sticky-first w-full text-sm tabular-nums">
+        <thead class="text-left text-xs text-slate-500 dark:text-slate-400 [&_th]:pr-6 [&_th]:font-medium [&_th]:whitespace-nowrap">
+          {# What each side counts above, its answer and counts below: a cell reads "simulator, orders without rest: sometimes". #}
+          <tr class="[&>th]:pb-1">
+            <th></th>
+            <th colspan="5" class="border-b border-slate-900/10 dark:border-white/10" data-tip="In the simulator's orders of messages, drawn without timing">Simulator, message orders</th>
+            <th colspan="4" class="border-b border-slate-900/10 dark:border-white/10" data-tip="In the measured runs on the emulated routers, with real timing">Lab, runs</th>
+          </tr>
+          <tr class="[&>th]:pt-1 [&>th]:pb-2">
+            <th>Variant</th>
+            <th data-tip="Never, sometimes or always not at rest">Outcome</th>
+            <th class="text-right" data-tip="Orders of messages the simulator played">Orders</th>
+            <th class="text-right" data-tip="Orders in which the network was not at rest, at a step or at the end">Not converged</th>
+            <th class="text-right" data-tip="Of those, the orders the simulator showed to repeat forever">Without end</th>
+            <th class="text-right" data-tip="Of those, the orders still busy at the bound or at a step, not shown to go on forever">Still busy</th>
+            <th data-tip="Never, sometimes or always not at rest">Outcome</th>
+            <th class="text-right" data-tip="Runs with a rest value">Runs</th>
+            <th class="text-right" data-tip="Runs that were not at rest, at a step or at the end">Not converged</th>
+            <th class="text-right" data-tip="Exact interval of the share of runs that were not at rest">95 % interval</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for c in agree %}
+        <tr class="border-t border-slate-900/5 dark:border-white/5 [&>td]:py-1.5 [&>td]:pr-6 [&>td]:whitespace-nowrap" {% if c.signal %}data-tip="{{ c.signal }}"{% endif %}>
+          <td class="font-mono whitespace-nowrap">{{ c.variant }}</td>
+          {% if c.simulator %}
+          <td class="{{ warn if c.signal }}">{{ c.simulator }}</td>
+          <td class="text-right tabular-nums">{{ c.orders }}</td>
+          <td class="text-right tabular-nums">{{ c.orders_without_rest }}</td>
+          <td class="text-right tabular-nums">{{ c.endless }}</td>
+          <td class="text-right tabular-nums">{{ c.busy }}</td>
+          {% else %}
+          <td class="muted" data-tip="No simulator outcome{{ ': ' ~ c.why_not if c.why_not }}">–</td><td colspan="4"></td>
+          {% endif %}
+          <td class="{{ warn if c.signal }}">{{ c.lab or "not measured" }}</td>
+          <td class="text-right tabular-nums">{{ c.measured }}</td>
+          <td class="text-right tabular-nums">{{ c.runs_without_rest }}</td>
+          <td class="text-right whitespace-nowrap tabular-nums">{% if c.interval %}{{ (100 * c.interval[0]) | round | int }}–{{ (100 * c.interval[1]) | round | int }} %{% else %}–{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {# At rest, beside rest: only what one side showed, where both answer. #}
+      {% set names = {"unreachable": "lost route", "loop": "loop", "black-hole": "black hole", "leaked": "leak"} %}
+      {% set shown = [] %}{% for c in agree %}{% for d, x in (c.deviations or {}).items() if x.simulator and x.lab and (x.orders_with or x.runs_with) %}{% set _ = shown.append((c, d, x)) %}{% endfor %}{% endfor %}
+      <h3 class="section-title mt-6 mb-3" data-tip="Lost routes against BGP, loops, black holes and leaks. Only those one side showed">At rest</h3>
+      {% if shown %}
+      <div class="overflow-x-auto">
+      <table class="sticky-first w-full text-sm tabular-nums">
+        <thead><tr class="text-left text-xs text-slate-500 dark:text-slate-400 [&>th]:pr-6 [&>th]:pb-2 [&>th]:font-medium [&>th]:whitespace-nowrap">
+          <th>Variant</th><th>Behavior</th>
+          <th data-tip="Never, sometimes or always, in the simulator's orders at rest">Simulator</th>
+          <th class="text-right" data-tip="Orders at rest">Orders</th>
+          <th class="text-right" data-tip="Of those, the orders that showed it">Showed it</th>
+          <th data-tip="Never, sometimes or always, in the runs at rest">Lab</th>
+          <th class="text-right" data-tip="Runs at rest, for a lost route those whose BGP run of the same seed came to rest too">Runs</th>
+          <th class="text-right" data-tip="Of those, the runs that showed it">Showed it</th>
+          <th class="text-right" data-tip="Exact interval of the share of runs that showed it">95 % interval</th>
+        </tr></thead>
+        <tbody>
+        {% for c, d, x in shown %}
+        <tr class="border-t border-slate-900/5 dark:border-white/5 [&>td]:py-1.5 [&>td]:pr-6 [&>td]:whitespace-nowrap" {% if x.signal %}data-tip="{{ x.signal }}"{% endif %}>
+          <td class="font-mono">{{ c.variant }}</td><td>{{ names[d] }}</td>
+          <td class="{{ warn if x.signal }}">{{ x.simulator }}</td>
+          <td class="text-right">{{ x.orders }}</td><td class="text-right">{{ x.orders_with }}</td>
+          <td class="{{ warn if x.signal }}">{{ x.lab }}</td>
+          <td class="text-right">{{ x.runs }}</td><td class="text-right">{{ x.runs_with }}</td>
+          <td class="text-right">{{ (100 * x.interval[0]) | round | int }}–{{ (100 * x.interval[1]) | round | int }} %</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <p class="empty-state py-3">Neither side showed a lost route, loop, black hole or leak at rest.</p>
+      {% endif %}
+    </section>
+    {% endif %}
+    {% if not (sampling_rows or m.noise or m.shifting or m.images or agree) %}
+    <p class="empty-state">No run of this scenario is done yet.</p>
+    {% endif %}
+</div>

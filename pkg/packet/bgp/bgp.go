@@ -15633,6 +15633,14 @@ func NewBGPKeepAliveMessage() *BGPMessage {
 	}
 }
 
+// The subtypes of a ROUTE-REFRESH message (RFC 7313), in its Demarcation:
+// a request, and with Enhanced Route Refresh the begin and the end of an answer.
+const (
+	BGP_ROUTE_REFRESH_REQUEST uint8 = 0
+	BGP_ROUTE_REFRESH_BEGIN   uint8 = 1
+	BGP_ROUTE_REFRESH_END     uint8 = 2
+)
+
 type BGPRouteRefresh struct {
 	AFI         uint16
 	Demarcation uint8

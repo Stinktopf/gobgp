@@ -1,0 +1,12 @@
+name: vortex
+description: Random routers keep raising a neighbor's preference.
+steps:
+  - announce: {rate: 1, for: 30}
+  - wait: 10
+  - repeat:
+      times: 6
+      every: 5
+      steps:
+        - set_preference: {router: random, value: 300}
+  - until_stable: {timeout: 60}
+  - wait: 30

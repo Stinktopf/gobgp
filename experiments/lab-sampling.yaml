@@ -1,0 +1,11 @@
+name: lab-sampling
+description: Whether sampling changes what it measures, the same runs at 10 Hz and at 1 Hz.
+cluster: {cpus: 14, memory_mb: 116224}
+runs: 6
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: obgp-rp, mode: obgp-rp}
+  - {name: bgp-1hz, mode: bgp, interval: 1.0}
+  - {name: obgp-1hz, mode: obgp-rp, interval: 1.0}
+topologies: [noble-eu]
+scenarios: [fill-60]

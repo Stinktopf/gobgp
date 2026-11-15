@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% from "macros.html" import icon, page_header, problem, star_button %}
+{% set f = example.finding %}
+{# The title and counts speak of one mode: the one chosen if it shows the problem, else the first that does. #}
+{% set named = right if right in per_mode else shown[0] %}
+{% set pm = per_mode[named] %}
+{% set rs = pm.routers or [] %}
+{% set hit = ("router " ~ rs[0]) if rs | length == 1 else ("routers " ~ (rs[:-1] | join(", ")) ~ " and " ~ rs[-1]) if rs else "routers" %}
+{# Theorems 1 and 2 promise that OBGP comes to rest and forwards without loops at rest, inside their model. #}
+{% set theorem = {"no-convergence": "the convergence proof", "loop": "the proof of loop-freedom at rest"}.get(f.kind) if proof == "contradicts it" else none %}
+{% set title = {
+  "unreachable": hit ~ (" has" if rs | length == 1 else " have") ~ " no route at rest",
+  "black-hole": "Packets from " ~ hit ~ " end nowhere",
+  "loop": "Packets circle at rest",
+  "no-convergence": "The network never comes to rest",
+  "leaked": hit ~ " use" ~ ("s" if rs | length == 1) ~ " a leaked path",
+  "forward-valley": "Packets from " ~ hit ~ " go against the relations",
+  "inconsistent-export": "An AS sends different paths",
+  "transient-loop": "Packets circle on the way to rest",
+  "transient-blocked": "Routers wait without a route",
+  "transient-hole": "Routers lose their route for a while",
+} %}
+{% block title %}{{ title.get(f.kind, f.kind) | capitalize }} – Simulation – OBGP Lab{% endblock %}
+{% block head %}<script src="{{ static('sim-map.js') }}" defer></script><script src="{{ static('simulation.js') }}" defer></script>{% endblock %}
+{% block content %}
+{% call page_header("/simulation?search=" ~ search_id, "Simulation") %}
+  <h1 class="text-2xl font-semibold tracking-tight first-letter:uppercase">{{ title.get(f.kind, f.detail) }}</h1>
+  {{ star_button("case", search_id ~ "/" ~ finding_id, starred, "/simulation/" ~ search_id ~ "/" ~ finding_id, "this search", "star-title mr-auto") }}
+  <form method="post" action="/simulation/{{ search_id }}/{{ finding_id }}/lab"><button class="btn" data-tip="As an experiment on real routers, every mode, the simulator's prediction as checks">{{ "Open in the lab" if lab else "Play in the lab" }}</button></form>
+{% endcall %}
+{# Light by design: the title says what happens, one grey line why, then the map, which carries itself. #}
+<p data-why class="-mt-4 max-w-3xl text-lg text-balance text-slate-600 dark:text-slate-400">&nbsp;</p>
+{% if theorem %}<p class="mt-2 text-sm font-semibold text-rose-700 dark:text-rose-300">Contradicts {{ theorem }}</p>{% endif %}
+<div class="mb-6"></div>
+
+{{ problem(error) }}
+<div id="sim" data-search="{{ search_id }}" data-finding="{{ finding_id }}" data-proof="{{ proof }}" data-modes='{{ per_mode | tojson }}'>
+  {% macro picker(mode) %}<select data-mode aria-label="Mode" class="input w-auto py-0.5 font-mono text-sm font-medium">{% for m in modes %}<option value="{{ m }}" {% if m == mode %}selected{% endif %} {% if m in shown %}data-problem class="text-rose-700 dark:text-rose-300"{% endif %}>{{ m }}</option>{% endfor %}</select>{% endmacro %}
+  {# The map and its controls. #}
+  <div class="card overflow-hidden" data-run>
+    <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pt-3 text-sm">
+      {{ picker(right) }}
+      <span data-state class="muted text-xs"></span>
+      {% if examples | length > 1 %}
+      <select aria-label="Network" class="input ml-auto w-auto max-w-full min-w-0 py-0.5 text-sm" onchange="location.href = '/simulation/{{ search_id }}/' + this.value">{% for c in examples %}<option value="{{ c.id }}" {% if c.id == finding_id %}selected{% endif %}>Network {{ loop.index }} of {{ loop.length }}, {{ c.instance.routers }} routers</option>{% endfor %}</select>
+      {% endif %}
+    </div>
+    {# On a phone the map keeps a width to read it by and scrolls sideways. #}
+    <div class="relative overflow-x-auto">
+      {# The map: routers as cards, each link two belts, routes as parcels, what a router does as a bubble beside it. #}
+      <svg data-map class="block h-[clamp(24rem,72vh,48rem)] w-full min-w-[60rem] md:min-w-0" role="img" aria-label="Routers and the routes travelling between them"></svg>
+      <p data-wait class="muted absolute inset-0 flex flex-col items-center justify-center gap-3 text-sm"><span class="spinner"></span><span>Playing the run…</span></p>
+    </div>
+    {# Under the map only the controls: the timeline, every phase a part of it, the problem in rose. #}
+    <div class="flex flex-wrap items-center gap-3 border-t border-slate-900/5 px-4 py-3 dark:border-white/5">
+      <div data-timeline tabindex="0" role="slider" aria-label="Every step, the problem in rose" aria-valuemin="0" class="basis-full"></div>
+      <div class="flex gap-1">
+        <button type="button" data-act="prev" class="btn btn-icon" aria-label="One step back" data-tip="One step back"><span class="rotate-90">{{ icon("chevron-down") }}</span></button>
+        <button type="button" data-act="play" class="btn btn-primary w-24" data-tip="Play step by step">{{ icon("play") }}<span>Play</span></button>
+        <button type="button" data-act="next" class="btn btn-icon" aria-label="One step on" data-tip="One step on"><span class="-rotate-90">{{ icon("chevron-down") }}</span></button>
+        <button type="button" data-act="loop" class="btn btn-icon" aria-pressed="false" data-tip="Play in a loop" aria-label="Play in a loop">{{ icon("repeat") }}</button>
+      </div>
+      {# Speed as a slider that snaps to ½× to 16×, at 1× a step every 1.4 seconds. #}
+      <label class="flex items-center gap-2 text-xs">
+        <input type="range" min="0" max="5" step="1" value="1" data-speed aria-label="Speed" class="w-28 accent-uoft-700 dark:accent-uoft-300">
+        <span data-speed-label class="w-8 font-mono tabular-nums">1×</span>
+      </label>
+      {# What kind of step this is beside its number: on a phone the words wrap above it. #}
+      <span class="ml-auto flex flex-wrap items-baseline justify-end gap-x-3 gap-y-1 text-right text-xs">
+        <span data-phase></span>
+        <span data-counter class="muted font-mono whitespace-nowrap tabular-nums" data-tip="Steps: a message arrives, then what it makes leaves. Arrow keys step."></span>
+      </span>
+    </div>
+  </div>
+
+  {# Below: the network and its policies. #}
+  <div class="mt-4">
+    <div class="card space-y-2 px-4 py-3">
+      <p class="label">The network</p>
+      {# One table: where the case was found, then the network and its policies, the rows the script adds. #}
+      <dl data-policies class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+        <dt class="muted">Shows the problem in</dt><dd>{{ label }}</dd>
+        {# Counted per family, mode and kind over every network of the family, this network one of them, and over the orders of messages tried on it. #}
+        {% if pm.of %}<dt class="muted">How often</dt><dd {% if shown | length > 1 %}data-tip="{% for m in shown %}{{ m }}: {{ per_mode[m].count }} of {{ per_mode[m].of }} networks{% if per_mode[m].orders %}, {{ per_mode[m].shown }} of {{ per_mode[m].orders }} orders{% endif %}{% if not loop.last %}&#10;{% endif %}{% endfor %}"{% endif %}>in {{ "{:,}".format(pm.count) }} of {{ "{:,}".format(pm.of) }} {{ example.instance.family }} networks, {% set pct = 100 * pm.count / pm.of %}{{ "under 0.1" if pct < 0.1 else "{:.1f}".format(pct) }} %{% if pm.orders %}, and in {{ pm.shown }} of {{ pm.orders }} orders of messages{% endif %}</dd>{% endif %}
+        {% if lab %}{% set mine = lab[0].modes | selectattr("mode", "equalto", named) | first %}{% if mine and mine.runs %}<dt class="muted">Lab</dt><dd><a href="#lab" class="hit hover:underline">in {{ mine.seen }} of {{ mine.runs }} runs</a></dd>{% endif %}{% endif %}
+      </dl>
+    </div>
+  </div>
+</div>
+{% if lab %}
+{# The case on real routers: per mode the runs and those that showed it. The lab cannot replay the simulator's order of messages. #}
+<div id="lab" class="card mt-4 overflow-x-auto">
+  <div class="flex flex-wrap items-baseline gap-x-3 px-4 pt-3 text-sm">
+    <p class="label">In the lab</p>
+    <a href="/results/{{ lab[0].name }}" class="hit font-medium hover:underline">{{ lab[0].name }}</a>
+    {% if lab[0].state != "finished" %}<span class="muted">{{ lab[0].state }}</span>{% endif %}
+    {% for r in lab[1:] %}<a href="/results/{{ r.name }}" class="hit muted hover:underline">{{ r.name }}</a>{% endfor %}
+  </div>
+  <table class="list">
+    <thead><tr><th>Mode</th><th data-tip="Whether the simulator saw the problem in this mode">Simulator</th><th class="num" data-tip="Runs done without an error">Runs</th><th class="num" data-tip="Runs that showed the problem">With the problem</th></tr></thead>
+    <tbody>
+    {% for m in lab[0].modes if m.runs %}
+      <tr><td class="font-mono">{{ m.mode }}</td>
+        <td class="{{ 'text-rose-700 dark:text-rose-300' if m.mode in per_mode else 'muted' }}">{{ "seen" if m.mode in per_mode else "–" }}</td>
+        <td class="num muted">{{ m.runs }}</td>
+        <td class="num {{ 'font-semibold text-rose-700 dark:text-rose-300' if m.seen else 'muted' }}">{{ m.seen }}</td></tr>
+    {% else %}
+      <tr><td colspan="4" class="muted">No run done yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted px-4 pb-3 text-xs">The lab cannot replay the simulator's orders, so a rare problem may not show.</p>
+</div>
+{% endif %}
+<script type="application/json" id="pure-modes">{{ pure_modes | tojson }}</script>
+<script type="application/json" id="sim-example">{{ example | tojson }}</script>
+{% endblock %}

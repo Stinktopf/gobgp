@@ -1,0 +1,13 @@
+name: calibration
+description: Twenty prefixes along a line of routers with 500 ms on every link, then withdrawn. Every value is known before, for lab calibrate.
+steps:
+  - degrade: {link: a-b, delay_ms: 500}
+  - degrade: {link: b-c, delay_ms: 500}
+  - degrade: {link: c-d, delay_ms: 500}
+  - announce: {rate: 2, for: 10, max_active: 20}
+  - until_stable: {timeout: 60}
+  - expect: {router: line, prefixes: all}
+  - withdraw: {}
+  - until_stable: {timeout: 60}
+  - expect: {router: line, prefixes: none}
+  - wait: 30

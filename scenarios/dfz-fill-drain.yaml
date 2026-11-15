@@ -1,0 +1,9 @@
+name: dfz-fill-drain
+description: The four largest Tier-1 networks that peer with RIPE RIS inject the full table they had on the Internet, which then drains.
+steps:
+  - announce_rib: {at: "2026-09-01 08:00", router: clique, at_most: 4}
+  - until_stable: {timeout: 3600}
+  - wait: 30
+  - withdraw_rib: {}
+  - until_stable: {timeout: 3600}
+  - wait: 30

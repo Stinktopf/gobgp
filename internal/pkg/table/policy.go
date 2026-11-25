@@ -642,8 +642,68 @@ func NewNextHopSet(c []string) (*NextHopSet, error) {
 }
 
 type NeighborSet struct {
-	name string
-	list []net.IPNet
+	name     string
+	list     []net.IPNet
+	hosts    map[netip.Addr]bool // the entries of a single address
+	prefixes []netip.Prefix      // the others
+}
+
+// newNeighborSet indexes list: a policy asks for every path it judges
+// whether its neighbor is in the set.
+func newNeighborSet(name string, list []net.IPNet) *NeighborSet {
+	s := &NeighborSet{name: name}
+	s.set(list)
+	return s
+}
+
+func (s *NeighborSet) set(list []net.IPNet) {
+	s.list, s.hosts, s.prefixes = list, map[netip.Addr]bool{}, nil
+	for _, n := range list {
+		p, ok := neighborPrefix(n)
+		switch {
+		case !ok:
+		case p.IsSingleIP():
+			s.hosts[p.Addr()] = true
+		default:
+			s.prefixes = append(s.prefixes, p)
+		}
+	}
+}
+
+// neighborPrefix is n as net.IPNet.Contains reads it: an IPv4 address with
+// an IPv6 mask takes the mask's last 32 bits. ok is false for an entry
+// Contains never matches.
+func neighborPrefix(n net.IPNet) (netip.Prefix, bool) {
+	ones, bits := n.Mask.Size()
+	if v4 := n.IP.To4(); v4 != nil {
+		a, _ := netip.AddrFromSlice(v4)
+		switch bits {
+		case 32:
+			return netip.PrefixFrom(a, ones), true
+		case 128:
+			return netip.PrefixFrom(a, max(ones-96, 0)), true
+		}
+		return netip.Prefix{}, false
+	}
+	a, ok := netip.AddrFromSlice(n.IP)
+	if !ok || bits != 128 {
+		return netip.Prefix{}, false
+	}
+	return netip.PrefixFrom(a, ones), true
+}
+
+// contains tells whether addr is in the set.
+func (s *NeighborSet) contains(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	if s.hosts[addr] {
+		return true
+	}
+	for _, p := range s.prefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *NeighborSet) Name() string {
@@ -659,7 +719,7 @@ func (lhs *NeighborSet) Append(arg DefinedSet) error {
 	if !ok {
 		return fmt.Errorf("type cast failed")
 	}
-	lhs.list = append(lhs.list, rhs.list...)
+	lhs.set(append(lhs.list, rhs.list...))
 	return nil
 }
 
@@ -681,7 +741,7 @@ func (lhs *NeighborSet) Remove(arg DefinedSet) error {
 			ps = append(ps, x)
 		}
 	}
-	lhs.list = ps
+	lhs.set(ps)
 	return nil
 }
 
@@ -690,7 +750,7 @@ func (lhs *NeighborSet) Replace(arg DefinedSet) error {
 	if !ok {
 		return fmt.Errorf("type cast failed")
 	}
-	lhs.list = rhs.list
+	lhs.set(rhs.list)
 	return nil
 }
 
@@ -718,10 +778,7 @@ func (s *NeighborSet) MarshalJSON() ([]byte, error) {
 }
 
 func NewNeighborSetFromApiStruct(name string, list []net.IPNet) (*NeighborSet, error) {
-	return &NeighborSet{
-		name: name,
-		list: list,
-	}, nil
+	return newNeighborSet(name, list), nil
 }
 
 func NewNeighborSet(c oc.NeighborSet) (*NeighborSet, error) {
@@ -751,10 +808,7 @@ func NewNeighborSet(c oc.NeighborSet) (*NeighborSet, error) {
 		}
 		list = append(list, *cidr)
 	}
-	return &NeighborSet{
-		name: name,
-		list: list,
-	}, nil
+	return newNeighborSet(name, list), nil
 }
 
 type singleAsPathMatchMode int
@@ -1526,13 +1580,7 @@ func (c *NeighborCondition) Evaluate(path *Path, options *PolicyOptions) bool {
 	if !neighbor.IsValid() {
 		return false
 	}
-	result := false
-	for _, n := range c.set.list {
-		if n.Contains(neighbor.AsSlice()) {
-			result = true
-			break
-		}
-	}
+	result := c.set.contains(neighbor)
 
 	if c.option == MATCH_OPTION_INVERT {
 		result = !result

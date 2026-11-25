@@ -1,0 +1,91 @@
+{# The notes panel, opened from the top bar: the notes of this page, or every note and star of the lab to tidy up.
+   here: the object of the page (kind, name) or none. view: "page" or "all". Forms post with the panel's state
+   and get the panel back, see marks.js. #}
+{% from "macros.html" import icon %}
+{% macro state() -%}
+<input type="hidden" name="here_kind" value="{{ here.kind if here else '' }}"><input type="hidden" name="here_name" value="{{ here.name if here else '' }}"><input type="hidden" name="view" value="{{ view }}">
+{%- endmacro %}
+{% macro colors(chosen) -%}
+<span class="note-colors" role="radiogroup" aria-label="Colour">{% for c in ["yellow", "pink", "blue", "violet", "orange"] %}<label class="note-swatch note-{{ c }}" data-tip="{{ c | capitalize }}"><input type="radio" name="color" value="{{ c }}" class="sr-only" {% if c == (chosen or "yellow") %}checked{% endif %} aria-label="{{ c | capitalize }}"></label>{% endfor %}</span>
+{%- endmacro %}
+{% macro card(n, show_done=true) -%}
+<article class="note note-{{ n.color or 'yellow' }}{{ ' is-done' if n.done }}" data-note>
+  <p class="note-text" data-note-shown>{{ n.text | linked }}</p>
+  <form method="post" action="/marks/notes/{{ n.id }}" class="note-edit" data-panel-form hidden>{{ state() }}
+    <textarea name="text" rows="3" maxlength="2000" required class="note-input" aria-label="Text of the note" data-note-text>{{ n.text }}</textarea>
+    <div class="note-meta mt-2">{{ colors(n.color) }}<span class="ml-auto inline-flex items-center">
+      <button type="button" class="note-action" data-note-cancel data-tip="Cancel, Esc" aria-label="Cancel">{{ icon("close") }}</button>
+      <button class="note-action" data-tip="Save, Enter" aria-label="Save">{{ icon("check") }}</button></span></div>
+  </form>
+  <div class="note-meta">
+    <span>{{ created(n.created) }}{% if n.edited %}, edited{% endif %}</span>
+    <span class="ml-auto inline-flex items-center">
+      <button type="button" class="note-action" data-note-open data-tip="Edit" aria-label="Edit">{{ icon("edit") }}</button>
+      <form method="post" action="/marks/notes/{{ n.id }}" class="inline-flex" data-panel-form>{{ state() }}<input type="hidden" name="done" value="{{ 'false' if n.done else 'true' }}">
+        <button class="note-action" data-tip="{{ 'Open again' if n.done else 'Done' }}" aria-label="{{ 'Open again' if n.done else 'Done' }}">{{ icon("undo" if n.done else "check") }}</button></form>
+      <form method="post" action="/marks/notes/{{ n.id }}/delete" class="inline-flex" data-panel-form>{{ state() }}
+        <button class="note-action" data-tip="Delete" aria-label="Delete">{{ icon("delete") }}</button></form>
+    </span>
+  </div>
+</article>
+{%- endmacro %}
+<div class="notes-panel" data-here-open="{{ here_open }}" data-view="{{ view }}">
+  <div class="notes-head">
+    <nav class="segmented" aria-label="Notes">
+      {% if here %}<button type="button" data-notes-view="page" {% if view == "page" %}aria-current="page"{% endif %}>This page</button>{% endif %}
+      <button type="button" data-notes-view="all" {% if view == "all" %}aria-current="page"{% endif %}>All</button>
+    </nav>
+    <button type="button" class="nav-link ml-auto" data-notes-close aria-label="Close the notes" data-tip="Close, Esc" data-tip-align="end">{{ icon("close") }}</button>
+  </div>
+  {% if error %}<p class="notes-error" role="alert">{{ error }}</p>{% endif %}
+  <div class="notes-body">
+  {% if view == "page" and here %}
+    <p class="muted mb-3 text-xs">On {{ here.label }}, for everyone of the lab.</p>
+    <form method="post" action="/marks/{{ here.kind }}/notes" class="note note-yellow mb-5" data-panel-form data-note-new>{{ state() }}<input type="hidden" name="name" value="{{ here.name }}">
+      <textarea name="text" rows="2" maxlength="2000" required class="note-input" placeholder="A new note" aria-label="New note" data-note-text></textarea>
+      <div class="note-meta mt-2">{{ colors("yellow") }}<span class="ml-auto inline-flex items-center">
+        <button class="note-action" data-tip="Add, Enter" aria-label="Add">{{ icon("add") }}</button></span></div>
+    </form>
+    <div class="space-y-4 pt-1">
+      {% for n in page_notes if not n.done %}{{ card(n) }}{% else %}{% if not page_notes %}<p class="muted text-sm">{{ "Starred, no notes yet." if page_star else "No notes yet." }}</p>{% endif %}{% endfor %}
+    </div>
+    {% set finished = page_notes | selectattr("done") | list %}
+    {% if finished %}<details class="mt-4"><summary class="muted cursor-pointer text-xs">{{ finished | length }} done</summary><div class="mt-2 space-y-2">{% for n in finished %}{{ card(n) }}{% endfor %}</div></details>{% endif %}
+  {% else %}
+    {% if not objects %}<p class="muted text-sm">No notes or stars in the lab.</p>
+    {% else %}
+    <form method="post" action="/marks/bulk" data-panel-form data-bulk>{{ state() }}
+      <div class="notes-bar">
+        <label class="inline-flex items-center gap-2 text-sm"><input type="checkbox" class="accent-uoft-700 dark:accent-uoft-400" data-pick-all aria-label="Select all shown">All</label>
+        <span class="muted text-xs" data-picked-count></span>
+        <span class="flex w-full flex-wrap justify-end gap-1 empty:hidden" data-actions>
+          <button name="action" value="done" class="btn btn-sm" data-needs="open" hidden>{{ icon("check") }}Done</button>
+          <button name="action" value="open" class="btn btn-sm" data-needs="done" hidden>{{ icon("undo") }}Open again</button>
+          <button name="action" value="unstar" class="btn btn-sm" data-needs="star" hidden>{{ icon("star") }}Unstar</button>
+          <button name="action" value="delete" class="btn btn-sm" data-needs="any" data-two-step="Remove?" data-tip="Removes notes and stars only, the pages stay" hidden>{{ icon("delete") }}Remove</button>
+        </span>
+      </div>
+      <div class="space-y-4">
+      {% for o in objects %}
+        <section data-object>
+          <div class="flex items-center gap-2">
+            <input type="checkbox" name="object" value="{{ o.kind }}:{{ o.name }}" class="accent-uoft-700 dark:accent-uoft-400" data-pick-object {% if o.star %}data-starred{% endif %} aria-label="Select {{ o.label }}">
+            {% if o.star %}<span class="text-amber-500 dark:text-amber-400" data-tip="Starred">{{ icon("star", "fill-current") }}</span>{% endif %}
+            {% if o.url %}<a href="{{ o.url }}" class="hit min-w-0 truncate text-sm font-medium hover:underline" data-tip="{{ o.title }}">{{ o.label }}</a>
+            {% else %}<span class="min-w-0 truncate text-sm font-medium text-slate-500" data-tip="{{ o.title }}">{{ o.label }} (gone)</span>{% endif %}
+            <span class="muted ml-auto shrink-0 text-xs">{% if o.open or o.done %}{{ [(o.open ~ " open") if o.open, (o.done ~ " done") if o.done] | select | join(", ") }}{% else %}no notes{% endif %}</span>
+          </div>
+          {% if o.notes %}<div class="mt-3 space-y-3 pl-6">
+            {% for n in o.notes %}
+            <label class="note note-sm note-{{ n.color or 'yellow' }}{{ ' is-done' if n.done }}"><input type="checkbox" name="note" value="{{ n.id }}" class="mt-0.5 accent-uoft-700 dark:accent-uoft-400" data-pick-note {% if n.done %}data-done{% endif %}>
+              <span class="min-w-0 flex-1"><span class="line-clamp-2 break-words">{{ n.text }}</span><span class="note-meta mt-0.5">{{ created(n.created) }}</span></span></label>
+            {% endfor %}
+          </div>{% endif %}
+        </section>
+      {% endfor %}
+      </div>
+    </form>
+    {% endif %}
+  {% endif %}
+  </div>
+</div>

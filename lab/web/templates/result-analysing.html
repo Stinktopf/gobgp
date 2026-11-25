@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% from "macros.html" import page_header %}
+{% block title %}{{ result.name }} – Results – OBGP Lab{% endblock %}
+{% block content %}
+{% call page_header("/results", "Results") %}
+  <h1 class="mr-auto font-mono text-2xl font-semibold tracking-tight break-all">{{ result.name }}</h1>
+{% endcall %}
+<section class="card max-w-xl space-y-3 p-5">
+  <h2 class="section-title">Analysing the runs</h2>
+  <p class="muted text-sm">The lab computes the metrics of each run from its samples. It does so again when a new version changes how a metric is computed. The result opens when every run is done.</p>
+  {% include "partials/analysing.html" %}
+</section>
+{% endblock %}

@@ -1,0 +1,6 @@
+{# How far the analysis of a result is: polled, the page reloads once it is done. #}
+{% set done, total = progress if progress else (0, 0) %}{% set share = (done / total) if total else 0 %}
+<div hx-get="/results/{{ result.name }}/analysing" hx-trigger="every 2s" hx-swap="outerHTML" role="status" class="space-y-2">
+  <div class="h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800"><div class="h-full rounded-full bg-uoft-700 transition-[width] dark:bg-uoft-400" style="width: {{ (100 * share) | round(1) }}%"></div></div>
+  <p class="muted text-sm tabular-nums">{{ done }} of {{ total }} runs measured</p>
+</div>

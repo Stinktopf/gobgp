@@ -561,7 +561,7 @@ def test_the_live_view_shows_the_run_its_phase_its_routes_and_what_is_wrong():
     assert r["tone"] == "rest" and r["quiet_s"] == 5 and r["updates_s"] == 10.0 and r["peak"] == 50 and "chart" not in r
     active = SimpleNamespace(name="x-1", status=status, experiment=e)
     html = common.templates.get_template("partials/lab.html").render(active=active, left_s=600, active_ends=None, machine=None)
-    for part in ("germany50, obgp-rp, link-failure, #4 of 10", "Waiting for rest", "quiet for 5 s",
+    for part in ("germany50, obgp-rp, link-failure, run 4 of 10&#10;", "Waiting for rest", "quiet for 5 s",
                  "Attempt 2 of 3.", "Attempt 1: router r12 did not start", "1 run broke off with an error",
                  ">Destinations</dt>", "Highest in this run: 50", "Run <span class=\"font-medium tabular-nums\">14</span>", "10 min left"):
         assert part in html, part
@@ -1020,11 +1020,33 @@ def test_benchmarks_have_a_category_of_their_own(lab_files, monkeypatch):
     assert groups.of_experiment("my-speedup") == "Benchmark" and groups.of_experiment("behaviour-mrai") == "Behaviour"
 
 
-def test_the_performance_area_lists_benchmarks_and_profiled_results_and_says_when_there_are_none(client):
+def test_the_benchmark_area_is_a_list_with_search_and_kinds_and_each_result_a_page_of_its_own(client):
     page = client.get("/benchmark").text
-    assert 'href="/benchmark"' in page and "New benchmark" in page
+    assert 'href="/benchmark"' in page and "New benchmark" in page and 'data-filter="#benchmarks"' in page
+    assert all(f'href="?show={k}"' in page for k in ("all", "benchmark", "profiled")) and "No benchmarks yet." in page
+    assert "No profiled results yet." in client.get("/benchmark?show=profiled").text
     assert client.get("/performance", follow_redirects=False).headers["location"] == "/benchmark"
-    assert "No benchmarks yet." in page or "Reading the profiles" in page
+    # The address of one before it had a page of its own leads there, what it chose kept.
+    old = client.get("/benchmark?result=x-1&compare=bgp-new", follow_redirects=False)
+    assert old.status_code == 301 and old.headers["location"] == "/benchmark/x-1?compare=bgp-new"
+    assert client.get("/benchmark/ifip-networking-2026").status_code == 404  # neither a benchmark nor profiled
+
+
+def test_a_benchmark_has_a_page_of_its_own_with_its_pair_and_its_profiles_loaded_after(client, monkeypatch):
+    from lab.web.routes import performance as area
+    e = Experiment.model_validate({"name": "b", "runs": 6, "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "benchmark": {"baseline": "6792c5c2", "candidates": ["b3dfb4b8"], "modes": ["bgp"]}})
+    d = type("D", (), {"name": "b-1", "experiment": e, "status": {"state": "finished"}, "meta": {}, "path": "b-1"})()
+    monkeypatch.setattr(area.Dataset, "find", staticmethod(lambda name: d if name == "b-1" else None))
+    monkeypatch.setattr(area, "measuring", lambda d: False)
+    rule = {"baseline": "6792c5c2", "metric": "cpu_s_mean", "margin_pct": 5.0, "guards": ["settle_s"], "guard_pct": 10.0}
+    monkeypatch.setattr(analysis, "speed", lambda d: {"rule": rule, "level": 0.9875, "cells": []})
+    monkeypatch.setattr(analysis, "summary", lambda d: [{"topology": "noble-eu", "scenario": "fill-60", "variant": v,
+                                                         "metrics": {"prof_s": {"median": s}}} for v, s in (("bgp", 10.0), ("bgp-new", 8.0))])
+    monkeypatch.setattr(analysis, "paired", lambda *a: None)
+    page = client.get("/benchmark/b-1?topology=noble-eu&scenario=fill-60").text
+    assert "b3dfb4b8 against 6792c5c2" in page and 'href="/benchmark"' in page and "Where the CPU goes" in page
+    assert 'hx-get="/benchmark/b-1/details?topology=noble-eu&amp;scenario=fill-60' in page and 'action="/benchmark/b-1"' in page
 
 
 def test_a_forest_plot_puts_every_mode_on_one_axis_with_its_margin():
@@ -1095,7 +1117,23 @@ def test_the_overview_gives_every_mode_its_cpu_in_five_shares_and_what_a_candida
                         if metric == "cpu_s_mean" else {"n": 6, "change": 1.0, "shift_low": -1.0, "shift_high": 2.0})
     rows = area.overview(type("D", (), {"experiment": e, "keys": lambda self: []})(), "noble-eu", "fill-60", [{"baseline": "a", "variant": "b"}])["changes"]
     # Without a rule nothing but the interval and the A/A twin decide. With one, a change within its margin stays plain.
-    assert [(x["label"], x["change"], x["clear"]) for x in rows[0]["cells"][:2]] == [("CPU", -12.0, True), ("Settle", 1.0, False)]
+    assert [(x["label"], x["change"], x["beyond"]) for x in rows[0]["cells"][:2]] == [("CPU", -12.0, True), ("Settle", 1.0, False)]
+
+
+def test_the_overview_of_a_benchmark_shows_per_mode_the_baseline_commit_and_its_candidate(monkeypatch):
+    from lab.web.routes import performance as area
+    e = Experiment.model_validate({"name": "x", "runs": 6, "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "benchmark": {"baseline": "6792c5c2", "candidates": ["b3dfb4b8"], "modes": ["bgp"]}})
+    med = lambda v: {"median": v}  # noqa: E731
+    monkeypatch.setattr(analysis, "summary", lambda d: [{"topology": "noble-eu", "scenario": "fill-60", "variant": v, "metrics": {"prof_s": med(s)}}
+                                                        for v, s in (("bgp", 10.0), ("bgp-new", 8.0))])
+    monkeypatch.setattr(analysis, "paired", lambda d, t, s, metric, v, b: {"n": 6, "shift_pct": -20.0, "shift_low": -2.5, "shift_high": -1.5})
+    out = area.overview(type("D", (), {"experiment": e, "keys": lambda self: []})(), "noble-eu", "fill-60", [{"baseline": "bgp", "variant": "bgp-new"}])
+    (mode,) = out["modes"]
+    assert out["pair"] and mode["mode"] == "bgp" and [(b["variant"], b["seconds"]) for b in mode["bars"]] == [
+        ("bgp", 10.0), ("bgp-new", 8.0)]
+    # The candidate with its change of the profiled CPU, beyond the interval and the margin, the baseline without.
+    assert "change" not in mode["bars"][0] and (mode["bars"][1]["change"], mode["bars"][1]["beyond"]) == (-20.0, True)
 
 
 def test_a_change_over_the_workload_counts_only_beyond_the_rules_margin(monkeypatch):
@@ -1105,7 +1143,7 @@ def test_a_change_over_the_workload_counts_only_beyond_the_rules_margin(monkeypa
     monkeypatch.setattr(analysis, "summary", lambda d: [])
     monkeypatch.setattr(analysis, "paired", lambda d, t, s, metric, v, b: {"n": 6, "change": -12.0, "shift_low": -2.0, "shift_high": -1.0})
     rows = area.overview(type("D", (), {"experiment": e, "keys": lambda self: []})(), "noble-eu", "fill-60", [{"baseline": "bgp", "variant": "bgp-new"}])["changes"]
-    assert rows[0]["cells"][0]["clear"] is False  # −12 % with a margin of 15 %
+    assert rows[0]["cells"][0]["beyond"] is False  # −12 % with a margin of 15 %
 
 
 def test_an_upload_to_zenodo_needs_its_target_typed(client, lab_files, monkeypatch):

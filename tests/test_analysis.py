@@ -144,6 +144,7 @@ def test_runs_are_paired_by_their_seed(lab_files):
     d = Dataset.find("ifip-networking-2026")
     p = analysis.paired(d, "bad-gadget", "fill-30", "rib_mean", "obgp", "bgp")
     assert p["n"] == 5 and p["change"] < 0 and p["p"] == 0.0625
+    assert p["shift_pct"] < 0  # the shift in % of the baseline's median, as the speed rule judges it
 
 
 def test_a_check_is_no_reference():
@@ -587,6 +588,10 @@ def test_a_commit_is_faster_only_beyond_its_margin_with_its_guards_held_and_the_
     cpu["aa"] = 100.0
     found = [{"variant": "fast", "topology": "noble-eu", "scenario": "fill-60", "cause": "output"}]
     assert {r["variant"]: r["verdict"] for r in analysis.speed(dataset, found=found)["cells"]}["fast"] == "behaves differently"
+    # Routes at rest that differ between runs of the baseline itself: judged on the speed, the routes marked as not compared.
+    found = [{"variant": "fast", "topology": "noble-eu", "scenario": "fill-60", "cause": "output-unchecked"}]
+    fast = next(r for r in analysis.speed(dataset, found=found)["cells"] if r["variant"] == "fast")
+    assert (fast["verdict"], fast["routes_compared"]) == ("faster", False)
 
 
 def test_a_speed_rule_needs_commits_to_compare_an_aa_variant_and_runs_enough_for_every_comparison():

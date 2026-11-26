@@ -660,16 +660,18 @@ document.addEventListener("keydown", (e) => {
   e.key === "ArrowUp" ? other.before(li) : other.after(li);
   saveQueue(li.parentElement, li.dataset.name);
 });
-// Live parts refresh every few seconds. What comes back as it was is not
-// replaced, so that hover, selection and open tips stay. Registered before
+// Live parts refresh every few seconds. What comes back as the part shows
+// it is not replaced, so that hover, selection and open tips stay. Per part:
+// a link back to an address it showed before still swaps. Registered before
 // every other swap handler, which then see shouldSwap.
 (() => {
-  const last = new Map();  // the path of a refresh -> what it gave last
+  const last = new Map();  // a part, by its id or else the path -> the path and answer it shows
   document.addEventListener("htmx:beforeSwap", (e) => {
-    const { requestConfig, serverResponse, xhr } = e.detail;
+    const { requestConfig, serverResponse, xhr, target } = e.detail;
     if (requestConfig?.verb !== "get" || xhr?.status !== 200) return;
-    if (last.get(requestConfig.path) === serverResponse) e.detail.shouldSwap = false;
-    else last.set(requestConfig.path, serverResponse);
+    const key = target?.id || requestConfig.path, was = last.get(key);
+    if (was && was.path === requestConfig.path && was.answer === serverResponse) e.detail.shouldSwap = false;
+    else last.set(key, { path: requestConfig.path, answer: serverResponse });
   });
   // The element with focus has it again after a refresh, found by its id.
   let focused = null;
@@ -726,6 +728,7 @@ addEventListener("load", syncDock);
     });
   });
   document.addEventListener("htmx:afterSwap", (e) => {
+    if (!e.detail.target) return;  // a page restored from the history
     e.detail.target.querySelectorAll("[data-keep-scroll]").forEach((el) => {
       const was = kept[el.dataset.keepScroll];
       if (!was) return;

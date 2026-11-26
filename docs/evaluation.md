@@ -188,8 +188,10 @@ not a problem. Checks, lost routes and loops stay judged.
   and sends what the baseline does at rest, and no guard gets worse beyond its percent, times also by their
   resolution. The margin comes from earlier A/A pairs. Where the A/A variant shifts beyond the margin itself,
   the lab moved and no verdict is given. Other verdicts: slower, slower within the margin, no change shown, faster but
-  worse elsewhere, faster with a guard unmeasured, behaves differently, unchecked, too few runs. With few runs, faster
+  worse elsewhere, faster with a guard unmeasured, behaves differently, too few runs. With few runs, faster
   needs every paired difference beyond the margin: the exact interval then spans the smallest and largest difference.
+  Where the routes at rest vary between runs of the baseline itself, as OBGP's may, they are not compared: the verdict
+  stands on the speed and the guards, and says so. The properties every run is checked for still hold for it.
 
 ## Threats to validity
 

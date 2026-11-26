@@ -23,10 +23,9 @@
     {% endif %}
   </div>
 
-  {# The run in one line: topology, variant, scenario and repetition, then its phase and how long it has run. #}
+  {# The run as its phase and how long it has run. Which cell it is, in the tip. #}
   <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm">
-    {% if r.topology %}<span class="font-mono" data-tip="Topology, variant, scenario and repetition of this cell">{{ r.topology }}, {{ r.variant }}, {{ r.scenario }}, #{{ r.repetition }}{% if r.repetitions %} of {{ r.repetitions }}{% endif %}</span>{% endif %}
-    <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium {{ tones[r.tone] }}" data-tip="{{ {'wait': 'The runner waits before it goes on', 'setup': 'Before the scenario', 'rest': 'The step until_stable: no change for the quiet time', 'step': 'The step of the scenario playing now'}[r.tone] }}">{{ r.phase }}</span>
+    <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium {{ tones[r.tone] }}" data-tip="{% if r.topology %}{{ r.topology }}, {{ r.variant }}, {{ r.scenario }}, run {{ r.repetition }}{% if r.repetitions %} of {{ r.repetitions }}{% endif %}&#10;{% endif %}{{ {'wait': 'The runner waits before it goes on', 'setup': 'Before the scenario', 'rest': 'The step until_stable: no change for the quiet time', 'step': 'The step of the scenario playing now'}[r.tone] }}">{{ r.phase }}</span>
     {% if r.tone == "rest" and r.quiet_s is not none %}<span class="muted text-xs tabular-nums" data-tip="No change of destinations, paths or updates for this long{% if r.rest_s %}&#10;Rest after {{ r.rest_s | round | int }} s{% endif %}">quiet for {{ r.quiet_s | duration }}</span>
     {% elif r.elapsed_s is not none %}<span class="muted text-xs tabular-nums" data-tip="Since the run started, deployment included">{{ r.elapsed_s | duration }}</span>{% endif %}
   </div>

@@ -1417,7 +1417,8 @@ def wilcoxon_p(differences: list[float]) -> float | None:
 def paired(dataset: Dataset, topology: str, scenario: str, metric: str, variant: str, baseline: str) -> dict | None:
     """A variant against a baseline in the runs paired by their seed: the
     median of the relative differences of the pairs, the p of the Wilcoxon
-    signed-rank test, and the Hodges-Lehmann shift with its exact interval."""
+    signed-rank test, and the Hodges-Lehmann shift with its exact interval,
+    also in % of the baseline's median, as the speed rule judges it."""
     runs = run_summary(dataset)
     pairs = []
     for i in range(1, dataset.experiment.runs + 1):
@@ -1432,6 +1433,8 @@ def paired(dataset: Dataset, topology: str, scenario: str, metric: str, variant:
     out = {"n": len(pairs), "change": median(relative) if relative else None, "p": wilcoxon_p(differences)}
     if shift := hodges_lehmann(differences):
         out |= {"shift": shift["estimate"], "shift_low": shift["low"], "shift_high": shift["high"], "shift_level": shift["level"]}
+        if reference := median(b for _, b in pairs):
+            out["shift_pct"] = 100 * shift["estimate"] / reference
     return out
 
 
@@ -1643,9 +1646,11 @@ def speed(dataset: Dataset, found: list[dict] | None = None) -> dict | None:
         r["holm"] = adjusted
     for r in out:
         causes = {x["cause"] for x in found if (x["variant"], x["topology"], x["scenario"]) == (r["variant"], r["topology"], r["scenario"])}
+        # Routes at rest that vary between runs of the baseline itself, as OBGP's may, are no fault: the speed is
+        # judged all the same, and the cell says that its routes were not compared.
+        r["routes_compared"] = "output-unchecked" not in causes
         r["verdict"] = (
             "behaves differently" if "output" in causes
-            else "unchecked" if "output-unchecked" in causes
             else "too few runs" if r.get("p") is None or r["level"] < r["level_wanted"]
             else "lab drifts" if (r.get("aa") or {}).get("drifts")
             else "faster" if r["holm"] < 0.05 and r["high"] < -r["margin"] and all(g and g["holds"] for g in r["guards"].values())

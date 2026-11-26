@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% from "macros.html" import state_badge, icon, progress, page_header, star_button %}
+{% import "partials/benchmark-common.html" as bc %}
+{% block title %}{{ shown.title }} – Benchmark – OBGP Lab{% endblock %}
+{% block content %}
+{% set d = shown.dataset %}{% set e = d.experiment %}
+{% call page_header("/benchmark", "Benchmark") %}
+  <h1 class="min-w-0 text-2xl font-semibold tracking-tight sm:truncate">{{ shown.title }}</h1>
+  {{ star_button("result", d.name, d.name in starred, "/benchmark/" ~ d.name, "the lists", "star-title") }}
+  {{ bc.kind_tag(shown.kind) }}
+  {% if d.status.get("state") != "finished" %}{{ state_badge(d.status.get("state") or "stopped") }}{% endif %}
+{% endcall %}
+{% if analysing is defined %}
+<div class="card p-6 text-sm" id="benchmark" hx-get="/benchmark/{{ d.name }}" hx-trigger="every 3s [document.visibilityState === 'visible']" hx-select="#benchmark" hx-swap="outerHTML">The lab computes the metrics of <span class="font-mono">{{ d.name }}</span>{% if analysing %}, {{ analysing.done }} of {{ analysing.total }} runs{% endif %}.</div>
+{% else %}
+{% set here = "?topology=" ~ topology ~ "&scenario=" ~ scenario %}
+{# Every link and form below changes only this part, in place: the page keeps where it was scrolled to. #}
+<div id="benchmark" hx-boost="true" hx-target="#benchmark" hx-select="#benchmark" hx-swap="outerHTML show:none" hx-push-url="true">
+<div class="-mt-4 mb-4">
+  <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+    <a href="/results/{{ d.name }}?topology={{ topology }}&scenario={{ scenario }}" class="hit muted inline-block py-1 font-mono text-sm hover:underline" data-tip="Its runs and every metric">{{ d.name }}</a>
+    {% set cases = [] %}{% for t in e.topologies %}{% for s in e.cases_of(t) %}{% set _ = cases.append((t, s)) %}{% endfor %}{% endfor %}
+    {% if cases | length == 1 %}<span class="muted font-mono text-sm" data-tip="The workload">{{ topology }}, {{ scenario }}</span>{% endif %}
+  </div>
+  {% set st = d.status %}{% set going = st.get("state") in ("running", "queued") %}
+  {% if answer and ready %}<p class="mt-1 text-sm">{% if going %}So far, {{ st.get("done", 0) }} of {{ st.get("total") or e.runs_total() }} runs: {{ answer[:1] | lower }}{{ answer[1:] }}{% else %}{{ answer }}{% endif %}</p>{% endif %}
+</div>
+{% if not ready %}
+{# Nothing to compare yet: how far its runs are, instead of empty sections. #}
+<section class="card max-w-xl space-y-3 p-5">
+  <div class="flex items-center gap-2">{% if st.get("state") in ("running", "queued") %}<span class="spinner text-uoft-700 dark:text-uoft-300" aria-hidden="true"></span>{% endif %}{{ state_badge(st.get("state") or "stopped") }}
+    <span class="muted ml-auto text-sm tabular-nums">{{ st.get("done", 0) }} of {{ st.get("total") or e.runs_total() }} runs</span></div>
+  {{ progress(st.get("done", 0), st.get("total") or e.runs_total()) }}
+  <p class="muted text-sm">Its comparisons show once each mode has the runs its rule needs.</p>
+</section>
+{% else %}
+{# Where: the workload everything below is about, a choice only where there are several. #}
+{% if cases | length > 1 %}
+<div class="filters card mb-4 flex flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3">
+  <label class="flex min-w-0 max-w-full items-center gap-2 text-sm"><span class="label">Workload</span>
+    <select aria-label="Workload" class="input w-auto py-1 font-mono text-sm" onchange="UI.go('?' + this.value)">
+      {% for t, s in cases %}<option value="topology={{ t }}&scenario={{ s }}" {% if (t, s) == (topology, scenario) %}selected{% endif %}>{{ t }}, {{ s }}</option>{% endfor %}
+    </select>
+  </label>
+</div>
+{% endif %}
+
+{# The big picture over the workload, every mode at once: how much CPU and what share goes where. For a benchmark, what the candidate changed. #}
+{# Soft, as the call tree: the shares tell apart, the numbers in them stay readable. #}
+{% set SHARE = {"routing": "bg-uoft-200 dark:bg-uoft-400/45", "io": "bg-sky-200 dark:bg-sky-400/35", "gc": "bg-violet-200 dark:bg-violet-400/35",
+                "api": "bg-slate-300 dark:bg-white/25", "other": "bg-slate-100 dark:bg-white/10"} %}
+{% if overview.bars %}{% set O = overview %}
+<section class="card mb-4 overflow-hidden">
+  <div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-slate-100 px-4 py-2 text-sm dark:border-white/5">
+    <span class="font-medium" data-tip="The profiled routers from the first announcement until rest, median over the runs">Where the CPU goes</span>
+    <span class="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+      {% for k, label, _ in macro %}<span class="flex items-center gap-1"><span class="size-3 rounded-sm {{ SHARE[k] }}"></span>{{ label }}</span>{% endfor %}
+    </span>
+  </div>
+  <div class="divide-y divide-slate-100 px-4 dark:divide-white/5">
+    {% for g in O.modes %}
+    <div class="grid items-center gap-x-3 gap-y-1.5 py-2 text-sm {{ 'grid-cols-[1fr_auto_3.5rem] sm:grid-cols-[9rem_1fr_5.5rem_4.5rem]' if O.pair else 'grid-cols-[1fr_auto] sm:grid-cols-[9rem_1fr_6rem]' }}">
+      {% for b in g.bars %}{% set to = "&reference=" ~ g.bars[0].variant ~ "&compare=" ~ g.bars[-1].variant if O.pair else "&reference=" ~ reference ~ "&compare=" ~ b.variant %}
+      <a href="{{ here }}{{ to }}" class="hit truncate font-mono text-xs hover:underline max-sm:col-span-full max-sm:-mb-1 {{ 'font-semibold' if b.variant == compare or (O.pair and g.bars[-1].variant == compare) }}" data-tip="{{ b.variant }}, commit {{ refs[b.variant] }}">{{ b.variant }}</a>
+      <div class="flex h-5 gap-0.5" style="width: {{ (100 * b.seconds / O.longest) | round(1) }}%" role="img"
+           aria-label="{{ b.variant }}: {% for x in b.shares %}{{ x.label }} {{ x.pct | round | int }} %{{ ', ' if not loop.last }}{% endfor %}">
+        {% for x in b.shares if x.pct > 0.5 %}
+        <span class="flex min-w-0 items-center justify-center overflow-hidden rounded-sm text-xs text-slate-900 dark:text-white {{ SHARE[x.key] }}"
+              style="flex: {{ x.s }} 1 0" data-tip="{{ x.label }}: {{ x.pct | round | int }} %, {{ '%.1f' | format(x.s) }} s">{% set room = x.pct * b.seconds / O.longest %}{% if room >= 8 %}<span class="whitespace-nowrap {{ 'max-sm:hidden' if room < 20 }}">{{ x.pct | round | int }} %</span>{% endif %}</span>
+        {% endfor %}
+      </div>
+      <span class="text-right tabular-nums whitespace-nowrap">{{ "%.1f" | format(b.seconds) }} s</span>
+      {% if O.pair %}{% if b.change is defined and b.change is not none %}{% set beyond = b.beyond and (b.change | abs) >= 0.05 %}
+      <span class="text-right tabular-nums whitespace-nowrap {{ 'muted' if not beyond else 'text-emerald-700 dark:text-emerald-300' if b.change < 0 else 'text-rose-700 dark:text-rose-300' }}"
+            data-tip="Against {{ g.bars[0].variant }}: shift of the runs paired by seed, {{ b.n }} pairs{{ ', within the margin or the noise' if not beyond }}">{{ ("%+.1f" | format(b.change) | replace("-", "−")) if (b.change | abs) >= 0.05 else "0.0" }} %</span>
+      {% else %}<span></span>{% endif %}{% endif %}
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if speed %}{% set rule = speed.rule %}
+{# The verdict per mode: the shift with its interval, the margin as a band, the A/A shift as a tick, all on one axis. #}
+<section class="card mb-4 overflow-hidden">
+  <div class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-slate-100 px-4 py-2 text-sm dark:border-white/5">
+    <span class="font-medium" data-tip="{{ rule.metric }}, paired by seed, intervals at {{ (100 * speed.level) | round(2) }} %">Verdict</span>
+    {% set ns_ = plot.rows | selectattr("drawn") | map(attribute="n") | list %}
+    <span class="muted text-xs">CPU, % of {{ rule.baseline }}{% if ns_ %}, {{ ns_ | min }}{% if ns_ | max != ns_ | min %} to {{ ns_ | max }}{% endif %} pairs{% endif %}</span>
+    <span class="ml-auto flex flex-wrap items-center gap-x-3 text-xs text-slate-500 dark:text-slate-400" aria-hidden="true">
+      <span class="flex items-center gap-1"><span class="h-3 w-4 bg-uoft-100 dark:bg-uoft-400/15"></span>margin ±{{ rule.margin_pct | round(1) }} %</span>
+      <span class="flex items-center gap-1"><span class="h-0.5 w-4 bg-slate-600 dark:bg-slate-300"></span>interval</span>
+      <span class="flex items-center gap-1"><span class="h-3 w-0.5 bg-slate-600 dark:bg-slate-300"></span>A/A</span>
+    </span>
+  </div>
+  <table class="w-full text-sm">
+    <thead><tr class="text-xs text-slate-500 dark:text-slate-400">
+      <th class="px-4 py-1.5 text-left font-medium">Mode</th>
+      <th class="w-1/2 min-w-40 px-2 py-1.5 font-normal max-sm:min-w-32">
+        <div class="relative h-4" aria-hidden="true">
+          {% for t in plot.ticks %}<span class="absolute -translate-x-1/2 tabular-nums {{ 'max-sm:hidden' if t and not loop.first and not loop.last }}" style="left: {{ 50 + 47.5 * t / plot.edge }}%">{{ ("%+g" | format(t) | replace("-", "−")) if t else "0" }}</span>{% endfor %}
+        </div>
+      </th>
+      <th class="hidden px-4 py-1.5 text-right font-medium sm:table-cell">Shift</th>
+      {% for _, label in macro_metrics[1:] %}<th class="hidden px-3 py-1.5 text-right font-medium lg:table-cell" data-tip="Shift of the runs paired by seed, in % of the baseline's median, colored beyond the guard's margin and the A/A twin">{{ label }}</th>{% endfor %}<th class="hidden px-4 py-1.5 text-left font-medium sm:table-cell">Verdict</th>
+    </tr></thead>
+    <tbody class="divide-y divide-slate-100 dark:divide-white/5">
+    {% for r in plot.rows %}{% set tn = bc.tone(r.verdict) %}
+      <tr class="{{ 'bg-slate-50 dark:bg-white/5' if (r.baseline, r.variant) == (reference, compare) }}">
+        <td class="px-4 py-2 max-sm:px-2"><a href="{{ here }}&reference={{ r.baseline }}&compare={{ r.variant }}" class="hit font-mono whitespace-nowrap hover:underline">{{ r.baseline }}</a>
+          <span class="mt-1 block sm:hidden"><span data-tip="{{ bc.WHY.get(r.verdict, '') }}{% if r.routes_compared is defined and not r.routes_compared %}&#10;Routes at rest vary between runs of the baseline itself: not compared{% endif %}">{{ state_badge(r.verdict) }}</span></span></td>
+        <td class="px-2 py-2">
+          {% if r.drawn %}
+          <svg viewBox="0 0 400 20" preserveAspectRatio="none" class="h-5 w-full overflow-visible" role="img" aria-label="{{ '%+.1f' | format(r.s) }} %, {{ '%+.1f' | format(r.lo) }} to {{ '%+.1f' | format(r.hi) }} %">
+            <rect x="{{ 200 - 190 * r.m / plot.edge }}" y="2" width="{{ 380 * r.m / plot.edge }}" height="16" class="fill-uoft-100 dark:fill-uoft-400/15"/>
+            <line x1="200" x2="200" y1="0" y2="20" class="stroke-slate-400 dark:stroke-slate-500" stroke-width="1" stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>
+            {% if r.aa_s is not none %}<line x1="{{ 200 + 190 * r.aa_s / plot.edge }}" x2="{{ 200 + 190 * r.aa_s / plot.edge }}" y1="3" y2="17" class="stroke-slate-600 dark:stroke-slate-300" stroke-width="2" vector-effect="non-scaling-stroke"/>{% endif %}
+            <line x1="{{ 200 + 190 * r.lo / plot.edge }}" x2="{{ 200 + 190 * r.hi / plot.edge }}" y1="10" y2="10" class="{{ bc.TONES[tn].line }}" stroke-width="3" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+            <circle cx="{{ 200 + 190 * r.s / plot.edge }}" cy="10" r="4" class="{{ bc.TONES[tn].point }}"/>
+          </svg>
+          {% else %}<span class="muted text-xs">–</span>{% endif %}
+        </td>
+        <td class="hidden px-4 py-2 text-right tabular-nums whitespace-nowrap sm:table-cell">{% if r.drawn %}<span data-tip="{{ '%+.1f' | format(r.lo) | replace('-', '−') }} to {{ '%+.1f' | format(r.hi) | replace('-', '−') }} %, {{ r.n }} pairs{% if r.aa_s is not none %}, A/A {{ '%+.1f' | format(r.aa_s) | replace('-', '−') }} %{% endif %}">{{ "%+.1f" | format(r.s) | replace("-", "−") }} %</span>{% else %}–{% endif %}</td>
+        {% set ch = (overview.changes | selectattr("mode", "equalto", r.baseline) | first) if overview.changes else none %}
+        {% for x in (ch.cells[1:] if ch else macro_metrics[1:]) %}{% set beyond = ch and x.beyond and x.change is not none and (x.change | abs) >= 0.05 %}
+        <td class="hidden px-3 py-2 text-right tabular-nums whitespace-nowrap lg:table-cell {{ 'muted' if not beyond else 'text-emerald-700 dark:text-emerald-300' if x.change < 0 else 'text-rose-700 dark:text-rose-300' }}">{% if ch and x.change is not none %}{{ ("%+.1f" | format(x.change) | replace("-", "−")) if (x.change | abs) >= 0.05 else "0.0" }} %{% else %}–{% endif %}</td>
+        {% endfor %}
+        <td class="hidden px-4 py-2 sm:table-cell"><span data-tip="{{ bc.WHY.get(r.verdict, '') }}{% if r.routes_compared is defined and not r.routes_compared %}&#10;Routes at rest vary between runs of the baseline itself: not compared{% endif %}">{{ state_badge(r.verdict) }}</span></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{# The pair everything below is about: any two variants, by default the baseline commit and the candidate of a mode. #}
+<section class="card mb-4 overflow-hidden" id="pair">
+  <form action="/benchmark/{{ d.name }}" method="get" class="filters flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-slate-100 px-4 py-3 dark:border-white/5">
+    <input type="hidden" name="topology" value="{{ topology }}"><input type="hidden" name="scenario" value="{{ scenario }}">
+    {% for key, label, value in [("reference", "Reference", reference), ("compare", "Compared with", compare)] %}
+    <label class="flex items-center gap-2 text-sm"><span class="label">{{ label }}</span>
+      <select name="{{ key }}" class="input w-auto py-1 font-mono text-sm" onchange="this.form.requestSubmit()">
+        {% for v in names %}<option value="{{ v }}" {% if v == value %}selected{% endif %}>{{ v }}{% if refs.values() | unique | list | length > 1 %} ({{ refs[v] }}){% endif %}</option>{% endfor %}
+      </select></label>
+    {% endfor %}
+  </form>
+  {% if radar %}{% set R = radar %}
+  {# The compared variant as a shape: the ratio of six metrics to the reference, one logarithmic scale for all. Inside the circle is less. #}
+  <div class="grid items-center gap-x-6 gap-y-2 px-4 py-4 md:grid-cols-[minmax(0,24rem)_1fr]">
+    <svg viewBox="-16 -8 132 116" class="mx-auto w-full max-w-sm" data-tip="{{ compare }} against {{ reference }}, the dashed circle. Inside is less, on every axis the better." role="img" aria-label="{{ compare }} against {{ reference }}: {% for a in R.axes %}{{ a.label }} {{ ('%+.0f' | format(a.change)) ~ ' %' if a.change is not none else 'not measured' }}{{ ', ' if not loop.last }}{% endfor %}">
+      {% for ring in R.rings %}<circle cx="50" cy="50" r="{{ ring.r }}" fill="none" class="{{ 'stroke-slate-500 dark:stroke-slate-400' if ring.ratio == 1.0 else 'stroke-slate-200 dark:stroke-slate-700' }}" stroke-width="{{ 0.6 if ring.ratio == 1.0 else 0.4 }}" {% if ring.ratio == 1.0 %}stroke-dasharray="2 1.5"{% endif %}/>
+      {% if ring.ratio != 1.0 %}<text x="51.5" y="{{ 50 - ring.r - 1 }}" class="fill-slate-500 dark:fill-slate-400" font-size="4.5">{{ ring.label }}</text>{% endif %}{% endfor %}
+      {% for sp in R.spokes %}<line x1="50" y1="50" x2="{{ sp.end[0] }}" y2="{{ sp.end[1] }}" class="stroke-slate-200 dark:stroke-slate-700" stroke-width="0.4"/>{% endfor %}
+      {% if R.band %}<path fill-rule="evenodd" class="fill-slate-200/80 dark:fill-white/15" d="M{% for x, y in R.band.outer %}{{ x }},{{ y }} {% endfor %}Z M{% for x, y in R.band.inner %}{{ x }},{{ y }} {% endfor %}Z"/>{% endif %}
+      <polygon points="{% for x, y in R.points %}{{ x }},{{ y }} {% endfor %}" class="fill-uoft-600/15 stroke-uoft-600 dark:fill-uoft-300/20 dark:stroke-uoft-300" stroke-width="0.9" stroke-linejoin="round"/>
+      {% for a in R.axes %}{% if a.point %}
+      <circle cx="{{ a.point[0] }}" cy="{{ a.point[1] }}" r="{{ 2 if a.clipped else 1.3 }}" class="{{ 'fill-white stroke-uoft-600 dark:fill-slate-900 dark:stroke-uoft-300' if a.clipped else 'fill-uoft-600 dark:fill-uoft-300' }}" stroke-width="0.7"/>
+      <circle cx="{{ a.point[0] }}" cy="{{ a.point[1] }}" r="6" fill="transparent" data-tip="{{ a.label }}: {{ '%+.1f' | format(a.change) | replace('-', '−') }} %{% if a.clipped %}, beyond the rim{% endif %}{% if a.n %}, {{ a.n }} pairs{% endif %}{% if R.band %}, A/A {{ '±%.1f' | format(a.noise) }} %{% endif %}"/>
+      {% endif %}{% endfor %}
+      {% for sp in R.spokes %}<text x="{{ sp.text[0] }}" y="{{ sp.text[1] }}" text-anchor="middle" dominant-baseline="middle" class="fill-slate-600 dark:fill-slate-300" font-size="5.5">{{ sp.label }}</text>{% endfor %}
+    </svg>
+    {# The same as numbers: the radar's table. #}
+    <table class="w-full text-sm">
+      <thead><tr class="text-xs text-slate-500 dark:text-slate-400"><th class="py-1.5 text-left font-medium">Metric</th><th class="py-1.5 text-right font-medium" data-tip="Shift of the runs paired by seed, in % of the reference's median, colored where the interval excludes no change and the change exceeds the A/A noise">Change</th>{% if R.band %}<th class="py-1.5 text-right font-medium" data-tip="What the A/A twin of the reference changes by itself">A/A</th>{% endif %}</tr></thead>
+      <tbody class="divide-y divide-slate-100 dark:divide-white/5">
+      {% for a in R.axes %}{% set beyond = a.change is not none and (a.change | abs) >= 0.05 and (a.change | abs) > a.noise and a.low is not none and (a.low > 0 or a.high < 0) %}
+        <tr><td class="py-1.5">{{ a.label }}</td>
+          <td class="py-1.5 text-right tabular-nums {{ 'muted' if not beyond else 'text-emerald-700 dark:text-emerald-300' if a.change < 0 else 'text-rose-700 dark:text-rose-300' }}">{% if a.change is not none %}{{ ("%+.1f" | format(a.change) | replace("-", "−")) if (a.change | abs) >= 0.05 else "0.0" }} %{% else %}–{% endif %}</td>
+          {% if R.band %}<td class="muted py-1.5 text-right tabular-nums">±{{ "%.1f" | format(a.noise) }} %</td>{% endif %}</tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}<p class="muted px-4 py-3 text-sm">No runs of both to pair.</p>{% endif %}
+</section>
+{# The profiles take a while to read: they come after the answer. #}
+<div hx-get="/benchmark/{{ d.name }}/details{{ here }}&reference={{ reference }}&compare={{ compare }}{% if focus %}&focus={{ focus | urlencode }}{% endif %}" hx-trigger="load" hx-target="this" hx-select="#details" hx-swap="outerHTML" hx-push-url="false" class="min-h-screen">
+  {# Small, the room below it kept, so that the page does not shrink under the reader while it loads. #}
+  <div class="card"><p class="loading" role="status"><span class="spinner"></span>Reading the profiles of <span class="font-mono">{{ compare }}</span>…</p></div>
+</div>
+{% endif %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,14 +1,16 @@
 """The Benchmark area: benchmarks of commits and results with CPU profiles,
-read from the results, as the Simulation area reads its searches. One page:
-the benchmarks and profiled results above, the chosen one below with the
-verdict per mode as a forest plot and the long runners of a mode."""
+read from the results, as the Simulation area reads its searches. The list,
+as the other areas have one, and a page per result: the verdict per mode as a
+forest plot, the pair of variants compared, their profiles and call tree."""
 
 import math
+import re
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from ... import analysis
+from ... import analysis, marks
 from ...problems import twins_of
 from ...results import Dataset
 from ..context import render
@@ -16,7 +18,7 @@ from .results import measuring, performance
 
 router = APIRouter()
 
-VERDICT_ORDER = ("behaves differently", "slower", "faster, worse elsewhere", "lab drifts", "unchecked", "too few runs",
+VERDICT_ORDER = ("behaves differently", "slower", "faster, worse elsewhere", "lab drifts", "too few runs",
                  "faster, a guard unmeasured", "slower, within the margin", "no change shown", "faster")
 
 
@@ -203,10 +205,21 @@ MACRO = [  # the parts of lab/profile.py in five shares of the whole, each in a 
     ("routing", "Routing work", ("policy", "export", "decision", "tables", "obgp", "rib")),
     ("io", "Sending and receiving", ("send", "receive")),
     ("gc", "Garbage collector", ("gc",)),
-    ("api", "The lab's reads", ("api",)),
+    ("api", "API, read by the lab", ("api",)),
     ("other", "Other", ("other",)),
 ]
 MACRO_METRICS = [("cpu_s_mean", "CPU"), ("settle_s", "Settle"), ("rss_mean", "Memory"), ("updates_prefix_max", "Updates")]
+
+
+def pct(pr: dict | None) -> float | None:
+    """A paired change in % of the baseline: the Hodges-Lehmann shift, as the verdict, else the median of the ratios."""
+    pr = pr or {}
+    return pr.get("shift_pct", pr.get("change"))
+
+
+def short_ref(ref: str) -> str:
+    """A commit as its first eight hex digits, any other ref as it is."""
+    return ref[:8] if re.fullmatch(r"[0-9a-f]{9,40}", ref) else ref
 
 
 def overview(dataset: Dataset, topology: str, scenario: str, cells: list[dict]) -> dict:
@@ -215,31 +228,47 @@ def overview(dataset: Dataset, topology: str, scenario: str, cells: list[dict]) 
     change of the candidate against the baseline in the macro metrics."""
     e = dataset.experiment
     groups = {g["variant"]: g for g in analysis.summary(dataset) if (g["topology"], g["scenario"]) == (topology, scenario)}
-    names = [c["baseline"] for c in cells] if cells else [v.name for v in e.variants if not v.records]
-    bars = []
-    for v in names:
+
+    def bar(v: str) -> dict | None:
         m = (groups.get(v) or {}).get("metrics") or {}
         whole = (m.get("prof_s") or {}).get("median")
         if not whole:
-            continue
+            return None
         shares = [{"key": k, "label": label, "s": sum((m.get(f"prof_{b}_s") or {}).get("median") or 0.0 for b in parts)}
                   for k, label, parts in MACRO]
-        bars.append({"variant": v, "seconds": whole, "shares": [{**x, "pct": 100 * x["s"] / whole} for x in shares]})
-    changes = []
+        return {"variant": v, "seconds": whole, "shares": [{**x, "pct": 100 * x["s"] / whole} for x in shares]}
+
     rule = e.speed
-    for c in cells:
-        row = {"mode": c["baseline"], "variant": c["variant"], "cells": []}
+
+    def change(metric: str, c: dict, margin: float) -> dict:
+        """The candidate's paired change in % of the baseline, beyond only past
+        the margin and what the A/A twin changes by itself."""
+        pr = analysis.paired(dataset, topology, scenario, metric, c["variant"], c["baseline"])
         aa = (c.get("aa") or {}).get("variant")
-        for metric, label in MACRO_METRICS:
-            pr = analysis.paired(dataset, topology, scenario, metric, c["variant"], c["baseline"])
-            # Clear only beyond the rule's margin (the guards' for the other metrics) and what the A/A twin changes by itself.
-            noise = abs(((analysis.paired(dataset, topology, scenario, metric, aa, c["baseline"]) if aa else None) or {}).get("change") or 0.0)
-            least = max(noise, (rule.margin_pct if metric == rule.metric else rule.guard_pct) if rule else 0.0)
-            clear = bool(pr and pr.get("shift_low") is not None and (pr["shift_low"] > 0 or pr["shift_high"] < 0)
-                         and pr.get("change") is not None and abs(pr["change"]) > least)
-            row["cells"].append({"metric": metric, "label": label, "change": (pr or {}).get("change"), "clear": clear, "n": (pr or {}).get("n")})
-        changes.append(row)
-    return {"bars": bars, "longest": max([b["seconds"] for b in bars] + [1.0]), "changes": changes}
+        noise = abs(pct(analysis.paired(dataset, topology, scenario, metric, aa, c["baseline"]) if aa else None) or 0.0)
+        beyond = bool(pr and pr.get("shift_low") is not None and (pr["shift_low"] > 0 or pr["shift_high"] < 0)
+                      and pct(pr) is not None and abs(pct(pr)) > max(noise, margin))
+        return {"change": pct(pr), "beyond": beyond, "n": (pr or {}).get("n")}
+
+    # A benchmark: per mode the baseline commit and its candidate, one above the other, the candidate
+    # with its change of the profiled CPU, judged by the margin of the rule's CPU. Else every variant once.
+    pairs = []
+    for c in cells:
+        base, cand = bar(c["baseline"]), bar(c["variant"])
+        if cand:
+            cand |= change("prof_s", c, rule.margin_pct if rule else 0.0)
+        pairs.append((c["baseline"], [base, cand]))
+    if not cells:
+        pairs = [(v.name, [bar(v.name)]) for v in e.variants if not v.records]
+    modes = [{"mode": mode, "bars": [b for b in bs if b]} for mode, bs in pairs if any(bs)]
+    bars = [b for x in modes for b in x["bars"]]
+    changes = []
+    for c in cells:
+        # The guards' margin for the other metrics.
+        changes.append({"mode": c["baseline"], "variant": c["variant"], "cells": [
+            {"metric": metric, "label": label, **change(metric, c, (rule.margin_pct if metric == rule.metric else rule.guard_pct) if rule else 0.0)}
+            for metric, label in MACRO_METRICS]})
+    return {"bars": bars, "modes": modes, "pair": bool(cells), "longest": max([b["seconds"] for b in bars] + [1.0]), "changes": changes}
 
 
 RADAR = [("cpu_s_mean", "CPU"), ("cpu_cores_max", "Peak cores"), ("settle_s", "Settle"), ("rss_mean", "Memory"),
@@ -270,8 +299,8 @@ def radar(dataset: Dataset, topology: str, scenario: str, reference: str, compar
     axes = []
     for metric, label in RADAR:
         pr = analysis.paired(dataset, topology, scenario, metric, compare, reference) or {}
-        change = pr.get("change")
-        noise = abs(((analysis.paired(dataset, topology, scenario, metric, aa, reference) if aa else None) or {}).get("change") or 0.0)
+        change = pct(pr)
+        noise = abs(pct(analysis.paired(dataset, topology, scenario, metric, aa, reference) if aa else None) or 0.0)
         ratio = 1 + change / 100 if change is not None and change > -100 else None
         axes.append({"label": label, "change": change, "noise": noise, "n": pr.get("n"), "ratio": ratio,
                      "low": pr.get("shift_low"), "high": pr.get("shift_high")})
@@ -292,10 +321,8 @@ def radar(dataset: Dataset, topology: str, scenario: str, reference: str, compar
             "spokes": [{"label": label, "end": at(i, 1.0), "text": at(i, 1.2)} for i, (_, label) in enumerate(RADAR)]}
 
 
-@router.get("/benchmark", response_class=HTMLResponse)
-def area(request: Request, result: str = "", mode: str = "", reference: str = "", compare: str = "", topology: str = "",
-         scenario: str = "", focus: str = ""):
-    """Quick: the list, and of the chosen one the answer and the forest plot. Its profiles load after, see details."""
+def listed() -> list[dict]:
+    """The benchmarks and profiled results, starred first, each part in its order, as in the list of results."""
     items = []
     for d in Dataset.all():
         if (kind := kind_of(d)) is None:
@@ -303,24 +330,44 @@ def area(request: Request, result: str = "", mode: str = "", reference: str = ""
         b = d.experiment.benchmark
         items.append({"dataset": d, "kind": kind, "verdicts": verdicts(d) if kind == "benchmark" else None,
                       "title": f"{', '.join(b.candidates)} against {b.baseline}" if b else d.experiment.name})
-    shown = next((i for i in items if i["dataset"].name == result), items[0] if items else None)
-    if result and (shown is None or shown["dataset"].name != result):
-        raise HTTPException(404, f"No benchmark or profiled result {result}.")
-    page = {"nav": "benchmark", "items": items, "shown": shown, "focus": focus}
-    if shown:
-        d = shown["dataset"]
-        if measuring(d):
-            return render(request, "performance.html", **page, analysing=analysis.PROGRESS.get(str(d.path)))
-        c = chosen(d, topology, scenario, mode, reference, compare)
-        page |= c | {"plot": forest(c["cells"]), "answer": answer(c["cells"], d.experiment.benchmark),
-                     "overview": overview(d, c["topology"], c["scenario"], c["cells"]), "macro": MACRO,
-                     "radar": radar(d, c["topology"], c["scenario"], c["reference"], c["compare"], c["aa"]), "macro_metrics": MACRO_METRICS}
-        # Something to compare yet: shares of the CPU, a verdict drawn or a pair with runs of both.
-        page["ready"] = bool(page["overview"]["bars"] or any(r["drawn"] for r in page["plot"]["rows"]) or page["radar"])
-    return render(request, "performance.html", **page)
+    starred = marks.starred("result")
+    return sorted(items, key=lambda i: i["dataset"].name not in starred)
 
 
-@router.get("/benchmark/details", response_class=HTMLResponse)
+@router.get("/benchmark", response_class=HTMLResponse)
+def area(request: Request, show: str = "all", result: str = ""):
+    """The list, as the other areas have it: search, a choice of the kind, stars. Each one opens a page of its own."""
+    if result:  # the address of one before it had a page of its own
+        query = "&".join(f"{k}={quote(v)}" for k, v in request.query_params.items() if k != "result")
+        return RedirectResponse(f"/benchmark/{quote(result)}" + (f"?{query}" if query else ""), status_code=301)
+    show = show if show in ("all", "benchmark", "profiled") else "all"
+    items = [i for i in listed() if show in ("all", i["kind"])]
+    return render(request, "benchmarks.html", nav="benchmark", items=items, show=show, starred=marks.starred("result"))
+
+
+@router.get("/benchmark/{name}", response_class=HTMLResponse)
+def page(request: Request, name: str, mode: str = "", reference: str = "", compare: str = "", topology: str = "",
+         scenario: str = "", focus: str = ""):
+    """Quick: the answer, the shares of the CPU, the verdict and the pair. Its profiles load after, see details."""
+    d = Dataset.find(name)
+    if d is None or (kind := kind_of(d)) is None:
+        raise HTTPException(404, f"No benchmark or profiled result {name}.")
+    b = d.experiment.benchmark
+    shown = {"dataset": d, "kind": kind, "title": f"{', '.join(b.candidates)} against {b.baseline}" if b else d.experiment.name}
+    ctx = {"nav": "benchmark", "shown": shown, "focus": focus, "starred": marks.starred("result")}
+    if measuring(d):
+        return render(request, "benchmark.html", **ctx, analysing=analysis.PROGRESS.get(str(d.path)))
+    c = chosen(d, topology, scenario, mode, reference, compare)
+    ctx |= c | {"plot": forest(c["cells"]), "answer": answer(c["cells"], b),
+                 "overview": overview(d, c["topology"], c["scenario"], c["cells"]), "macro": MACRO,
+                 "radar": radar(d, c["topology"], c["scenario"], c["reference"], c["compare"], c["aa"]), "macro_metrics": MACRO_METRICS,
+                 "refs": {v.name: short_ref(v.ref) for v in d.experiment.variants}}
+    # Something to compare yet: shares of the CPU, a verdict drawn or a pair with runs of both.
+    ctx["ready"] = bool(ctx["overview"]["bars"] or any(r["drawn"] for r in ctx["plot"]["rows"]) or ctx["radar"])
+    return render(request, "benchmark.html", **ctx)
+
+
+@router.get("/benchmark/{result}/details", response_class=HTMLResponse)
 def details(request: Request, result: str, mode: str = "", reference: str = "", compare: str = "", topology: str = "",
             scenario: str = "", focus: str = ""):
     """The profiles of the chosen mode, read once each: cores used, where the CPU goes, the long runners and the call tree."""

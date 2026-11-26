@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% from "macros.html" import list_header, state_badge, icon, star_button %}
+{% import "partials/benchmark-common.html" as bc %}
+{% block title %}Benchmark – OBGP Lab{% endblock %}
+{% block content %}
+{% call list_header("Benchmark", "#benchmarks") %}
+  <nav class="segmented" aria-label="Kind">
+    {% for key, label, tip in [("all", "All", ""), ("benchmark", "Benchmarks", "Commits against each other"),
+                               ("profiled", "Profiled", "Results with CPU profiles. Those profiled before 25 November 2026 stop before rest and are left out.")] %}
+    <a href="?show={{ key }}" {% if show == key %}aria-current="page"{% endif %}{% if tip %} data-tip="{{ tip }}"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+  <a href="/experiments/new?benchmark=1" class="btn btn-primary" data-tip="Is a commit faster than another, in every mode: one result">{{ icon("add") }}New benchmark</a>
+{% endcall %}
+<div class="card overflow-x-auto">
+  <table class="list" id="benchmarks">
+    <thead><tr><th>Result</th><th class="hidden sm:table-cell">Kind</th><th>Verdict</th><th class="num hidden sm:table-cell">Created</th><th></th></tr></thead>
+    <tbody>
+    {% for i in items %}{% set d = i.dataset %}
+      <tr onclick="location.href = '/benchmark/{{ d.name }}'" data-search="{{ i.title }} {{ d.name }} {{ d.experiment.description }}">
+        <td class="w-full max-w-0 sm:min-w-72 sm:max-w-none">
+          <div class="flex items-center gap-2">{{ star_button("result", d.name, d.name in starred, "/benchmark?show=" ~ show, "the lists") }}<div class="min-w-0 flex-1">
+          <a href="/benchmark/{{ d.name }}" class="block truncate font-medium">{{ i.title }}</a>
+          <span class="item-note block truncate font-mono">{{ d.name }}</span>
+          </div></div>
+        </td>
+        <td class="muted hidden whitespace-nowrap sm:table-cell" data-tip="{{ 'Commits against each other, a verdict per mode' if i.kind == 'benchmark' else 'A result with CPU profiles, its variants side by side' }}">{{ "Benchmark" if i.kind == "benchmark" else "Profiled" }}</td>
+        <td class="whitespace-nowrap">
+          {% if i.verdicts %}
+          <span class="inline-flex items-center gap-1" role="img" aria-label="{% for m, v in i.verdicts | dictsort %}{{ m }} {{ v }}{{ ', ' if not loop.last }}{% endfor %}">
+            {% for m, v in i.verdicts | dictsort %}<span class="size-3 rounded-sm {{ bc.TONES[bc.tone(v)].dot }}" data-tip="{{ m }}: {{ v }}"></span>{% endfor %}
+          </span>
+          {% set all = i.verdicts.values() | list %}<span class="muted ml-1.5 text-xs max-sm:hidden">{% for v in all | unique %}{{ all | select("equalto", v) | list | length }} {{ v }}{{ ", " if not loop.last }}{% endfor %}</span>
+          {% elif i.kind == "benchmark" %}<span class="muted text-xs max-sm:hidden">{{ "to analyse" if d.status.get("state") == "finished" else "verdict when its runs are in" }}</span>
+          {% else %}<span class="muted text-xs max-sm:hidden">{{ d.experiment.variants | length }} variants</span>{% endif %}
+        </td>
+        <td class="num muted hidden whitespace-nowrap sm:table-cell">{{ d.meta.get("created", "") | created }}</td>
+        <td class="w-0 pr-5 text-right">{{ state_badge(d.status.get("state") or "stopped") }}</td>
+      </tr>
+    {% else %}
+      <tr class="empty"><td colspan="5">{{ "No benchmarks yet." if show != "profiled" else "No profiled results yet." }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

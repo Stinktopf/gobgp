@@ -1,0 +1,25 @@
+{# A verdict as color: emerald for a gain shown, rose for a loss or a change in behaviour, else neutral. Whole class names, as Tailwind finds them. #}
+{% set TONES = {
+  "emerald": {"dot": "bg-emerald-500 dark:bg-emerald-400", "line": "stroke-emerald-600 dark:stroke-emerald-400", "point": "fill-emerald-600 dark:fill-emerald-400"},
+  "rose": {"dot": "bg-rose-500 dark:bg-rose-400", "line": "stroke-rose-600 dark:stroke-rose-400", "point": "fill-rose-600 dark:fill-rose-400"},
+  "slate": {"dot": "bg-slate-400 dark:bg-slate-500", "line": "stroke-slate-500 dark:stroke-slate-400", "point": "fill-slate-500 dark:fill-slate-400"},
+} %}
+{% set WHY = {
+  "faster": "Faster beyond the margin, its guards held, the same routes at rest",
+  "slower": "Slower beyond the margin",
+  "no change shown": "Its interval does not lie beyond the margin",
+  "slower, within the margin": "Slower, but less than the margin",
+  "faster, worse elsewhere": "Faster, but a guard got worse",
+  "faster, a guard unmeasured": "Faster, a guard could not be measured",
+  "behaves differently": "It chooses other routes at rest than the baseline",
+  "too few runs": "Its runs do not reach the level the rule asks",
+  "lab drifts": "The baseline against itself shifted beyond the margin: the lab moved, not the code",
+} %}
+{% macro tone(v) -%}
+{{ "emerald" if v == "faster" else "rose" if v in ("slower", "behaves differently", "faster, worse elsewhere") else "slate" }}
+{%- endmacro %}
+{# What a result in the area is: commits against each other, or a result with CPU profiles. #}
+{% macro kind_tag(kind) -%}
+{% if kind == "benchmark" %}<span class="tag tag-accent" data-tip="Commits against each other, a verdict per mode">benchmark</span>
+{%- else %}<span class="tag" data-tip="A result with CPU profiles, its variants side by side">profiled</span>{% endif %}
+{%- endmacro %}

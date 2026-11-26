@@ -26,6 +26,7 @@ import (
 	"net/netip"
 	"slices"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/osrg/gobgp/v4/pkg/config/oc"
@@ -136,7 +137,7 @@ type Path struct {
 	parent    *Path
 	pathAttrs []bgp.PathAttributeInterface
 	dels      []bgp.BGPAttrType
-	attrsHash uint64
+	attrsHash uint64 // 0 until computed, read and written atomically: neighbors' send loops may ask for it of one shared path at once
 	localID   uint32
 	remoteID  uint32
 	family    bgp.Family
@@ -253,7 +254,8 @@ func (path *Path) dropForExport(internal bool) {
 // ExportFor is what UpdatePathAttrs makes of a path for a neighbor, from what
 // it made for another neighbor of the same ExportClass: a copy of template
 // with this neighbor's local address as next hop where UpdatePathAttrs sets
-// it. Every neighbor gets its own copy, as each may change it.
+// it. Neighbors with the same local address may share the copy: who would
+// change it copies it first.
 func ExportFor(template *Path, peer *oc.Neighbor, original *Path, local netip.Addr) *Path {
 	path := template.Clone(template.IsWithdraw)
 	if setsLocalNexthop(peer, original) {
@@ -408,7 +410,7 @@ func (path *Path) Clone(isWithdraw bool) *Path {
 		family:           path.family,
 		IsWithdraw:       isWithdraw,
 		IsNexthopInvalid: path.IsNexthopInvalid,
-		attrsHash:        path.attrsHash,
+		attrsHash:        atomic.LoadUint64(&path.attrsHash),
 		localID:          path.localID,
 		remoteID:         path.remoteID,
 	}
@@ -634,7 +636,7 @@ func (path *Path) getPathAttr(typ bgp.BGPAttrType) bgp.PathAttributeInterface {
 }
 
 func (path *Path) setPathAttr(a bgp.PathAttributeInterface) {
-	path.attrsHash = 0
+	atomic.StoreUint64(&path.attrsHash, 0)
 	if len(path.pathAttrs) == 0 {
 		path.pathAttrs = []bgp.PathAttributeInterface{a}
 	} else {
@@ -649,7 +651,7 @@ func (path *Path) setPathAttr(a bgp.PathAttributeInterface) {
 }
 
 func (path *Path) delPathAttr(typ bgp.BGPAttrType) {
-	path.attrsHash = 0
+	atomic.StoreUint64(&path.attrsHash, 0)
 	if len(path.dels) == 0 {
 		path.dels = []bgp.BGPAttrType{typ}
 	} else {
@@ -1091,6 +1093,11 @@ func (path *Path) SetMed(med int64, doReplace bool) error {
 	return nil
 }
 
+// HasLocalPref tells whether the path carries a LOCAL_PREF attribute.
+func (path *Path) HasLocalPref() bool {
+	return path.getPathAttr(bgp.BGP_ATTR_TYPE_LOCAL_PREF) != nil
+}
+
 func (path *Path) RemoveLocalPref() {
 	if path.getPathAttr(bgp.BGP_ATTR_TYPE_LOCAL_PREF) != nil {
 		path.delPathAttr(bgp.BGP_ATTR_TYPE_LOCAL_PREF)
@@ -1163,8 +1170,8 @@ func (lhs *Path) Equal(rhs *Path) bool {
 		return false
 	}
 	// The idea here is to calculate the hash of the attributes on demand
-	if lhs.attrsHash > 0 && rhs.attrsHash > 0 { // direct access to the hash to avoid unnecessary hash calculation
-		return lhs.attrsHash == rhs.attrsHash
+	if l, r := atomic.LoadUint64(&lhs.attrsHash), atomic.LoadUint64(&rhs.attrsHash); l > 0 && r > 0 { // direct access to the hash to avoid unnecessary hash calculation
+		return l == r
 	}
 	// slow path comparison, could happen as attributes flags is not part of the hash
 	for t, a := range lhsPathAttrs {
@@ -1424,24 +1431,26 @@ func (p *Path) ToLocal() *Path {
 	return path
 }
 
-func (p *Path) updateHash() {
-	p.attrsHash = fnv1a.Init64
+func (p *Path) updateHash() uint64 {
+	h := fnv1a.Init64
 	for _, a := range p.GetPathAttrs() {
 		d, _ := a.Serialize()
-		p.attrsHash = fnv1a.AddBytes64(p.attrsHash, d)
+		h = fnv1a.AddBytes64(h, d)
 	}
+	atomic.StoreUint64(&p.attrsHash, h)
+	return h
 }
 
 func (p *Path) SetHash(v uint64) {
-	p.attrsHash = v
+	atomic.StoreUint64(&p.attrsHash, v)
 }
 
 // GetHash returns the hash value of the path attributes.
 func (p *Path) GetHash() uint64 {
-	if p.attrsHash == 0 {
-		p.updateHash()
+	if h := atomic.LoadUint64(&p.attrsHash); h != 0 {
+		return h
 	}
-	return p.attrsHash
+	return p.updateHash()
 }
 
 func (p *Path) SetSource(peerInfo *PeerInfo) {

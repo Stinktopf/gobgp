@@ -25,6 +25,45 @@ type operaUpdate struct {
 	changes        [][2]*table.Path // the export before and after
 	ready          []*table.Path    // the new path as sent, where it is the export
 	fwdOld, fwdNew *table.Path
+	buf            *operaBuffers
+}
+
+// operaBuffers hold the lists an update needs while it is handled, kept for
+// the next update instead of made anew for each: one entry per neighbor with
+// a table. An update handled while another is gets lists of its own.
+type operaBuffers struct {
+	update  operaUpdate
+	changes [][2]*table.Path
+	ready   []*table.Path
+	allows  []bool
+	sent    []*table.Path
+	exports []*table.Path
+	busy    bool
+}
+
+// sized is s with n zero entries, in s's memory where it has room.
+func sized[T any](s []T, n int) []T {
+	if cap(s) < n {
+		return make([]T, n)
+	}
+	s = s[:n]
+	clear(s)
+	return s
+}
+
+// operaDone gives the lists of an update back, emptied, so that they keep
+// no path alive.
+func (s *BgpServer) operaDone(u *operaUpdate) {
+	if u == nil {
+		return
+	}
+	b := u.buf
+	clear(b.changes)
+	clear(b.ready)
+	clear(b.sent)
+	clear(b.exports)
+	b.update = operaUpdate{}
+	b.busy = false
 }
 
 // slot is the entry of neighbor nb, if it has a table.
@@ -116,8 +155,10 @@ func (s *BgpServer) operaFilter(nb *peer, p *table.Path) (bool, *table.Path) {
 		nb.fsm.lock.Lock()
 		q := s.exported(nb, p)
 		nb.fsm.lock.Unlock()
-		options := &table.PolicyOptions{Info: nb.peerInfo, OldNextHop: p.GetNexthop()}
-		return nb.policy.ApplyPolicy(nb.TableID(), table.POLICY_DIRECTION_EXPORT, q, options) != nil, nil
+		o := &s.options // in place, see filterpath
+		*o = table.PolicyOptions{Info: nb.peerInfo, OldNextHop: p.GetNexthop()}
+		defer func() { *o = table.PolicyOptions{} }()
+		return nb.policy.ApplyPolicy(nb.TableID(), table.POLICY_DIRECTION_EXPORT, q, o) != nil, nil
 	}
 	q := s.filterpath(nb, p, nil)
 	return q != nil, q
@@ -133,12 +174,20 @@ func (s *BgpServer) operaBefore(rib *table.TableManager, p *table.Path) *operaUp
 	if len(peers) == 0 {
 		return nil
 	}
-	u := &operaUpdate{peers: peers, ids: ids, changes: make([][2]*table.Path, len(peers)), ready: make([]*table.Path, len(peers))}
+	b := &s.operaBuf
+	if b.busy {
+		b = &operaBuffers{}
+	}
+	b.busy = true
+	b.changes, b.ready = sized(b.changes, len(peers)), sized(b.ready, len(peers))
+	b.update = operaUpdate{peers: peers, ids: ids, changes: b.changes, ready: b.ready, buf: b}
+	u := &b.update
 	d := rib.GetDestination(p)
 	var exports []*table.Path
 	if d != nil {
 		u.fwdOld = d.OperaForwarding() // kept, as the update may delete the destination
-		exports = d.OperaExports(ids)
+		b.exports = d.OperaExportsInto(ids, b.exports)
+		exports = b.exports
 	}
 	for i, nb := range peers {
 		nb.operaSlot = i
@@ -155,13 +204,16 @@ func (s *BgpServer) operaFeed(rib *table.TableManager, p *table.Path, u *operaUp
 	d := rib.GetDestination(p)
 	var sent, after []*table.Path
 	if d != nil {
-		allows := make([]bool, len(u.peers))
-		sent = make([]*table.Path, len(u.peers))
+		b := u.buf
+		b.allows, b.sent = sized(b.allows, len(u.peers)), sized(b.sent, len(u.peers))
+		allows := b.allows
+		sent = b.sent
 		for i, nb := range u.peers {
 			allows[i], sent[i] = s.operaFilter(nb, p)
 		}
 		d.OperaFeedSorted(s.logger, p, u.ids, allows, true)
-		after = d.OperaExports(u.ids)
+		b.exports = d.OperaExportsInto(u.ids, b.exports) // the exports before were copied into changes
+		after = b.exports
 	}
 	for i := range u.peers {
 		var a *table.Path
@@ -195,10 +247,13 @@ func (s *BgpServer) operaSend(nb *peer, change [2]*table.Path, ready *table.Path
 		if old == nil {
 			return
 		}
-		path = old.Clone(true)
+		path = s.withdrawal(old)
 	}
-	if paths := s.processOutgoingPaths(nb, []*table.Path{path}, []*table.Path{old}); len(paths) > 0 {
-		sendfsmOutgoingMsg(nb, paths)
+	if !needToAdvertise(nb) { // as processOutgoingPaths, without its lists
+		return
+	}
+	if p := s.filterpath(nb, path, old); p != nil {
+		sendfsmOutgoingMsg(nb, []*table.Path{p})
 	}
 }
 

@@ -380,48 +380,113 @@ func getOperaWorstPath(id string, as uint32, pathList []*Path) *Path {
 // compareOperaPath orders paths by AS path length first and then
 // lexicographically by ASN. It returns -1 if a is better than b, 1 if a is
 // worse and 0 if both AS paths are equal. Paths with AS_SET or confederation
-// segments are ordered by their hops, see operaHops and confedHops.
+// segments are ordered by their hops, see operaHops and asFacts.
 func compareOperaPath(a, b *Path) int {
-	if c := cmp.Compare(a.GetAsPathLen(), b.GetAsPathLen()); c != 0 {
+	// Each AS path looked up once and walked once for what the order asks.
+	x, y := asSegments(a), asSegments(b)
+	fx, fy := asFactsOf(x), asFactsOf(y)
+	if c := cmp.Compare(fx.length, fy.length); c != 0 {
 		return c
 	}
-	if o := operaOptions.Load(); !o.ReceivedSetOrder && !o.IgnoreConfedHops {
-		if c := cmp.Compare(confedHops(a), confedHops(b)); c != 0 {
+	o := operaOptions.Load()
+	if !o.ReceivedSetOrder && !o.IgnoreConfedHops {
+		if c := cmp.Compare(fx.confedHops, fy.confedHops); c != 0 {
 			return c
 		}
 	}
-	if !operaOptions.Load().ReceivedSetOrder && (hasSetOrConfed(a) || hasSetOrConfed(b)) {
+	if !o.ReceivedSetOrder && (fx.setOrConfed || fy.setOrConfed) {
 		return slices.CompareFunc(operaHops(a), operaHops(b), slices.Compare[[]uint32])
 	}
-	return slices.Compare(a.GetAsList(), b.GetAsList()) // the same order for sequences, without allocating hops
+	return compareAsSegments(x, y) // the same order for sequences, without allocating hops
 }
 
-func hasSetOrConfed(p *Path) bool {
-	if aspath := p.GetAsPath(); aspath != nil {
-		for _, segment := range aspath.Value {
-			if segment.GetType() != bgp.BGP_ASPATH_ATTR_TYPE_SEQ {
-				return true
-			}
-		}
-	}
-	return false
+// asFacts of an AS path: its length as GetAsPathLen counts it, its confederation
+// members, a set counting as one, and whether it has a set or confederation segment.
+type asFacts struct {
+	length, confedHops int
+	setOrConfed        bool
 }
 
-// confedHops is the number of confederation members on a path, a set
-// counting as one.
-func confedHops(p *Path) int {
-	n := 0
-	if aspath := p.GetAsPath(); aspath != nil {
-		for _, segment := range aspath.Value {
-			switch segment.GetType() {
-			case bgp.BGP_ASPATH_ATTR_TYPE_CONFED_SEQ:
-				n += len(segment.GetAS())
-			case bgp.BGP_ASPATH_ATTR_TYPE_CONFED_SET:
-				n++
-			}
+func asFactsOf(segments []bgp.AsPathParamInterface) asFacts {
+	var f asFacts
+	for _, segment := range segments {
+		f.length += segment.ASLen()
+		switch segment.GetType() {
+		case bgp.BGP_ASPATH_ATTR_TYPE_SEQ:
+		case bgp.BGP_ASPATH_ATTR_TYPE_CONFED_SEQ:
+			f.confedHops += len(segment.GetAS())
+			f.setOrConfed = true
+		case bgp.BGP_ASPATH_ATTR_TYPE_CONFED_SET:
+			f.confedHops++
+			f.setOrConfed = true
+		default:
+			f.setOrConfed = true
 		}
 	}
-	return n
+	return f
+}
+
+// compareAsLists is slices.Compare(a.GetAsList(), b.GetAsList()) without
+// making the lists: it runs over the segments of both AS paths.
+func compareAsLists(a, b *Path) int {
+	return compareAsSegments(asSegments(a), asSegments(b))
+}
+
+func compareAsSegments(a, b []bgp.AsPathParamInterface) int {
+	x, y := asWalk{segments: a}, asWalk{segments: b}
+	for {
+		u, more := x.next()
+		v, also := y.next()
+		switch {
+		case !more || !also:
+			return cmp.Compare(boolInt(more), boolInt(also))
+		case u != v:
+			return cmp.Compare(u, v)
+		}
+	}
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func asSegments(p *Path) []bgp.AsPathParamInterface {
+	if aspath := p.GetAsPath(); aspath != nil {
+		return aspath.Value
+	}
+	return nil
+}
+
+// asWalk gives the numbers of GetAsList one at a time: those of sequences
+// and sets, a 0 for any other segment.
+type asWalk struct {
+	segments []bgp.AsPathParamInterface
+	i, j     int
+	as       []uint32 // of segment i, read once: GetAS of a 2-byte segment makes a list
+	read     bool
+}
+
+func (w *asWalk) next() (uint32, bool) {
+	for w.i < len(w.segments) {
+		s := w.segments[w.i]
+		if t := s.GetType(); t == bgp.BGP_ASPATH_ATTR_TYPE_SEQ || t == bgp.BGP_ASPATH_ATTR_TYPE_SET {
+			if !w.read {
+				w.as, w.read = s.GetAS(), true
+			}
+			if w.j < len(w.as) {
+				w.j++
+				return w.as[w.j-1], true
+			}
+		} else if w.j == 0 {
+			w.j = 1
+			return 0, true
+		}
+		w.i, w.j, w.read = w.i+1, 0, false
+	}
+	return 0, false
 }
 
 // operaHops is the AS path as the hops the OBGP order and pruning look at.

@@ -4139,7 +4139,7 @@ func BenchmarkApplyExportPolicyPerNeighbor(b *testing.B) {
 
 func TestCommunityConditionMatchesAsWithFmt(t *testing.T) {
 	rng := rand.New(rand.NewPCG(7, 7))
-	exprs := []string{"65000:1", "^65000:.*$", "0:.*", "65535:65281", ".*:100$", "^1[0-9]*:2", "no-export"}
+	exprs := []string{"65000:1", "^65000:.*$", "0:.*", "65535:65281", ".*:100$", "^1[0-9]*:2", "no-export", "65000:01", "1:2", "70000:1", "0:100", "4259905537"}
 	for range 3000 {
 		var list []string
 		for range 1 + rng.IntN(3) {
@@ -4149,7 +4149,7 @@ func TestCommunityConditionMatchesAsWithFmt(t *testing.T) {
 		require.NoError(t, err)
 		var cs []uint32
 		for range rng.IntN(4) {
-			cs = append(cs, []uint32{65000<<16 | 1, 65535<<16 | 65281, 100, 12<<16 | 2, rng.Uint32()}[rng.IntN(5)])
+			cs = append(cs, []uint32{65000<<16 | 1, 65535<<16 | 65281, 100, 12<<16 | 2, 1<<16 | 2, rng.Uint32()}[rng.IntN(6)])
 		}
 		path := neighborPolicyPath(cs)
 		for _, option := range []MatchOption{MATCH_OPTION_ANY, MATCH_OPTION_ALL, MATCH_OPTION_INVERT} {

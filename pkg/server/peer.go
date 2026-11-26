@@ -16,6 +16,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -532,7 +533,7 @@ func (peer *peer) filterPathFromSourcePeer(path, old *table.Path) *table.Path {
 			// be withdrawn in order to signal the client to distribute routes
 			// with the specific RT to Route Reflector.
 			return path
-		} else if !path.IsWithdraw && old != nil && old.GetSource().Address.String() != peer.ID() {
+		} else if !path.IsWithdraw && old != nil && old.GetSource().Address != peer.address() {
 			// Say, peer A and B advertized same prefix P, and best path
 			// calculation chose a path from B as best. When B withdraws prefix
 			// P, best path calculation chooses the path from A as best. For
@@ -543,10 +544,12 @@ func (peer *peer) filterPathFromSourcePeer(path, old *table.Path) *table.Path {
 			return old.Clone(true)
 		}
 	}
-	peer.fsm.logger.Debug("From me, ignore",
-		slog.String("Topic", "Peer"),
-		slog.String("Key", peer.ID()),
-		slog.String("Data", path.String()))
+	if peer.fsm.logger.Enabled(context.Background(), slog.LevelDebug) { // the path as text only when logged
+		peer.fsm.logger.Debug("From me, ignore",
+			slog.String("Topic", "Peer"),
+			slog.String("Key", peer.ID()),
+			slog.String("Data", path.String()))
+	}
 	return nil
 }
 

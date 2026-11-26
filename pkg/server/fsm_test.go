@@ -16,6 +16,8 @@
 package server
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 	"log/slog"
@@ -149,12 +151,22 @@ func (m *MockConnection) PushBgpMessage(msg *bgp.BGPMessage) {
 	m.remote.Write(buf)
 }
 
+// GetSentMessages returns the messages sent so far, one each: the stream as
+// read, cut by the length in each header, as a write may carry several and
+// a read part of one.
 func (m *MockConnection) GetSentMessages() [][]byte {
 	m.lock.Lock()
 	defer m.lock.Unlock()
-	// Return collected messages
-	result := make([][]byte, len(m.allMessages))
-	copy(result, m.allMessages)
+	stream := bytes.Join(m.allMessages, nil)
+	var result [][]byte
+	for len(stream) >= bgp.BGP_HEADER_LENGTH {
+		n := int(binary.BigEndian.Uint16(stream[16:18]))
+		if n < bgp.BGP_HEADER_LENGTH || n > len(stream) {
+			break
+		}
+		result = append(result, stream[:n])
+		stream = stream[n:]
+	}
 	return result
 }
 

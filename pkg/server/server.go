@@ -139,6 +139,12 @@ type BgpServer struct {
 	operaOrder   []*peer                      // the neighbors of operaUp sorted by ID, nil after one came or went
 	operaViews   map[bgp.Family]operaViewList // operaViewPeers per family, cleared with operaOrder
 	exports      map[exportKey]*table.Path    // while an update is handled: a path as made for each export class, see exported
+	exported1    map[exportKey]*table.Path    // and for each local address of a class, see exported
+	unpreffed    map[*table.Path]*table.Path  // and of a path for eBGP neighbors the copy without LOCAL_PREF, see postFilterpath
+	withdrawals  map[*table.Path]*table.Path  // and of a path its withdrawal, see withdrawal
+	validate     func(*table.Path) *table.Validation
+	options      table.PolicyOptions // of the export policy, kept for each call of filterpath, which runs on the server's loop
+	operaBuf     operaBuffers        // the lists of the update being handled, see operaBefore
 	// manage lifecycle of the server
 	isServing     atomic.Bool
 	shutdownWG    *sync.WaitGroup
@@ -177,6 +183,7 @@ func NewBgpServer(opt ...ServerOption) *BgpServer {
 		timingHook:   opts.timingHook,
 		shutdownWG:   &sync.WaitGroup{},
 	}
+	s.validate = roaTable.Validate // a method value made once, not per path
 	s.bmpManager = newBmpClientManager(s)
 	s.mrtManager = newMrtManager(s)
 	if len(opts.grpcAddress) != 0 {
@@ -539,7 +546,7 @@ func filterpath(peer *peer, path, old *table.Path) *table.Path {
 	return path
 }
 
-func (s *BgpServer) prePolicyFilterpath(peer *peer, path, old *table.Path) (*table.Path, *table.PolicyOptions, bool) {
+func (s *BgpServer) prePolicyFilterpath(peer *peer, path, old *table.Path) (*table.Path, table.PolicyOptions, bool) {
 	// Special handling for RTM NLRI.
 	if path != nil && path.GetFamily() == bgp.RF_RTC_UC && !path.IsWithdraw {
 		// If the given "path" is locally generated and the same with "old", we
@@ -547,7 +554,7 @@ func (s *BgpServer) prePolicyFilterpath(peer *peer, path, old *table.Path) (*tab
 		// infinite UPDATE loop between Route Reflector and its clients.
 		if path.IsLocal() && path.Equal(old) {
 			s.logger.Debug("given rtm nlri is already sent, skipping to advertise", slog.Any("Path", path))
-			return nil, nil, true
+			return nil, table.PolicyOptions{}, true
 		}
 
 		if old != nil && old.IsLocal() {
@@ -589,13 +596,13 @@ func (s *BgpServer) prePolicyFilterpath(peer *peer, path, old *table.Path) (*tab
 	peer.fsm.lock.Unlock()
 	if path != nil && peerVrf != "" {
 		if f := path.GetFamily(); f != bgp.RF_IPv4_VPN && f != bgp.RF_IPv6_VPN && f != bgp.RF_FS_IPv4_VPN && f != bgp.RF_FS_IPv6_VPN {
-			return nil, nil, true
+			return nil, table.PolicyOptions{}, true
 		}
 		vrf := peer.localRib.Vrfs[peerVrf]
 		if table.CanImportToVrf(vrf, path) {
 			path = path.ToLocal()
 		} else {
-			return nil, nil, true
+			return nil, table.PolicyOptions{}, true
 		}
 	}
 
@@ -607,10 +614,10 @@ func (s *BgpServer) prePolicyFilterpath(peer *peer, path, old *table.Path) (*tab
 	peer.fsm.lock.Unlock()
 
 	if path = filterpath(peer, path, old); path == nil {
-		return nil, nil, true
+		return nil, table.PolicyOptions{}, true
 	}
 
-	options := &table.PolicyOptions{
+	options := table.PolicyOptions{
 		Info: peer.peerInfo,
 	}
 	peer.fsm.lock.Lock()
@@ -648,26 +655,48 @@ type exportClass struct {
 type exportKey struct {
 	path  *table.Path
 	class exportClass
+	local netip.Addr // in exported1 only
 }
 
 // exported is UpdatePathAttrs of a path for a neighbor, made once per export
-// class while an update is handled and copied for each neighbor of it with
-// its own next hop. A route server client gets the path as it is. The caller
-// holds peer.fsm.lock.
+// class while an update is handled, and once per local address of the class
+// with it as next hop. Neighbors of a class with the same local address share
+// the path: nobody changes it, those that would copy it first. A route server
+// client gets the path as it is. The caller holds peer.fsm.lock.
 func (s *BgpServer) exported(peer *peer, path *table.Path) *table.Path {
 	c := peer.fsm.pConf
 	if s.exports == nil || c.RouteServer.Config.RouteServerClient {
 		return table.UpdatePathAttrs(peer.fsm.logger, peer.fsm.gConf, c, peer.peerInfo, path)
 	}
 	local := peer.peerInfo.LocalAddress
-	key := exportKey{path, exportClass{c.State.PeerType, c.Config.LocalAs, c.State.RemovePrivateAs, c.IsConfederationMember(peer.fsm.gConf),
+	key := exportKey{path: path, class: exportClass{c.State.PeerType, c.Config.LocalAs, c.State.RemovePrivateAs, c.IsConfederationMember(peer.fsm.gConf),
 		c.RouteReflector.Config.RouteReflectorClient, c.RouteReflector.State.RouteReflectorClusterId, local.Is6()}}
+	mine := key
+	mine.local = local
+	if p, ok := s.exported1[mine]; ok {
+		return p
+	}
 	template, ok := s.exports[key]
 	if !ok {
 		template = table.UpdatePathAttrs(peer.fsm.logger, peer.fsm.gConf, c, peer.peerInfo, path)
 		s.exports[key] = template
 	}
-	return table.ExportFor(template, c, path, local)
+	p := table.ExportFor(template, c, path, local)
+	s.exported1[mine] = p
+	return p
+}
+
+// withdrawal is the withdrawal of a path, one for all neighbors while an
+// update is handled, so that exported makes it once per class.
+func (s *BgpServer) withdrawal(p *table.Path) *table.Path {
+	if w, ok := s.withdrawals[p]; ok {
+		return w
+	}
+	w := p.Clone(true)
+	if s.withdrawals != nil {
+		s.withdrawals[p] = w
+	}
+	return w
 }
 
 func (s *BgpServer) postFilterpath(peer *peer, path *table.Path) *table.Path {
@@ -687,9 +716,17 @@ func (s *BgpServer) postFilterpath(peer *peer, path *table.Path) *table.Path {
 
 	// remove local-pref attribute
 	// we should do this after applying export policy since policy may
-	// set local-preference
-	if path != nil && !peer.isIBGPPeer() && !peer.isRouteServerClient() {
-		path.RemoveLocalPref()
+	// set local-preference. On a copy: neighbors share the path, see exported.
+	if path != nil && !peer.isIBGPPeer() && !peer.isRouteServerClient() && path.HasLocalPref() {
+		if q, ok := s.unpreffed[path]; ok {
+			return q
+		}
+		q := path.Clone(path.IsWithdraw)
+		q.RemoveLocalPref()
+		if s.unpreffed != nil {
+			s.unpreffed[path] = q
+		}
+		path = q
 	}
 
 	return path
@@ -700,13 +737,17 @@ func (s *BgpServer) filterpath(peer *peer, path, old *table.Path) *table.Path {
 	if stop {
 		return nil
 	}
-	options.Validate = s.roaTable.Validate
-	path = peer.policy.ApplyPolicy(peer.TableID(), table.POLICY_DIRECTION_EXPORT, path, options)
+	// The options in place, not one on the heap for each neighbor and path.
+	o := &s.options
+	*o = options
+	o.Validate = s.validate
+	defer func() { *o = table.PolicyOptions{} }()
+	path = peer.policy.ApplyPolicy(peer.TableID(), table.POLICY_DIRECTION_EXPORT, path, o)
 	// When 'path' is filtered (path == nil), check 'old' has been sent to this peer.
 	// If it has, send withdrawal to the peer.
 	if path == nil && old != nil {
-		o := peer.policy.ApplyPolicy(peer.TableID(), table.POLICY_DIRECTION_EXPORT, old, options)
-		if o != nil {
+		p := peer.policy.ApplyPolicy(peer.TableID(), table.POLICY_DIRECTION_EXPORT, old, o)
+		if p != nil {
 			path = old.Clone(true)
 		}
 	}
@@ -1059,8 +1100,8 @@ func (s *BgpServer) sendSecondaryRoutes(peer *peer, newPath *table.Path, dsts []
 		if stop {
 			return nil
 		}
-		options.Validate = s.roaTable.Validate
-		path = peer.policy.ApplyPolicy(peer.TableID(), table.POLICY_DIRECTION_EXPORT, path, options)
+		options.Validate = s.validate
+		path = peer.policy.ApplyPolicy(peer.TableID(), table.POLICY_DIRECTION_EXPORT, path, &options)
 		if path != nil {
 			return s.postFilterpath(peer, path)
 		}
@@ -1157,8 +1198,9 @@ func (s *BgpServer) handleRouteRefresh(peer *peer, e *fsmMsg) []*table.Path {
 
 func (s *BgpServer) propagateUpdate(peer *peer, pathList []*table.Path) {
 	// What a path is made for one neighbor serves the others of its export class, until the update is handled.
-	s.exports = map[exportKey]*table.Path{}
-	defer func() { s.exports = nil }()
+	s.exports, s.exported1 = map[exportKey]*table.Path{}, map[exportKey]*table.Path{}
+	s.unpreffed, s.withdrawals = map[*table.Path]*table.Path{}, map[*table.Path]*table.Path{}
+	defer func() { s.exports, s.exported1, s.unpreffed, s.withdrawals = nil, nil, nil, nil }()
 	rs := peer != nil && peer.isRouteServerClient()
 	vrf := false
 	if peer != nil {
@@ -1290,6 +1332,7 @@ func (s *BgpServer) propagateUpdate(peer *peer, pathList []*table.Path) {
 			s.propagateUpdateToNeighbors(rib, peer, path, dsts, true, ou)
 			s.operaAskRefresh(path.GetFamily(), dsts) // behind the withdrawals just queued
 		}
+		s.operaDone(ou)
 	}
 }
 
@@ -2839,8 +2882,8 @@ func (s *BgpServer) getAdjRib(addr string, family bgp.Family, in bool, enableFil
 					if stop {
 						continue
 					}
-					options.Validate = s.roaTable.Validate
-					if p = peer.policy.ApplyPolicy(peer.TableID(), table.POLICY_DIRECTION_EXPORT, p, options); p == nil {
+					options.Validate = s.validate
+					if p = peer.policy.ApplyPolicy(peer.TableID(), table.POLICY_DIRECTION_EXPORT, p, &options); p == nil {
 						filtered[pathLocalKey] = table.PolicyFiltered
 					}
 					pathList = append(pathList, path)

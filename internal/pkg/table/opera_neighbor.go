@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"unique"
 
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
@@ -73,7 +74,7 @@ func (v *operaView) same(w *operaView) bool {
 	samePaths := func(a, b []*Path) bool {
 		return slices.EqualFunc(a, b, func(p, q *Path) bool {
 			return p.parent == q.parent && p.info == q.info && len(p.pathAttrs) == 0 && len(q.pathAttrs) == 0 &&
-				len(p.dels) == 0 && len(q.dels) == 0 && p.attrsHash == q.attrsHash && p.remoteID == q.remoteID &&
+				len(p.dels) == 0 && len(q.dels) == 0 && atomic.LoadUint64(&p.attrsHash) == atomic.LoadUint64(&q.attrsHash) && p.remoteID == q.remoteID &&
 				p.family == q.family && p.rejected == q.rejected && p.policyRejected == q.policyRejected &&
 				p.dropped == q.dropped && p.IsNexthopInvalid == q.IsNexthopInvalid && p.IsWithdraw == q.IsWithdraw
 		})
@@ -361,7 +362,18 @@ func (v *operaView) export() *Path {
 // OperaExports are OperaExport for the neighbors keys, sorted, in one walk
 // through the tables.
 func (dest *Destination) OperaExports(keys []string) []*Path {
-	out := make([]*Path, len(keys))
+	return dest.OperaExportsInto(keys, nil)
+}
+
+// OperaExportsInto is OperaExports written into out, which grows if it is
+// too short: a caller keeps the list for the next destination.
+func (dest *Destination) OperaExportsInto(keys []string, out []*Path) []*Path {
+	if cap(out) < len(keys) {
+		out = make([]*Path, len(keys))
+	} else {
+		out = out[:len(keys)]
+		clear(out)
+	}
 	j := 0
 	for i, k := range keys {
 		for j < len(dest.views) && dest.views[j].key.Value() < k {

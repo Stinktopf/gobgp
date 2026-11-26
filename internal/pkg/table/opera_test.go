@@ -1,8 +1,11 @@
 package table
 
 import (
+	"cmp"
 	"fmt"
+	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -1010,4 +1013,104 @@ func TestOperaRedundantPathChangesNothing(t *testing.T) {
 	// BGP decides as GoBGP always did.
 	withOperaOptions(t, OperaOptions{Enabled: false})
 	assert.False(t, d.OperaRedundant(operaPath("1.1.1.1", []uint32{1, 9}, false)))
+}
+
+func TestCompareAsListsIsTheOrderOfGetAsList(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 3))
+	types := []uint8{bgp.BGP_ASPATH_ATTR_TYPE_SEQ, bgp.BGP_ASPATH_ATTR_TYPE_SET, bgp.BGP_ASPATH_ATTR_TYPE_CONFED_SEQ, bgp.BGP_ASPATH_ATTR_TYPE_CONFED_SET}
+	path := func() *Path {
+		var segs []bgp.AsPathParamInterface
+		for range rng.IntN(4) {
+			as := make([]uint32, rng.IntN(3))
+			for i := range as {
+				as[i] = uint32(1 + rng.IntN(3))
+			}
+			typ := types[rng.IntN(len(types))]
+			if rng.IntN(2) == 0 {
+				short := make([]uint16, len(as))
+				for i, a := range as {
+					short[i] = uint16(a)
+				}
+				segs = append(segs, bgp.NewAsPathParam(typ, short))
+			} else {
+				segs = append(segs, bgp.NewAs4PathParam(typ, as))
+			}
+		}
+		nlri, _ := bgp.NewIPAddrPrefix(operaTestPrefix)
+		return NewPath(bgp.RF_IPv4_UC, nil, bgp.PathNLRI{NLRI: nlri}, false, []bgp.PathAttributeInterface{bgp.NewPathAttributeAsPath(segs)}, time.Now(), false)
+	}
+	for range 5000 {
+		a, b := path(), path()
+		require.Equal(t, slices.Compare(a.GetAsList(), b.GetAsList()), compareAsLists(a, b), "%v %v", a.GetAsList(), b.GetAsList())
+	}
+}
+
+// compareOperaPath walks each AS path once and orders as the order it
+// replaced, which read each one for every criterion.
+func TestCompareOperaPathInOnePassKeepsTheOrder(t *testing.T) {
+	before := func(a, b *Path) int {
+		if c := cmp.Compare(a.GetAsPathLen(), b.GetAsPathLen()); c != 0 {
+			return c
+		}
+		if o := operaOptions.Load(); !o.ReceivedSetOrder && !o.IgnoreConfedHops {
+			if c := cmp.Compare(confedHops(a), confedHops(b)); c != 0 {
+				return c
+			}
+		}
+		if !operaOptions.Load().ReceivedSetOrder && (hasSetOrConfed(a) || hasSetOrConfed(b)) {
+			return slices.CompareFunc(operaHops(a), operaHops(b), slices.Compare[[]uint32])
+		}
+		return slices.Compare(a.GetAsList(), b.GetAsList())
+	}
+	rng := rand.New(rand.NewPCG(5, 5))
+	types := []uint8{bgp.BGP_ASPATH_ATTR_TYPE_SEQ, bgp.BGP_ASPATH_ATTR_TYPE_SEQ, bgp.BGP_ASPATH_ATTR_TYPE_SET, bgp.BGP_ASPATH_ATTR_TYPE_CONFED_SEQ, bgp.BGP_ASPATH_ATTR_TYPE_CONFED_SET}
+	path := func() *Path {
+		var segs []bgp.AsPathParamInterface
+		for range rng.IntN(4) {
+			as := make([]uint32, 1+rng.IntN(3))
+			for i := range as {
+				as[i] = uint32(1 + rng.IntN(3))
+			}
+			segs = append(segs, bgp.NewAs4PathParam(types[rng.IntN(len(types))], as))
+		}
+		nlri, _ := bgp.NewIPAddrPrefix(operaTestPrefix)
+		return NewPath(bgp.RF_IPv4_UC, nil, bgp.PathNLRI{NLRI: nlri}, false, []bgp.PathAttributeInterface{bgp.NewPathAttributeAsPath(segs)}, time.Now(), false)
+	}
+	defer SetOperaOptions(*operaOptions.Load())
+	for _, o := range []OperaOptions{{}, {ReceivedSetOrder: true}, {IgnoreConfedHops: true}} {
+		SetOperaOptions(o)
+		for range 3000 {
+			a, b := path(), path()
+			require.Equal(t, before(a, b), compareOperaPath(a, b), "%+v %v %v", o, a.GetAsString(), b.GetAsString())
+		}
+	}
+}
+
+// hasSetOrConfed and confedHops as compareOperaPath read them before.
+func hasSetOrConfed(p *Path) bool {
+	if aspath := p.GetAsPath(); aspath != nil {
+		for _, segment := range aspath.Value {
+			if segment.GetType() != bgp.BGP_ASPATH_ATTR_TYPE_SEQ {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// confedHops is the number of confederation members on a path, a set
+// counting as one.
+func confedHops(p *Path) int {
+	n := 0
+	if aspath := p.GetAsPath(); aspath != nil {
+		for _, segment := range aspath.Value {
+			switch segment.GetType() {
+			case bgp.BGP_ASPATH_ATTR_TYPE_CONFED_SEQ:
+				n += len(segment.GetAS())
+			case bgp.BGP_ASPATH_ATTR_TYPE_CONFED_SET:
+				n++
+			}
+		}
+	}
+	return n
 }

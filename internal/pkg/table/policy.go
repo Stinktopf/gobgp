@@ -1703,12 +1703,16 @@ func (c *CommunityCondition) Evaluate(path *Path, _ *PolicyOptions) bool {
 	result := false
 	var text []byte
 	for _, x := range c.set.list {
-		result = false
-		for _, y := range cs {
-			text = appendCommunity(text[:0], y)
-			if x.Match(text) {
-				result = true
-				break
+		if v, ok := literalCommunity(x); ok {
+			result = slices.Contains(cs, v)
+		} else {
+			result = false
+			for _, y := range cs {
+				text = appendCommunity(text[:0], y)
+				if x.Match(text) {
+					result = true
+					break
+				}
 			}
 		}
 		if c.option == MATCH_OPTION_ALL && !result {
@@ -1722,6 +1726,34 @@ func (c *CommunityCondition) Evaluate(path *Path, _ *PolicyOptions) bool {
 		result = !result
 	}
 	return result
+}
+
+// literalCommunities holds per expression of a community set the community
+// it matches alone, if it is one written out, as ParseCommunityRegexp makes it.
+var literalCommunities sync.Map // *regexp.Regexp -> literal
+
+type literal struct {
+	value uint32
+	ok    bool
+}
+
+var _regexpLiteralCommunity = regexp.MustCompile(`^\^(0|[1-9]\d{0,4}):(0|[1-9]\d{0,4})\$$`) // as appendCommunity writes it, no leading zeros
+
+// literalCommunity is the community x matches alone, so that it is compared
+// as a number instead of as text.
+func literalCommunity(x *regexp.Regexp) (uint32, bool) {
+	if v, ok := literalCommunities.Load(x); ok {
+		l := v.(literal)
+		return l.value, l.ok
+	}
+	l := literal{}
+	if m := _regexpLiteralCommunity.FindStringSubmatch(x.String()); m != nil {
+		hi, err1 := strconv.ParseUint(m[1], 10, 16)
+		lo, err2 := strconv.ParseUint(m[2], 10, 16)
+		l = literal{uint32(hi<<16 | lo), err1 == nil && err2 == nil}
+	}
+	literalCommunities.Store(x, l)
+	return l.value, l.ok
 }
 
 // appendCommunity appends a community as text, as fmt "%d:%d" writes it.
@@ -3395,8 +3427,11 @@ type RoutingPolicy struct {
 	// whose neighbor conditions hold for that neighbor, in order. Every change
 	// clears it.
 	statements sync.Map
-	mu         sync.RWMutex
-	logger     *slog.Logger
+	// trimmed holds per statement with neighbor conditions the same without
+	// them, for the lists in statements. Every change clears it.
+	trimmed sync.Map
+	mu      sync.RWMutex
+	logger  *slog.Logger
 }
 
 func (r *RoutingPolicy) ApplyPolicy(id string, dir PolicyDirection, before *Path, options *PolicyOptions) *Path {
@@ -3446,8 +3481,8 @@ type statementKey struct {
 }
 
 // statementsFor returns the statements of the policies assigned to id in this
-// direction whose neighbor conditions hold for the neighbor, in order. Callers
-// hold r.mu.
+// direction whose neighbor conditions hold for the neighbor, in order, and
+// without those conditions: they hold. Callers hold r.mu.
 func (r *RoutingPolicy) statementsFor(id string, dir PolicyDirection, neighbor netip.Addr) []*Statement {
 	key := statementKey{id, dir, neighbor}
 	if v, ok := r.statements.Load(key); ok {
@@ -3455,15 +3490,37 @@ func (r *RoutingPolicy) statementsFor(id string, dir PolicyDirection, neighbor n
 	}
 	var list []*Statement
 	for _, p := range r.getPolicy(id, dir) {
-		list = append(list, slices.DeleteFunc(slices.Clone(p.Statements), func(s *Statement) bool {
-			return slices.ContainsFunc(s.Conditions, func(c Condition) bool {
+		for _, s := range p.Statements {
+			if !slices.ContainsFunc(s.Conditions, func(c Condition) bool {
 				n, ok := c.(*NeighborCondition)
 				return ok && !n.matches(neighbor)
-			})
-		})...)
+			}) {
+				list = append(list, r.trim(s))
+			}
+		}
 	}
 	r.statements.Store(key, list)
 	return list
+}
+
+// trim is a statement without its neighbor conditions, one copy for every
+// neighbor whose list holds it.
+func (r *RoutingPolicy) trim(s *Statement) *Statement {
+	if !slices.ContainsFunc(s.Conditions, isNeighborCondition) {
+		return s
+	}
+	if v, ok := r.trimmed.Load(s); ok {
+		return v.(*Statement)
+	}
+	t := *s
+	t.Conditions = slices.DeleteFunc(slices.Clone(s.Conditions), isNeighborCondition)
+	v, _ := r.trimmed.LoadOrStore(s, &t)
+	return v.(*Statement)
+}
+
+func isNeighborCondition(c Condition) bool {
+	_, ok := c.(*NeighborCondition)
+	return ok
 }
 
 func (r *RoutingPolicy) getPolicy(id string, dir PolicyDirection) []*Policy {
@@ -3823,6 +3880,7 @@ func (r *RoutingPolicy) GetDefinedSet(typ DefinedType, name string) (*oc.Defined
 func (r *RoutingPolicy) AddDefinedSet(s DefinedSet, replace bool) error {
 	r.mu.Lock()
 	r.statements.Clear()
+	r.trimmed.Clear()
 	defer r.mu.Unlock()
 
 	if m, ok := r.definedSetMap[s.Type()]; !ok {
@@ -3842,6 +3900,7 @@ func (r *RoutingPolicy) AddDefinedSet(s DefinedSet, replace bool) error {
 func (r *RoutingPolicy) DeleteDefinedSet(a DefinedSet, all bool) (err error) {
 	r.mu.Lock()
 	r.statements.Clear()
+	r.trimmed.Clear()
 	defer r.mu.Unlock()
 
 	if m, ok := r.definedSetMap[a.Type()]; !ok {
@@ -3881,6 +3940,7 @@ func (r *RoutingPolicy) GetStatement(name string) []*oc.Statement {
 func (r *RoutingPolicy) AddStatement(st *Statement) (err error) {
 	r.mu.Lock()
 	r.statements.Clear()
+	r.trimmed.Clear()
 	defer r.mu.Unlock()
 
 	for _, c := range st.Conditions {
@@ -3902,6 +3962,7 @@ func (r *RoutingPolicy) AddStatement(st *Statement) (err error) {
 func (r *RoutingPolicy) DeleteStatement(st *Statement, all bool) (err error) {
 	r.mu.Lock()
 	r.statements.Clear()
+	r.trimmed.Clear()
 	defer r.mu.Unlock()
 
 	m := r.statementMap
@@ -3949,6 +4010,7 @@ func (r *RoutingPolicy) GetPolicy(name string) []*oc.PolicyDefinition {
 func (r *RoutingPolicy) AddPolicy(x *Policy, refer bool) (err error) {
 	r.mu.Lock()
 	r.statements.Clear()
+	r.trimmed.Clear()
 	defer r.mu.Unlock()
 
 	for _, st := range x.Statements {
@@ -3986,6 +4048,7 @@ func (r *RoutingPolicy) AddPolicy(x *Policy, refer bool) (err error) {
 func (r *RoutingPolicy) DeletePolicy(x *Policy, all, preserve bool, activeId []string) (err error) {
 	r.mu.Lock()
 	r.statements.Clear()
+	r.trimmed.Clear()
 	defer r.mu.Unlock()
 
 	pMap := r.policyMap
@@ -4047,6 +4110,7 @@ func (r *RoutingPolicy) GetPolicyAssignment(id string, dir PolicyDirection) (Rou
 func (r *RoutingPolicy) AddPolicyAssignment(id string, dir PolicyDirection, policies []*oc.PolicyDefinition, def RouteType) (err error) {
 	r.mu.Lock()
 	r.statements.Clear()
+	r.trimmed.Clear()
 	defer r.mu.Unlock()
 
 	ps := make([]*Policy, 0, len(policies))
@@ -4088,6 +4152,7 @@ func (r *RoutingPolicy) AddPolicyAssignment(id string, dir PolicyDirection, poli
 func (r *RoutingPolicy) DeletePolicyAssignment(id string, dir PolicyDirection, policies []*oc.PolicyDefinition, all bool) (err error) {
 	r.mu.Lock()
 	r.statements.Clear()
+	r.trimmed.Clear()
 	defer r.mu.Unlock()
 
 	ps := make([]*Policy, 0, len(policies))
@@ -4137,6 +4202,7 @@ func (r *RoutingPolicy) DeletePolicyAssignment(id string, dir PolicyDirection, p
 func (r *RoutingPolicy) SetPolicyAssignment(id string, dir PolicyDirection, policies []*oc.PolicyDefinition, def RouteType) (err error) {
 	r.mu.Lock()
 	r.statements.Clear()
+	r.trimmed.Clear()
 	defer r.mu.Unlock()
 
 	ps := make([]*Policy, 0, len(policies))
@@ -4165,6 +4231,7 @@ func (r *RoutingPolicy) SetPolicyAssignment(id string, dir PolicyDirection, poli
 func (r *RoutingPolicy) Initialize() error {
 	r.mu.Lock()
 	r.statements.Clear()
+	r.trimmed.Clear()
 	defer r.mu.Unlock()
 
 	if err := r.reload(oc.RoutingPolicy{}); err != nil {
@@ -4194,6 +4261,7 @@ func (r *RoutingPolicy) setPeerPolicy(id string, c oc.ApplyPolicy) {
 func (r *RoutingPolicy) SetPeerPolicy(peerId string, c oc.ApplyPolicy) error {
 	r.mu.Lock()
 	r.statements.Clear()
+	r.trimmed.Clear()
 	defer r.mu.Unlock()
 
 	r.setPeerPolicy(peerId, c)
@@ -4207,6 +4275,7 @@ func (r *RoutingPolicy) Reset(rp *oc.RoutingPolicy, ap map[string]oc.ApplyPolicy
 
 	r.mu.Lock()
 	r.statements.Clear()
+	r.trimmed.Clear()
 	defer r.mu.Unlock()
 
 	if err := r.reload(*rp); err != nil {

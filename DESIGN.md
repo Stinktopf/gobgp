@@ -220,6 +220,9 @@ AS. The paper's code loses more.
   peer and prefix, per path with Add-Path send. Withdrawals go out at once and drop what waits for
   the prefix. An End-of-RIB marker, which has no prefix, goes out after what waits. *Proof:* holds,
   the last message computed is the last one the neighbor gets.
+- **Export per class:** while an update is handled, the path for export is made once for neighbors
+  alike in what GoBGP changes on export, each getting a copy with its own next hop. *Proof:* not
+  touched, every neighbor gets the path it got before.
 - **Forwarding:** the FIB gets GoBGP's best path, chosen among admitted paths. *Proof:* holds, the
   paper's local preference may choose any admitted path.
 - **Fixes:** soft reset out withdraws newly rejected routes, the API marks the best path again, ties

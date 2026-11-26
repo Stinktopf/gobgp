@@ -134,9 +134,11 @@ type BgpServer struct {
 	logger       *slog.Logger
 	logLevelVar  *slog.LevelVar
 	timingHook   FSMTimingHook
-	refresh      operaRefresh     // route refreshes of refresh pruning
-	operaUp      map[*peer]string // neighbors whose tables per neighbor are fed, with their IDs, see operaViewPeers
-	operaOrder   []*peer          // the neighbors of operaUp sorted by ID, nil after one came or went
+	refresh      operaRefresh                 // route refreshes of refresh pruning
+	operaUp      map[*peer]string             // neighbors whose tables per neighbor are fed, with their IDs, see operaViewPeers
+	operaOrder   []*peer                      // the neighbors of operaUp sorted by ID, nil after one came or went
+	operaViews   map[bgp.Family]operaViewList // operaViewPeers per family, cleared with operaOrder
+	exports      map[exportKey]*table.Path    // while an update is handled: a path as made for each export class, see exported
 	// manage lifecycle of the server
 	isServing     atomic.Bool
 	shutdownWG    *sync.WaitGroup
@@ -440,7 +442,7 @@ func sendfsmOutgoingMsg(peer *peer, paths []*table.Path) {
 }
 
 func isASLoop(peer *peer, path *table.Path) bool {
-	return slices.Contains(path.GetAsList(), peer.AS())
+	return path.HasAS(peer.AS())
 }
 
 // ibgpSends tells whether a path goes to an iBGP peer at all: a local one,
@@ -625,10 +627,47 @@ func (s *BgpServer) prePolicyFilterpath(peer *peer, path, old *table.Path) (*tab
 	} else {
 		options.OldNextHop = path.GetNexthop()
 	}
-	path = table.UpdatePathAttrs(peer.fsm.logger, peer.fsm.gConf, peer.fsm.pConf, peer.peerInfo, path)
+	path = s.exported(peer, path)
 	peer.fsm.lock.Unlock()
 
 	return path, options, false
+}
+
+// exportClass is what UpdatePathAttrs reads of a neighbor but its local
+// address: neighbors of one class get the same path but for the next hop.
+type exportClass struct {
+	peerType      oc.PeerType
+	localAs       uint32
+	removePrivate oc.RemovePrivateAsOption
+	confederation bool
+	rrClient      bool
+	clusterID     netip.Addr
+	ipv6          bool
+}
+
+type exportKey struct {
+	path  *table.Path
+	class exportClass
+}
+
+// exported is UpdatePathAttrs of a path for a neighbor, made once per export
+// class while an update is handled and copied for each neighbor of it with
+// its own next hop. A route server client gets the path as it is. The caller
+// holds peer.fsm.lock.
+func (s *BgpServer) exported(peer *peer, path *table.Path) *table.Path {
+	c := peer.fsm.pConf
+	if s.exports == nil || c.RouteServer.Config.RouteServerClient {
+		return table.UpdatePathAttrs(peer.fsm.logger, peer.fsm.gConf, c, peer.peerInfo, path)
+	}
+	local := peer.peerInfo.LocalAddress
+	key := exportKey{path, exportClass{c.State.PeerType, c.Config.LocalAs, c.State.RemovePrivateAs, c.IsConfederationMember(peer.fsm.gConf),
+		c.RouteReflector.Config.RouteReflectorClient, c.RouteReflector.State.RouteReflectorClusterId, local.Is6()}}
+	template, ok := s.exports[key]
+	if !ok {
+		template = table.UpdatePathAttrs(peer.fsm.logger, peer.fsm.gConf, c, peer.peerInfo, path)
+		s.exports[key] = template
+	}
+	return table.ExportFor(template, c, path, local)
 }
 
 func (s *BgpServer) postFilterpath(peer *peer, path *table.Path) *table.Path {
@@ -1117,6 +1156,9 @@ func (s *BgpServer) handleRouteRefresh(peer *peer, e *fsmMsg) []*table.Path {
 }
 
 func (s *BgpServer) propagateUpdate(peer *peer, pathList []*table.Path) {
+	// What a path is made for one neighbor serves the others of its export class, until the update is handled.
+	s.exports = map[exportKey]*table.Path{}
+	defer func() { s.exports = nil }()
 	rs := peer != nil && peer.isRouteServerClient()
 	vrf := false
 	if peer != nil {

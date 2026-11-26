@@ -1699,7 +1699,7 @@ func (c *CommunityCondition) Option() MatchOption {
 }
 
 func (c *CommunityCondition) Evaluate(path *Path, _ *PolicyOptions) bool {
-	cs := path.GetCommunities()
+	cs := path.communities()
 	result := false
 	var text []byte
 	for _, x := range c.set.list {
@@ -1897,7 +1897,7 @@ func (c *CommunityCountCondition) Type() ConditionType {
 // Evaluate compares the number of communities in the message's community
 // attributes with the one in condition.
 func (c *CommunityCountCondition) Evaluate(path *Path, _ *PolicyOptions) bool {
-	count := uint32(len(path.GetCommunities()))
+	count := uint32(len(path.communities()))
 	switch c.operator {
 	case ATTRIBUTE_EQ:
 		return count == c.count

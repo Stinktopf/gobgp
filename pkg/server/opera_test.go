@@ -1077,3 +1077,37 @@ func TestNSBGPWithdrawsTheLastPathFromIBGPNeighbors(t *testing.T) {
 	r.withdraw(origin, []uint32{1})
 	assert.Nil(t, r.route(internal))
 }
+
+// The neighbors with a table, kept from one update to the next, are those a
+// list made afresh holds, also after sessions came and went.
+func TestOperaViewPeersKeptAsMadeAfresh(t *testing.T) {
+	r := newOperaRouter(t, table.OperaOptions{Enabled: true, PerNeighbor: true})
+	fresh := func() ([]*peer, []string) {
+		r.s.operaOrder, r.s.operaViews = nil, nil
+		return r.s.operaViewPeers(bgp.RF_IPv4_UC)
+	}
+	check := func() {
+		kept, keptIDs := r.s.operaViewPeers(bgp.RF_IPv4_UC)
+		again, againIDs := r.s.operaViewPeers(bgp.RF_IPv4_UC)
+		assert.Equal(t, kept, again)
+		views := r.s.operaViews
+		want, wantIDs := fresh()
+		assert.Equal(t, want, kept)
+		assert.Equal(t, wantIDs, keptIDs)
+		assert.Equal(t, againIDs, keptIDs)
+		r.s.operaViews = views
+	}
+	a := r.peer("10.0.0.3", 65003)
+	check()
+	b := r.peer("10.0.0.1", 65001)
+	check()
+	r.s.operaSessionGone(a)
+	check()
+	r.peer("10.0.0.2", 65002)
+	check()
+	r.s.operaSessionGone(b)
+	check()
+	_, ids := r.s.operaViewPeers(bgp.RF_IPv4_UC)
+	assert.Equal(t, []string{"10.0.0.2"}, ids)
+	assert.Zero(t, testing.AllocsPerRun(20, func() { r.s.operaViewPeers(bgp.RF_IPv4_UC) }))
+}

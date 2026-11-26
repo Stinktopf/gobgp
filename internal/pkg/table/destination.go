@@ -172,11 +172,7 @@ func (dd *Destination) GetAllKnownPathList() []*Path {
 }
 
 func rsFilter(id string, as uint32, path *Path) bool {
-	isASLoop := func(as uint32, path *Path) bool {
-		return slices.Contains(path.GetAsList(), as)
-	}
-
-	return id != GLOBAL_RIB_NAME && (path.GetSource().Address.String() == id || isASLoop(as, path))
+	return id != GLOBAL_RIB_NAME && (path.GetSource().Address.String() == id || path.HasAS(as))
 }
 
 func (dd *Destination) GetKnownPathList(id string, as uint32) []*Path {

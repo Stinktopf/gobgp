@@ -144,6 +144,13 @@ func (peer *peer) AS() uint32 {
 	return peer.fsm.pConf.State.PeerAs
 }
 
+// address is the neighbor's address, which ID writes as text.
+func (peer *peer) address() netip.Addr {
+	peer.fsm.lock.Lock()
+	defer peer.fsm.lock.Unlock()
+	return peer.fsm.pConf.State.NeighborAddress
+}
+
 func (peer *peer) ID() string {
 	peer.fsm.lock.Lock()
 	defer peer.fsm.lock.Unlock()

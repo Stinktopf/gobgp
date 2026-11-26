@@ -50,20 +50,30 @@ func (s *BgpServer) operaSessionUp(nb *peer) {
 		s.operaUp = map[*peer]string{}
 	}
 	s.operaUp[nb] = nb.ID()
-	s.operaOrder = nil
+	s.operaOrder, s.operaViews = nil, nil
 }
 
 // operaSessionGone stops feeding the tables of a neighbor.
 func (s *BgpServer) operaSessionGone(nb *peer) {
 	delete(s.operaUp, nb)
-	s.operaOrder = nil
+	s.operaOrder, s.operaViews = nil, nil
+}
+
+type operaViewList struct {
+	peers []*peer
+	ids   []string
 }
 
 // operaViewPeers are the neighbors with a table in a family, from their
 // session coming up until operaDropViews, sorted by ID, with their IDs.
+// Made once until a session comes or goes, not for every update: callers
+// only read them.
 func (s *BgpServer) operaViewPeers(f bgp.Family) (peers []*peer, ids []string) {
 	if !table.OperaPerNeighbor(f) {
 		return nil, nil
+	}
+	if v, ok := s.operaViews[f]; ok {
+		return v.peers, v.ids
 	}
 	if s.operaOrder == nil {
 		s.operaOrder = slices.SortedFunc(maps.Keys(s.operaUp), func(a, b *peer) int { return strings.Compare(s.operaUp[a], s.operaUp[b]) })
@@ -73,6 +83,10 @@ func (s *BgpServer) operaViewPeers(f bgp.Family) (peers []*peer, ids []string) {
 			peers, ids = append(peers, p), append(ids, id)
 		}
 	}
+	if s.operaViews == nil {
+		s.operaViews = map[bgp.Family]operaViewList{}
+	}
+	s.operaViews[f] = operaViewList{peers, ids}
 	return peers, ids
 }
 
@@ -95,12 +109,12 @@ func (s *BgpServer) operaFilter(nb *peer, p *table.Path) (bool, *table.Path) {
 		return false, nil
 	}
 	src := p.GetSource()
-	if !p.IsLocal() && src != nil && src.Address.String() == nb.ID() || slices.Contains(p.GetAsList(), nb.AS()) {
+	if !p.IsLocal() && src != nil && src.Address == nb.address() || p.HasAS(nb.AS()) {
 		if !table.IsOperaEnabled() {
 			return false, nil
 		}
 		nb.fsm.lock.Lock()
-		q := table.UpdatePathAttrs(nb.fsm.logger, nb.fsm.gConf, nb.fsm.pConf, nb.peerInfo, p)
+		q := s.exported(nb, p)
 		nb.fsm.lock.Unlock()
 		options := &table.PolicyOptions{Info: nb.peerInfo, OldNextHop: p.GetNexthop()}
 		return nb.policy.ApplyPolicy(nb.TableID(), table.POLICY_DIRECTION_EXPORT, q, options) != nil, nil

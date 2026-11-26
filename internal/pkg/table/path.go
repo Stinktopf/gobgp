@@ -225,28 +225,62 @@ func (path *Path) IsEOR() bool {
 	return false
 }
 
+// dropForExport deletes what does not leave the router: an unknown attribute
+// that is not transitive, and towards an eBGP peer CLUSTER_LIST and
+// ORIGINATOR_ID, which stay inside the AS, also towards another route
+// reflector: RFC 4456, 8, it detects loops between reflectors by them. It
+// walks the attributes in effect, each the newest of its type, in place: a
+// list of them, as GetPathAttrs makes, would be made for every path and every
+// neighbor only to find the few to delete.
+func (path *Path) dropForExport(internal bool) {
+	for p := path; p != nil; p = p.parent {
+		for _, a := range p.pathAttrs {
+			t := a.GetType()
+			if path.getPathAttr(t) != a {
+				continue // deleted, or a newer one of its type is in effect
+			}
+			if _, known := bgp.PathAttrFlags[t]; !known {
+				if a.GetFlags()&bgp.BGP_ATTR_FLAG_TRANSITIVE == 0 {
+					path.delPathAttr(t)
+				}
+			} else if !internal && (t == bgp.BGP_ATTR_TYPE_CLUSTER_LIST || t == bgp.BGP_ATTR_TYPE_ORIGINATOR_ID) {
+				path.delPathAttr(t)
+			}
+		}
+	}
+}
+
+// ExportFor is what UpdatePathAttrs makes of a path for a neighbor, from what
+// it made for another neighbor of the same ExportClass: a copy of template
+// with this neighbor's local address as next hop where UpdatePathAttrs sets
+// it. Every neighbor gets its own copy, as each may change it.
+func ExportFor(template *Path, peer *oc.Neighbor, original *Path, local netip.Addr) *Path {
+	path := template.Clone(template.IsWithdraw)
+	if setsLocalNexthop(peer, original) {
+		path.SetNexthop(local)
+	}
+	return path
+}
+
+// setsLocalNexthop tells whether UpdatePathAttrs makes the router's local
+// address of the session the next hop of a path to this neighbor.
+func setsLocalNexthop(peer *oc.Neighbor, path *Path) bool {
+	unspecified := path.GetNexthop().IsUnspecified()
+	switch peer.State.PeerType {
+	case oc.PEER_TYPE_EXTERNAL:
+		return !path.IsLocal() || unspecified
+	case oc.PEER_TYPE_INTERNAL:
+		return path.IsLocal() && unspecified || peer.RouteReflector.Config.RouteReflectorClient && path.GetFamily() == bgp.RF_RTC_UC
+	}
+	return false
+}
+
 func UpdatePathAttrs(logger *slog.Logger, global *oc.Global, peer *oc.Neighbor, info *PeerInfo, original *Path) *Path {
 	if peer.RouteServer.Config.RouteServerClient {
 		return original
 	}
 	path := original.Clone(original.IsWithdraw)
-
-	for _, a := range path.GetPathAttrs() {
-		if _, y := bgp.PathAttrFlags[a.GetType()]; !y {
-			if a.GetFlags()&bgp.BGP_ATTR_FLAG_TRANSITIVE == 0 {
-				path.delPathAttr(a.GetType())
-			}
-		} else {
-			switch a.GetType() {
-			case bgp.BGP_ATTR_TYPE_CLUSTER_LIST, bgp.BGP_ATTR_TYPE_ORIGINATOR_ID:
-				// Kept inside the AS, also towards another route reflector:
-				// RFC 4456, 8, it detects loops between reflectors by them.
-				if peer.State.PeerType != oc.PEER_TYPE_INTERNAL {
-					path.delPathAttr(a.GetType())
-				}
-			}
-		}
-	}
+	path.dropForExport(peer.State.PeerType == oc.PEER_TYPE_INTERNAL)
 
 	localAddress := info.LocalAddress
 	nexthop := path.GetNexthop()
@@ -461,11 +495,11 @@ func (path *Path) SetPolicyRejected() {
 }
 
 func (path *Path) HasNoLLGR() bool {
-	return slices.Contains(path.GetCommunities(), uint32(bgp.COMMUNITY_NO_LLGR))
+	return slices.Contains(path.communities(), uint32(bgp.COMMUNITY_NO_LLGR))
 }
 
 func (path *Path) IsLLGRStale() bool {
-	return slices.Contains(path.GetCommunities(), uint32(bgp.COMMUNITY_LLGR_STALE))
+	return slices.Contains(path.communities(), uint32(bgp.COMMUNITY_LLGR_STALE))
 }
 
 func (path *Path) GetSourceAs() uint32 {
@@ -694,6 +728,27 @@ func (path *Path) GetAsList() []uint32 {
 	return path.getAsListOfSpecificType(true, true)
 }
 
+// HasAS tells whether GetAsList holds as, without making that list: a
+// sequence or a set holding it, or as 0 for any other segment, which
+// GetAsList lists as 0.
+func (path *Path) HasAS(as uint32) bool {
+	if aspath := path.GetAsPath(); aspath != nil {
+		for _, param := range aspath.Value {
+			switch param.GetType() {
+			case bgp.BGP_ASPATH_ATTR_TYPE_SEQ, bgp.BGP_ASPATH_ATTR_TYPE_SET:
+				if slices.Contains(param.GetAS(), as) {
+					return true
+				}
+			default:
+				if as == 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (path *Path) GetAsSeqList() []uint32 {
 	return path.getAsListOfSpecificType(true, false)
 }
@@ -858,6 +913,15 @@ func (path *Path) ReplaceAS(localAS, peerAS uint32) *Path {
 		path.setPathAttr(bgp.NewPathAttributeAsPath(newASParams))
 	}
 	return path
+}
+
+// communities is the list of the COMMUNITIES attribute in effect, shared with
+// it: what GetCommunities copies, for callers that only read it.
+func (path *Path) communities() []uint32 {
+	if attr := path.getPathAttr(bgp.BGP_ATTR_TYPE_COMMUNITIES); attr != nil {
+		return attr.(*bgp.PathAttributeCommunities).Value
+	}
+	return nil
 }
 
 func (path *Path) GetCommunities() []uint32 {

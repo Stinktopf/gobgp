@@ -127,7 +127,7 @@ def test_unforeseen_broken_properties_and_the_end_of_a_search_are_told(lab_files
     notify.search_ended({"id": "1", "state": "done", "routers": 5})
     notify.search_ended({"id": "2", "state": "failed", "error": "the simulator timed out"})
     done, failed = (call["embeds"][0] for call in posted.calls)
-    assert done["description"] == "2 problems on networks up to 5 routers, 1 contradicts the proofs"
+    assert done["description"] == "2 problems on networks up to 5 routers, 1 contradicts the proof"
     assert failed["description"] == "the simulator timed out" and posted.calls[1]["content"] == "@here"
 
 

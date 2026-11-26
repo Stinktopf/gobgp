@@ -8,20 +8,22 @@ from statistics import median
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from ... import (
     analysis,
+    archive,
     config,
     marks,
     simulate,
 )
-from ...problems import PROPERTIES, allowed_predicted, fails, verdict
+from ...problems import PROPERTIES, allowed_predicted, fails, twins_of, verdict
 from ...problems import grouped as problem_groups
 from ...problems import look as problems_look
-from ...problems import prediction as problems_prediction
 from ...problems import of as problems_of
-from ...results import Dataset, RunKey, folder_size, storage
+from ...problems import prediction as problems_prediction
+from ...results import PRIVATE, Dataset, RunKey, folder_size, storage
 from ..common import (
     METRICS,
     back,
@@ -42,15 +44,62 @@ router = APIRouter()
 
 # From what ran to the numbers, over time, a single run, and how it was set up.
 TABS = {"runs": "Runs", "table": "Table", "charts": "Charts", "replay": "Replay", "quality": "Quality", "details": "Details"}
+HOTSPOTS = 15  # functions the Benchmark area lists of a variant
 
 
-OLD_TABS = {"overview": "table"}  # links from before
+OLD_TABS = {"overview": "table", "performance": "runs"}  # links from before, a result's performance is in the Benchmark area
 
 
 SERIES_CACHE: dict = {}  # (result, topology, scenario, done runs) -> series of every variant
 
 
-def result_context(dataset: Dataset, tab: str, topology: str = "", scenario: str = "") -> dict:
+def short_function(name: str) -> str:
+    """A Go function without the module path of gobgpd, which every one of its own shares."""
+    return name.removeprefix("github.com/osrg/gobgp/v4/")
+
+
+def performance(dataset: Dataset, topology: str, scenario: str, variant: str, against: str = "") -> dict:
+    """What the Benchmark area shows of a topology and scenario: the speed
+    rule's verdicts, the parts per variant, and the hotspots of one variant
+    against a reference, by default the baseline commit of its mode, if it has one."""
+    e = dataset.experiment
+    names = [v.name for v in e.variants if not v.records]  # a benchmark's recordings are its input, not measured
+    twins = twins_of(e)
+    refs = {v.name: v.ref for v in e.variants}
+    candidates = [v for v in names if v in twins and refs[v] != refs[twins[v][0]]]
+    # Whether a variant has profiles, from its runs, without reading them: only the pair shown is read.
+    profiled = [v for v in names if any(analysis.profiled_fully(dataset.run(k)) for k in dataset.keys()
+                                        if (k.topology, k.scenario, k.variant) == (topology, scenario, v) and dataset.is_done(k))]
+    variant = variant if variant in names else next(iter(candidates), None) or next(iter(profiled), names[0])
+    if against not in names or against == variant:
+        against = twins[variant][0] if variant in twins else None  # the A/A twin too: against it, its changes are timing
+    mine = analysis.profile_cell(dataset, topology, scenario, variant)
+    base = analysis.profile_cell(dataset, topology, scenario, against) if against else None
+    cells = {v: c for v, c in ((variant, mine), (against, base)) if c is not None}
+    hotspots = []
+    if mine["runs"]:
+        # The long runners: the most time in a function itself, as pprof's top, what it calls besides as cum.
+        for fn, flat in sorted(mine["flat"].items(), key=lambda x: (-x[1], x[0]))[:HOTSPOTS]:
+            cum = mine["cum"].get(fn, flat)
+            row = {"name": fn, "short": short_function(fn), "flat": flat, "cum": cum}
+            if base and base["runs"]:
+                row["change"] = cum - base["cum"].get(fn, 0.0)
+            hotspots.append(row)
+    changes = []
+    if mine["runs"] and base and base["runs"]:
+        delta = {fn: mine["cum"].get(fn, 0.0) - base["cum"].get(fn, 0.0) for fn in mine["cum"].keys() | base["cum"].keys()}
+        changes = [{"name": fn, "short": short_function(fn), "change": d, "before": base["cum"].get(fn, 0.0)}
+                   for fn, d in sorted(delta.items(), key=lambda x: (-abs(x[1]), x[0]))[:10] if abs(d) >= 0.005]
+    allocated = [{"name": fn, "short": short_function(fn), "mb": mb}
+                 for fn, mb in sorted((mine.get("allocated") or {}).items(), key=lambda x: (-x[1], x[0]))[:10]]
+    speed = analysis.speed(dataset) if e.speed else None
+    return {"variant": variant, "against": against, "cells": cells, "mine": mine, "base": base, "hotspots": hotspots,
+            "changes": changes, "allocated": allocated,
+            "verdicts": [c for c in (speed or {}).get("cells", []) if (c["topology"], c["scenario"]) == (topology, scenario)],
+            "speed": speed}
+
+
+def result_context(dataset: Dataset, tab: str, topology: str = "", scenario: str = "", variant: str = "") -> dict:
     experiment = dataset.experiment
     status = dataset.status
     topologies = experiment.topologies
@@ -79,6 +128,7 @@ def result_context(dataset: Dataset, tab: str, topology: str = "", scenario: str
         # Failed or broken where the simulator cannot play the mode or scenario: told, not judged.
         "unjudged_runs": len({(p["topology"], p["variant"], p["scenario"], p["run"]) for p in found
                               if p["kind"] in ("check", "property") and p.get("predicted", False) is None and not p.get("unanswered", False)}),
+        "unjudged_causes": unjudged(found),
     }
     if tab == "table":
         context["running"] = status.get("current") if status.get("state") == "running" else None
@@ -90,6 +140,13 @@ def result_context(dataset: Dataset, tab: str, topology: str = "", scenario: str
         context["paired"] = lambda s, variant, metric, baseline: analysis.paired(dataset, topology, s, metric, variant, baseline)
         context["failed_checks"] = lambda: analysis.failed_checks(dataset, topology)  # read only for the checks
         context["primary"] = analysis.primary(dataset) if experiment.primary else None
+    # Profiles or a speed rule: the result links to the Benchmark area.
+    context["performance_on"] = experiment.sampling.profile_s > 0 or experiment.speed is not None
+    if dataset.state == "archived":
+        from ... import zenodo
+
+        context["zenodo_tokens"] = zenodo.state()
+        context["index_entry"] = archive.entry(dataset)
     if tab in ("charts", "quality"):
         # The chosen scenario, by default the first that has runs.
         done = {k.scenario for k in dataset.keys() if k.topology == topology and dataset.is_done(k)}
@@ -108,7 +165,15 @@ def result_context(dataset: Dataset, tab: str, topology: str = "", scenario: str
         log = dataset.path / "lab.log"
         lines = log.read_text().splitlines()[-300:] if log.exists() else []
         # "2026-09-30 11:04:08,590 INFO message" as (time, level, message)
-        context["log"] = [(m[2], m[3], m[4]) if (m := re.match(r"(\S+) (\S+?)(?:,\d+)? (\w+) (.*)", line)) else ("", "", line)
+        # A run as "topology/variant/scenario#run", with only the parts that tell runs of this result apart.
+        many_topologies = len(experiment.topologies) > 1
+        many_scenarios = any(len(experiment.cases_of(t)) > 1 for t in experiment.topologies)
+        def short(message: str) -> str:
+            if not (k := re.match(r"([^/\s]+)/([^/\s]+)/([^#\s]+)#(\d+):", message)):
+                return message
+            parts = [k[1]] * many_topologies + [k[2]] + [k[3]] * many_scenarios
+            return "/".join(parts) + f" #{k[4]}:" + message[k.end():]
+        context["log"] = [(m[2], m[3], short(m[4])) if (m := re.match(r"(\S+) (\S+?)(?:,\d+)? (\w+) (.*)", line)) else ("", "", line)
                           for line in lines]
         # topology -> variant -> scenario -> the state of every run
         metrics = analysis.run_summary(dataset) if any(dataset.is_done(k) for k in dataset.keys()) else {}
@@ -198,7 +263,7 @@ def run_facts(dataset: Dataset, key: RunKey, run: dict, m: dict) -> dict:
     # Short lines of label and value, the title already names the state.
     # A settle time below the resolution, two intervals of the slowest router, says only that much.
     resolution = 2 / m["sample_hz_min"] if m.get("sample_hz_min") else None
-    facts = [(f"Rest: within {resolution:.2g} s, the resolution" if resolution and m["settle_s"] < resolution else f"Rest: after {m['settle_s']:g} s")] if settled else []
+    facts = [(f"Rest: within {resolution:.2g} s" if resolution and m["settle_s"] < resolution else f"Rest: after {m['settle_s']:g} s")] if settled else []
     if m.get("sample_hz") is not None:
         slowest = (m.get("sample_slowest") or [[None]])[0][0]
         facts.append(f"Sampling: {m['sample_hz']:g} of {set_hz:g} Hz, slowest {m['sample_hz_min']:g}"
@@ -322,17 +387,33 @@ def series_of(dataset: Dataset, topology: str, scenario: str) -> dict:
     return series
 
 
+
+def unjudged(found: list[dict]) -> list[dict]:
+    """What the simulator cannot play, by cause: its title, the runs and the variants, the most runs first."""
+    by: dict[str, dict] = {}
+    for p in found:
+        if p["kind"] in ("check", "property") and p.get("predicted", False) is None and not p.get("unanswered", False):
+            what = "Failed a check" if p["kind"] == "check" else PROPERTIES[p["cause"]]
+            g = by.setdefault(what, {"what": what, "runs": set(), "variants": set()})
+            g["runs"].add((p["topology"], p["variant"], p["scenario"], p["run"]))
+            g["variants"].add(p["variant"])
+    return sorted(({"what": g["what"], "runs": len(g["runs"]), "variants": sorted(g["variants"])} for g in by.values()),
+                  key=lambda g: -g["runs"])
+
 @router.get("/results", response_class=HTMLResponse)
 def results(request: Request, show: str = "all", error: str = ""):
     every, older = Dataset.all(), Dataset.older()
     sizes = {d.name: size_of(d) for d in every + older}
-    used = {public: sum(sizes[d.name] for d in every + older if d.public == public) for public in (True, False)}
-    pick = lambda datasets: [d for d in datasets if show == "all" or d.public == (show == "public")]
+    used = {state: sum(sizes[d.name] for d in every + older if d.state == state) for state in ("private", "archived", "legacy")}
+    pick = lambda datasets: [d for d in datasets if show in ("all", d.state)]
+    names = {d.name for d in every + older}
+    remote = [line for line in archive.index() if line["name"] not in names] if show in ("all", "archived") else []
     verdicts = {d.name: known_verdict(d) for d in every}
     starred = marks.starred("result")
     every = sorted(every, key=lambda d: d.name not in starred)  # starred first, each part in its order
-    return render(request, "results.html", nav="results", results=pick(every), older=pick(older), show=show, verdicts=verdicts,
-                  sizes=sizes, storage=storage(used), error=error, starred=starred, notes=marks.counts("result"))
+    return render(request, "results.html", nav="results", results=pick(every), older=pick(older), remote=remote, show=show, verdicts=verdicts,
+                  sizes=sizes, storage=storage(used), error=error, starred=starred, notes=marks.counts("result"),
+                  analysing={d.name for d in every if str(d.path) in analysis.PROGRESS})
 
 
 
@@ -350,7 +431,7 @@ def results_compare(request: Request, a: str, b: str, topology: str = "", metric
 
 @router.get("/results/{name}", response_class=HTMLResponse)
 def result(request: Request, name: str, tab: str = "runs", metric: str = "",
-           topology: str = "", scenario: str = "", error: str = ""):
+           topology: str = "", scenario: str = "", error: str = "", variant: str = ""):
     tab = OLD_TABS.get(tab, tab)
     tab = tab if tab in TABS else "runs"
     dataset = find(name)
@@ -360,7 +441,7 @@ def result(request: Request, name: str, tab: str = "runs", metric: str = "",
     metrics = metrics_of(dataset)
     metric = metric if metric in metrics else next(iter(metrics))
     return render(request, "result.html", nav="results", tab=tab, metric=metric, tabs=TABS, metrics=metrics,
-                  error=error, marks_on={"kind": "result", "name": dataset.name}, **result_context(dataset, tab, topology, scenario))
+                  error=error, marks_on={"kind": "result", "name": dataset.name}, **result_context(dataset, tab, topology, scenario, variant))
 
 
 def measuring(dataset: Dataset) -> bool:
@@ -392,7 +473,7 @@ def result_header(request: Request, name: str):
 
 @router.get("/results/{name}/partials/{tab}", response_class=HTMLResponse)
 def result_partial(request: Request, name: str, tab: str, metric: str = "",
-                   topology: str = "", scenario: str = ""):
+                   topology: str = "", scenario: str = "", variant: str = ""):
     tab = OLD_TABS.get(tab, tab)
     if tab not in TABS:
         raise HTTPException(404)
@@ -403,7 +484,7 @@ def result_partial(request: Request, name: str, tab: str, metric: str = "",
     metrics = metrics_of(dataset)
     metric = metric if metric in metrics else next(iter(metrics))
     return still(dataset, render(request, f"partials/tab-{tab}.html", tab=tab, metric=metric, metrics=metrics,
-                                 **result_context(dataset, tab, topology, scenario)))
+                                 **result_context(dataset, tab, topology, scenario, variant)))
 
 
 @router.get("/results/{name}/replay")
@@ -508,6 +589,69 @@ def resume(name: str, start_cluster: bool = Form(False)):
     return RedirectResponse(f"/results/{name}" + (f"?{urlencode({'error': problem})}" if problem else ""), 303)
 
 
+@router.post("/results/{name}/archive")
+async def result_archive(name: str):
+    """Archives a finished private result, see lab/archive.py."""
+    try:
+        await run_in_threadpool(archive.freeze, find(name))
+    except ValueError as e:
+        return RedirectResponse(f"/results/{name}?{urlencode({'error': str(e)})}", 303)
+    return RedirectResponse(f"/results/{name}", 303)
+
+
+@router.post("/results/{name}/unarchive")
+def result_unarchive(name: str):
+    try:
+        archive.unfreeze(find(name))
+    except ValueError as e:
+        return RedirectResponse(f"/results/{name}?{urlencode({'error': str(e)})}", 303)
+    return RedirectResponse(f"/results/{name}", 303)
+
+
+@router.post("/results/{name}/zenodo")
+async def result_zenodo(name: str, use: str = Form(""), confirm: str = Form("")):
+    """Uploads an archived result as a draft to the Zenodo it names, sandbox or real, confirmed by typing
+    "upload to sandbox" or "upload to zenodo". After one, asks Zenodo whether it was published and keeps its DOI."""
+    from ... import zenodo
+
+    dataset = find(name)
+    try:
+        if dataset.state != "archived":
+            raise ValueError(f"{name} is not archived")
+        if (z := dataset.zenodo) and not z.get("doi"):
+            found = await run_in_threadpool(zenodo.status, z["id"], z["use"])
+            if not found["doi"] or not found["submitted"]:
+                raise ValueError("Zenodo has not published it yet: complete and publish the draft there, then fetch the DOI.")
+            dataset.set_zenodo({**z, **{k: found[k] for k in ("doi", "url") if found.get(k)}})
+        elif not z:
+            if confirm.strip().lower() != {"sandbox": "upload to sandbox", "real": "upload to zenodo"}.get(use):
+                raise ValueError("Not uploaded: the confirmation did not match.")
+            tar = await run_in_threadpool(archive.pack, dataset)
+            e = dataset.experiment
+            try:
+                out = await run_in_threadpool(zenodo.draft, tar, f"OBGP lab result {dataset.name}", e.description or e.name,
+                                              ["BGP", "OBGP", "route oscillation", "measurement"], use)
+            finally:
+                tar.unlink(missing_ok=True)  # Zenodo has it, or it is packed again
+            dataset.set_zenodo(out)
+    except ValueError as e:
+        return RedirectResponse(f"/results/{name}?{urlencode({'error': str(e)})}", 303)
+    return RedirectResponse(f"/results/{name}", 303)
+
+
+@router.post("/results/fetch/{name}")
+async def result_fetch(name: str):
+    """Fetches an archived result of the index from Zenodo."""
+    line = next((line for line in archive.index() if line["name"] == name), None)
+    try:
+        if not line:
+            raise ValueError(f"{name} is not in the index of archived results")
+        await run_in_threadpool(archive.fetch, line)
+    except ValueError as e:
+        return RedirectResponse(f"/results?{urlencode({'error': str(e)})}", 303)
+    return RedirectResponse(f"/results/{name}", 303)
+
+
 # Picked results: their names in the query, as the confirmation posts nothing else.
 @router.post("/results/delete")
 def results_delete(request: Request):
@@ -546,15 +690,3 @@ def result_delete(request: Request, name: str):
     except (ValueError, OSError) as error:
         return RedirectResponse(with_error(back(request, f"/results/{name}"), str(error)), 303)
     return RedirectResponse("/results", 303)
-
-
-@router.post("/results/{name}/visibility")
-def visibility(request: Request, name: str, public: bool = Form()):
-    dataset = find(name)
-    page = back(request, f"/results/{name}?tab=details")
-    try:
-        dataset.publish(public)
-    except (ValueError, FileExistsError) as error:
-        text = str(error) if isinstance(error, ValueError) else f"{name} exists in results/{'public' if public else 'private'} already."
-        return RedirectResponse(with_error(page, text), 303)
-    return RedirectResponse(page, 303)

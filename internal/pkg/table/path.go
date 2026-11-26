@@ -225,17 +225,6 @@ func (path *Path) IsEOR() bool {
 	return false
 }
 
-func cloneAsPath(asAttr *bgp.PathAttributeAsPath) *bgp.PathAttributeAsPath {
-	newASparams := make([]bgp.AsPathParamInterface, len(asAttr.Value))
-	for i, param := range asAttr.Value {
-		asList := param.GetAS()
-		as := make([]uint32, len(asList))
-		copy(as, asList)
-		newASparams[i] = bgp.NewAs4PathParam(param.GetType(), as)
-	}
-	return bgp.NewPathAttributeAsPath(newASparams)
-}
-
 func UpdatePathAttrs(logger *slog.Logger, global *oc.Global, peer *oc.Neighbor, info *PeerInfo, original *Path) *Path {
 	if peer.RouteServer.Config.RouteServerClient {
 		return original
@@ -546,41 +535,45 @@ func (a PathAttrs) Less(i, j int) bool {
 }
 
 func (path *Path) GetPathAttrs() []bgp.PathAttributeInterface {
-	deleted := NewBitmap(math.MaxUint8)
-	modified := make(map[uint]bgp.PathAttributeInterface)
+	// The deleted types as bits, and the newest attribute of each modified
+	// type: a path changes few, so a list beats a map.
+	var deleted [4]uint64
+	isDeleted := func(t bgp.BGPAttrType) bool { return deleted[t/64]&(1<<(t%64)) != 0 }
+	var buffer [8]bgp.PathAttributeInterface
+	modified := buffer[:0]
+	index := func(t bgp.BGPAttrType) int {
+		return slices.IndexFunc(modified, func(m bgp.PathAttributeInterface) bool { return m.GetType() == t })
+	}
 	p := path
 	for {
 		for _, t := range p.dels {
-			deleted.Flag(uint(t))
+			deleted[t/64] |= 1 << (t % 64)
 		}
 		if p.parent == nil {
-			list := PathAttrs(make([]bgp.PathAttributeInterface, 0, len(p.pathAttrs)))
+			list := PathAttrs(make([]bgp.PathAttributeInterface, 0, len(p.pathAttrs)+len(modified)))
 			// we assume that the original pathAttrs are
 			// in order, that is, other bgp speakers send
 			// attributes in order.
 			for _, a := range p.pathAttrs {
-				typ := uint(a.GetType())
-				if m, ok := modified[typ]; ok {
-					list = append(list, m)
-					delete(modified, typ)
-				} else if !deleted.GetFlag(typ) {
+				typ := a.GetType()
+				if i := index(typ); i >= 0 {
+					list = append(list, modified[i])
+					modified = slices.Delete(modified, i, i+1)
+				} else if !isDeleted(typ) {
 					list = append(list, a)
 				}
 			}
 			if len(modified) > 0 {
 				// Huh, some attributes were newly
 				// added. So we need to sort...
-				for _, m := range modified {
-					list = append(list, m)
-				}
+				list = append(list, modified...)
 				sort.Sort(list)
 			}
 			return list
 		} else {
 			for _, a := range p.pathAttrs {
-				typ := uint(a.GetType())
-				if _, ok := modified[typ]; !deleted.GetFlag(typ) && !ok {
-					modified[typ] = a
+				if typ := a.GetType(); !isDeleted(typ) && index(typ) < 0 {
+					modified = append(modified, a)
 				}
 			}
 		}
@@ -759,38 +752,38 @@ func (path *Path) PrependAsn(asn uint32, repeat uint8, confed bool) {
 		segType = bgp.BGP_ASPATH_ATTR_TYPE_SEQ
 	}
 
-	original := path.GetAsPath()
-
-	asns := make([]uint32, repeat)
-	for i := range asns {
-		asns[i] = asn
+	var params []bgp.AsPathParamInterface
+	if original := path.GetAsPath(); original != nil {
+		params = original.Value
 	}
-
-	var asPath *bgp.PathAttributeAsPath
-	if original == nil {
-		asPath = bgp.NewPathAttributeAsPath([]bgp.AsPathParamInterface{})
-	} else {
-		asPath = cloneAsPath(original)
-	}
-
-	if len(asPath.Value) > 0 {
-		param := asPath.Value[0]
-		asList := param.GetAS()
-		if param.GetType() == segType {
-			if int(repeat)+len(asList) > 255 {
-				repeat = uint8(255 - len(asList))
-			}
-			newAsList := append(asns[:int(repeat)], asList...)
-			asPath.Value[0] = bgp.NewAs4PathParam(segType, newAsList)
-			asns = asns[int(repeat):]
+	repeated := func(n int, rest []uint32) []uint32 {
+		out := make([]uint32, n, n+len(rest))
+		for i := range n {
+			out[i] = asn
 		}
+		return append(out, rest...)
 	}
 
-	if len(asns) > 0 {
-		p := bgp.NewAs4PathParam(segType, asns)
-		asPath.Value = append([]bgp.AsPathParamInterface{p}, asPath.Value...)
+	// Only the first segment is new: the others are shared, as
+	// removeConfedAs shares them, since no segment is changed in place.
+	out := make([]bgp.AsPathParamInterface, 0, len(params)+1)
+	left := int(repeat)
+	if len(params) > 0 && params[0].GetType() == segType {
+		asList := params[0].GetAS()
+		n := max(0, min(left, 255-len(asList)))
+		left -= n
+		first := bgp.NewAs4PathParam(segType, repeated(n, asList))
+		if left > 0 {
+			out = append(out, bgp.NewAs4PathParam(segType, repeated(left, nil)))
+		}
+		out = append(append(out, first), params[1:]...)
+	} else {
+		if left > 0 {
+			out = append(out, bgp.NewAs4PathParam(segType, repeated(left, nil)))
+		}
+		out = append(out, params...)
 	}
-	path.setPathAttr(asPath)
+	path.setPathAttr(bgp.NewPathAttributeAsPath(out))
 }
 
 func isPrivateAS(as uint32) bool {

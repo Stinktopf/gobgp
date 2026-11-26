@@ -33,7 +33,7 @@ CHART = ROOT / "gobgp-lab"
 # Sources gobgpd is built from; everything else of a ref is irrelevant.
 DAEMON_SOURCES = ["go.mod", "go.sum", "api", "cmd", "internal", "pkg", "proto"]
 # Files of this tree that go into the image besides the daemon.
-IMAGE_SOURCES = ["Dockerfile", "pyproject.toml", "uv.lock", "controller/app.py"]
+IMAGE_SOURCES = ["Dockerfile", "pyproject.toml", "uv.lock", "controller/app.py", "go.mod", "go.sum", "pkg/packet", "cmd/obgp-replay"]
 BATCH = 32  # routers per Helm call of a larger topology
 PROGRESS_S = 30  # between the log lines of a deploy
 TELL_S = 5  # between the looks at the pods while the controllers are told their neighbors
@@ -46,6 +46,19 @@ SYSTEM_WEIGHT = 10000  # CPU weight of the node's own services against its pods,
 
 log = logging.getLogger("lab")
 
+
+
+def crash(log: str) -> str:
+    """The panic a Go program's log ends with and the first function of this
+    repository on the stack of the goroutine that panicked, else nothing."""
+    lines = log.splitlines()
+    start = next((i for i, l in enumerate(lines) if l.startswith(("panic:", "fatal error:"))), None)
+    if start is None:
+        return ""
+    frame = next((l.strip().rsplit("(", 1)[0] for l in lines[start + 1:] if "github.com/osrg/gobgp" in l and not l.startswith("\t")), "")
+    at = next((l.strip() for j, l in enumerate(lines[start + 1:], start + 1)
+               if l.startswith("\t") and "github.com/osrg/gobgp" in lines[j - 1]), "")
+    return f": {lines[start][:200]}" + (f" in {frame.rsplit('/', 1)[-1]}" if frame else "") + (f" ({at.rsplit('/', 1)[-1].split(' ')[0]})" if at else "")
 
 class Incompatible(RuntimeError):
     """An existing profile must be recreated before it can serve this request."""
@@ -61,12 +74,12 @@ class LabError(RuntimeError):
 class HostLimit(LabError):
     """The cluster reached a limit of the shared host: the Kubernetes API
     stopped answering, the node's connection tracking ran full, the kernel's
-    neighbour table is too small for the topology, or the cluster was lost twice. The result ends as failed instead of being
+    neighbor table is too small for the topology, or the cluster was lost twice. The result ends as failed instead of being
     played again, which would hit the limit again."""
 
 
-# The kernel keeps one neighbour (ARP) table for all containers of the host. Each router holds an entry for
-# every BGP neighbour. When the table is full, the kernel drops packets, even those of the node's own
+# The kernel keeps one neighbor (ARP) table for all containers of the host. Each router holds an entry for
+# every BGP neighbor. When the table is full, the kernel drops packets, even those of the node's own
 # Kubernetes API on 127.0.0.1. Setup raises its limits to NEIGH_WANT (gc_thresh1, 2, 3), never lowering one.
 NEIGH = Path("/proc/sys/net/ipv4/neigh/default")
 NEIGH_STAT = Path("/proc/net/stat/arp_cache")
@@ -76,7 +89,7 @@ NEIGH_SPARE = 0.1  # of gc_thresh3, kept free for the host's other containers
 
 
 def neigh_table() -> tuple[int, int] | None:
-    """Entries of the host's neighbour table now and its limit gc_thresh3, None when unreadable."""
+    """Entries of the host's neighbor table now and its limit gc_thresh3, None when unreadable."""
     try:
         limit = int((NEIGH / "gc_thresh3").read_text())
         entries = int(NEIGH_STAT.read_text().splitlines()[1].split()[0], 16)
@@ -86,18 +99,18 @@ def neigh_table() -> tuple[int, int] | None:
 
 
 def neigh_need(topology: dict) -> int:
-    """Entries a topology adds to the neighbour table: one per BGP neighbour of each router, one per router on the node."""
+    """Entries a topology adds to the neighbor table: one per BGP neighbor of each router, one per router on the node."""
     return sum(len(cfg.get("neighbors") or []) + 1 for cfg in topology["routers"].values())
 
 
 def check_neigh(name: str, topology: dict) -> None:
-    """Raises HostLimit before a deploy that would fill the host's neighbour table."""
+    """Raises HostLimit before a deploy that would fill the host's neighbor table."""
     if (table := neigh_table()) is None:
         return
     entries, limit = table
     need = neigh_need(topology)
     if entries + need > limit * (1 - NEIGH_SPARE):
-        raise HostLimit(f"{name} needs about {need:,} entries in the kernel's neighbour table, which holds {limit:,} "
+        raise HostLimit(f"{name} needs about {need:,} entries in the kernel's neighbor table, which holds {limit:,} "
                         f"with {entries:,} in use: run setup again or raise net.ipv4.neigh.default.gc_thresh3, see docs/setup.md")
 
 
@@ -111,7 +124,7 @@ for s in kubepods.slice system.slice; do
 done
 echo; echo "conntrack $(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null) of $(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null)"
 set -- $(sed -n 2p /proc/net/stat/arp_cache 2>/dev/null)
-[ -n "$1" ] && echo "neighbour table $((0x$1)) of $(cat /proc/sys/net/ipv4/neigh/default/gc_thresh3 2>/dev/null), full $((0x${13})) times"
+[ -n "$1" ] && echo "neighbor table $((0x$1)) of $(cat /proc/sys/net/ipv4/neigh/default/gc_thresh3 2>/dev/null), full $((0x${13})) times"
 ss -s 2>/dev/null | head -3
 echo; docker ps -a --filter name=k8s_kube-apiserver --filter name=k8s_etcd --format '{{.Names}} {{.Status}}' 2>/dev/null
 echo; ps -eo pid,nlwp,pcpu,rss,comm --sort=-pcpu 2>/dev/null | head -25
@@ -536,7 +549,8 @@ class Cluster:
         image is reused only if neither changed. It is built directly in the
         cluster's Docker daemon.
         """
-        sources = hashlib.sha256(b"".join((ROOT / f).read_bytes() for f in IMAGE_SOURCES)).hexdigest()
+        files = [p for f in IMAGE_SOURCES for p in ([ROOT / f] if (ROOT / f).is_file() else sorted((ROOT / f).rglob("*.go")))]
+        sources = hashlib.sha256(b"".join(p.read_bytes() for p in files)).hexdigest()
         tag = f"{commit[:12]}-{sources[:8]}"
         env = self._docker_env()
         if subprocess.run(["docker", "image", "inspect", f"{IMAGE}:{tag}"], env=env, capture_output=True, timeout=120).returncode == 0:
@@ -568,13 +582,14 @@ class Cluster:
 
     def deploy(self, name: str, topology: dict, tag: str, mode: dict[str, str], seed: int, bgp: config.Bgp,
                routers: "Routers", refresh_delay: float = 0, per_neighbor: bool = False, progress=None,
-               diagnosis: Path | None = None) -> None:
+               diagnosis: Path | None = None, feeders: dict[str, str] | None = None) -> None:
         """Replaces the running routers, each in its pure mode, and waits until
         all BGP sessions are established. per_neighbor gives the OBGP routers
         a table per neighbor, and the routers of a variant all in BGP too: NS-BGP.
         Once all pods run, every controller gets its neighbors' pod addresses
         through `routers`: no router asks DNS, none needs a Service. Looks at
-        the node go to the folder diagnosis, see diagnose."""
+        the node go to the folder diagnosis, see diagnose. feeders run
+        obgp-replay instead of gobgpd, each for the router it names: a feed."""
         from . import modes
 
         self.undeploy()
@@ -586,7 +601,8 @@ class Cluster:
             tables = modes.get(m).obgp and m != "obgp-paper" or ns_bgp
             return modes.get(m).env | (per if per_neighbor and tables else {})
 
-        configs = {r: cfg | {"env": env(mode[r])} for r, cfg in topology["routers"].items()}
+        feeders = feeders or {}
+        configs = {r: cfg | {"env": {"LAB_FEED": feeders[r]} if r in feeders else env(mode[r])} for r, cfg in topology["routers"].items()}
         for cfg in configs.values():  # gobgpd lists the member ASes of its confederation
             if (c := cfg.get("confederation")) is not None:
                 cfg["confedMembers"] = sorted({int(o["asn"]) for o in configs.values() if o.get("confederation") == c})
@@ -747,10 +763,28 @@ class Cluster:
 
     def restarts(self) -> tuple[int, list[str]]:
         """How often routers restarted, and those ended for taking too much memory."""
+        restarts, oom, _ = self.restarted()
+        return restarts, oom
+
+    def restarted(self) -> tuple[int, list[str], str]:
+        """How often routers restarted, those ended for taking too much memory,
+        and why the first other one ended: its exit code and the panic its log
+        ends with, which names the function it happened in."""
         pods = self._pods()
-        statuses = [(p["metadata"]["labels"]["app"], c) for p in pods for c in p["status"].get("containerStatuses", [])]
-        oom = sorted({r for r, c in statuses if c.get("lastState", {}).get("terminated", {}).get("reason") == "OOMKilled"})
-        return sum(c["restartCount"] for _, c in statuses), oom
+        statuses = [(p, c) for p in pods for c in p["status"].get("containerStatuses", [])]
+        ended = lambda c: c.get("lastState", {}).get("terminated", {})
+        oom = sorted({p["metadata"]["labels"]["app"] for p, c in statuses if ended(c).get("reason") == "OOMKilled"})
+        why = ""
+        for p, c in statuses:
+            if c["restartCount"] and ended(c).get("reason") != "OOMKilled":
+                try:
+                    log = sh("kubectl", "--context", PROFILE, "-n", NAMESPACE, "logs", p["metadata"]["name"], "-c", c["name"],
+                             "--previous", "--tail=200", "--request-timeout=20s", timeout=30)
+                except LabError:
+                    log = ""
+                why = f"{p['metadata']['labels']['app']} exited with {ended(c).get('exitCode', '?')}{crash(log)}"
+                break
+        return sum(c["restartCount"] for _, c in statuses), oom, why
 
     def versions(self) -> dict:
         kube = json.loads(sh("kubectl", "--context", PROFILE, "version", "-o", "json"))
@@ -941,6 +975,15 @@ class Routers:
         except (requests.RequestException, ValueError) as e:
             raise LabError(f"{router} {path}: {e}") from None
 
+    def fetch(self, router: str, path: str, timeout: float = 60) -> bytes:
+        """The bytes a router's controller answers, not JSON."""
+        try:
+            r = self.session.get(self._url(router, path), timeout=timeout)
+            r.raise_for_status()
+            return r.content
+        except requests.RequestException as e:
+            raise LabError(f"{router} {path}: {e}") from None
+
     def post(self, router: str, path: str, body: dict | bytes | None = None, timeout: float = 60) -> dict:
         """A request to a router's controller: JSON, or bytes as they are."""
         try:
@@ -971,8 +1014,7 @@ def host() -> dict:
 def _machine() -> dict:
     cpu = next((line.split(":", 1)[1].strip() for line in _read("/proc/cpuinfo") if line.startswith("model name")), "")
     mem = next((int(line.split()[1]) // 1024 for line in _read("/proc/meminfo") if line.startswith("MemTotal")), 0)
-    return {
-        "hostname": platform.node(),
+    return {  # no host name: results leave this host
         "kernel": platform.release(),
         "cpus": os.cpu_count(),
         "cpu_model": cpu,

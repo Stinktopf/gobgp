@@ -11,7 +11,20 @@
     {% if source and not live %}
     <form method="post" action="/experiments/{{ source }}/start">{% if cluster_off %}<input type="hidden" name="start_cluster" value="1">{% endif %}<button class="btn" data-tip="Runs {{ source }} again, as its file is now" data-tip-align="end" data-confirm="Run {{ source }} again?" data-confirm-text="As its file is now.{% if cluster_off %} The cluster is switched off and starts too.{% endif %}" data-confirm-safe>{{ icon("play") }}Run again</button></form>
     {% endif %}
-    {{ delete_button("/results/" ~ result.name ~ "/delete", result.name, reason="Stop it first." if live else "Make it private first." if result.public else "", text="Its runs and samples are gone for good.") }}
+    {% set z = result.zenodo %}
+    {% if result.state == "private" and status.state == "finished" and not result.meta.imported and not live %}
+    <form method="post" action="/results/{{ result.name }}/archive"><button class="btn" data-tip="Freezes it for Zenodo" data-confirm="Archive {{ result.name }}?" data-confirm-text="Its samples are packed smaller and a manifest lists every file. It no longer runs on and cannot be deleted until it is unarchived." data-confirm-safe>Archive</button></form>
+    {% elif result.state == "archived" and not z %}
+    <form method="post" action="/results/{{ result.name }}/unarchive"><button class="btn" data-tip="Private again, as long as it is not on Zenodo">Unarchive</button></form>
+    <button type="button" class="btn" onclick="document.getElementById('upload').showModal()">Upload to Zenodo</button>
+    {% elif z.doi %}
+    <a href="https://doi.org/{{ z.doi }}" class="btn" data-tip="Published on Zenodo{{ ' sandbox' if z.use == 'sandbox' }}">DOI {{ z.doi }}</a>
+    {% if index_entry %}<code id="index-entry" hidden>{{ index_entry | tojson }}</code><button type="button" class="btn" data-copy="#index-entry" data-tip="Its line for results/archived.json, so that every lab offers it">Copy index entry</button>{% endif %}
+    {% elif z %}
+    <a href="{{ z.url }}" class="btn" data-tip="Complete and publish it on Zenodo{{ ' sandbox' if z.use == 'sandbox' }}">Zenodo draft</a>
+    <form method="post" action="/results/{{ result.name }}/zenodo"><button class="btn" data-tip="Asks Zenodo whether it was published">Fetch DOI</button></form>
+    {% endif %}
+    {{ delete_button("/results/" ~ result.name ~ "/delete", result.name, reason="Stop it first." if live else result.kept() or "", text="Its runs and samples are gone for good.") }}
     {% if live and result.stopping %}
     <span class="muted text-sm whitespace-nowrap" data-tip="It ends its current phase, then stops. Its runs are kept." data-tip-align="end">Stopping…</span>
     {% elif live %}
@@ -38,9 +51,15 @@
 {% set unjudged = 0 if result.meta.imported else unjudged_runs | default(0) %}
 {% set unmeasured = problems | selectattr("kind", "equalto", "unmeasured") | list | length %}
 {% set passed = verdict.passed if verdict is defined else none %}
-{% if passed %}<p class="notice notice-ok mb-6">Passed: no errors, every run measured, no failed check or broken property the simulator did not predict.{% if predicted %}
-  {{ predicted }} run{{ "s" if predicted != 1 }} failed a check or broke a property as the simulator predicted.{% endif %}</p>{% endif %}
-{% if (status.state == "failed" and status.error) or status.errors or failed or broke or unjudged or unmeasured or retried or m.slow or m.busy or m.shifting or m.images or m.skipped %}
+{% set told = [] if result.meta.imported else unjudged_causes | default([]) %}
+{# What the simulator cannot play: neither a fault nor a pass, each cause on a line with its runs and variants. #}
+{% macro told_list(items) %}<ul class="mt-1 space-y-0.5">{% for g in items %}<li>{{ g.what }}: {{ g.runs }} run{{ "s" if g.runs != 1 }} ({{ g.variants | join(", ") }})</li>{% endfor %}</ul>{% endmacro %}
+{% if passed %}<div class="notice {{ 'notice-warn' if told else 'notice-ok' }} mb-6">
+  <p>{% if told %}Passed.{% else %}Passed: no errors, every run measured, no failed check or broken property the simulator did not predict.{% endif %}{% if predicted %}
+  {{ predicted }} run{{ "s" if predicted != 1 }} failed a check or broke a property as the simulator predicted.{% endif %}{% if told %} The simulator cannot judge:{% endif %}</p>
+  {% if told %}{{ told_list(told) }}{% endif %}
+</div>{% endif %}
+{% if (status.state == "failed" and status.error) or status.errors or failed or broke or (unjudged and not passed) or unmeasured or retried or m.slow or m.busy or m.shifting or m.images or m.skipped %}
 <div class="mb-6 space-y-2">
 {# What went wrong, in one red box, a line each. #}
 {% if (status.state == "failed" and status.error) or status.errors or failed or broke or unmeasured or retried %}
@@ -57,15 +76,15 @@
 </ul>
 {% endif %}
 {# Not predictable: neither a fault nor a pass, told as a limit. #}
-{% if unjudged %}<p class="notice notice-warn">{{ unjudged }} run{{ "s" if unjudged != 1 }} failed a check or broke a property the simulator cannot play.</p>{% endif %}
+{% if unjudged and not passed %}<div class="notice notice-warn"><p>The simulator cannot judge:</p>{{ told_list(told) }}</div>{% endif %}
 {% if m.slow or m.busy or m.shifting or m.images or m.skipped %}
 {% set details = "/results/" ~ result.name ~ "?tab=quality" %}
-{% set link = '<a href="' ~ details ~ '">Details</a>' %}
+{% set link = '<a class="hit" href="' ~ details ~ '">Details</a>' %}
 <ul class="notice notice-warn space-y-0.5" aria-label="Limits of the measurements">
   {% if m.slow or m.busy %}
   {% set named = (m.busy + m.slow) | map(attribute="variant") | unique | list %}
   {% set oscillating = (m.busy + m.slow) | selectattr("oscillating") | map(attribute="variant") | unique | list %}
-  <li>{{ "Host at its limit" if m.busy else "Routers sampled slowly" }} during {{ (named[:-1] | join(", ") ~ " and " ~ named[-1]) if named | length > 1 else named[0] }}
+  <li>{{ "Host at its limit" if m.busy else "Slow sampling" }} in {{ (named[:-1] | join(", ") ~ " and " ~ named[-1]) if named | length > 1 else named[0] }}
     {%- if oscillating %} ({{ "oscillating" if oscillating | length == named | length else oscillating | join(", ") ~ " oscillating" }}){% endif %}:
     {%- if m.busy %} up to {{ (100 * m.busy[0].cpu) | round | int }} % CPU{% endif %}
     {%- if m.busy and m.slow %},{% endif %}
@@ -85,4 +104,47 @@
   </div>
   {{ progress(status.done, status.total) }}
 </div>
+{% endif %}
+{% if result.state == "archived" and not result.zenodo %}
+<dialog id="upload" class="dialog w-full max-w-md">
+  <form method="post" action="/results/{{ result.name }}/zenodo" data-upload>
+    <div class="space-y-4 p-5">
+      <div>
+        <h2 class="font-semibold">Upload to Zenodo</h2>
+        <p class="muted mt-1 text-sm">{{ result.name }} goes there as a draft, which you complete and publish there.</p>
+      </div>
+      <span class="segmented grid w-full grid-cols-2" role="radiogroup" aria-label="Where to">
+        {% for use, label, host in [("sandbox", "Sandbox", "sandbox.zenodo.org"), ("real", "Zenodo", "zenodo.org")] %}
+        <label class="flex justify-center {{ 'opacity-40' if not zenodo_tokens[use] }}" {% if not zenodo_tokens[use] %}data-tip="No token for {{ host }} in the settings"{% endif %}><input type="radio" name="use" value="{{ use }}" data-word="upload to {{ label | lower }}" data-host="{{ host }}" {% if not zenodo_tokens[use] %}disabled{% elif use == "sandbox" or not zenodo_tokens.sandbox %}checked{% endif %}>{{ label }}</label>
+        {% endfor %}
+      </span>
+      <p class="text-sm" data-note="sandbox">A test on sandbox.zenodo.org: its DOIs are not real.</p>
+      <p class="text-sm" data-note="real" hidden>On zenodo.org a published record gets a DOI that cannot be taken back.</p>
+      <label class="block"><span class="label">Type <span class="font-mono" data-say></span> to confirm</span>
+        <input name="confirm" autocomplete="off" spellcheck="false" class="input mt-1 font-mono" required></label>
+    </div>
+    <div class="flex justify-end gap-2 border-t border-slate-900/5 p-4 dark:border-white/10">
+      <button type="button" class="btn" onclick="this.closest('dialog').close()">Cancel</button>
+      <button class="btn btn-primary" data-go disabled>Upload</button>
+    </div>
+  </form>
+</dialog>
+<script>
+(() => {
+  const form = document.querySelector("form[data-upload]");
+  if (!form || form.dataset.ready) return;
+  form.dataset.ready = "1";
+  const typed = form.elements.confirm, go = form.querySelector("[data-go]");
+  const update = () => {
+    const use = form.querySelector("input[name=use]:checked");
+    form.querySelector("[data-say]").textContent = use ? use.dataset.word : "";
+    form.querySelectorAll("[data-note]").forEach((p) => (p.hidden = !use || p.dataset.note !== use.value));
+    go.disabled = !use || typed.value.trim().toLowerCase() !== use.dataset.word;
+    go.textContent = use ? `Upload to ${use.dataset.host}` : "Upload";
+  };
+  form.addEventListener("input", update);
+  form.querySelectorAll("input[name=use]").forEach((r) => r.addEventListener("change", () => { typed.value = ""; update(); }));
+  update();
+})();
+</script>
 {% endif %}

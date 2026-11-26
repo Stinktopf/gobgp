@@ -33,6 +33,12 @@
       fields: [["start", "Start UTC", "datetime"], ["minutes", "Minutes", "number", { placeholder: 30 }],
         ["speed", "Faster ×", "number", { placeholder: 10 }], ["per_router", "Per router", "number", { placeholder: 20 }],
         ["collector", "Collector", "select", { options: COLLECTORS }]] },
+    feed: { group: "prefixes", label: "Feed", args: { source: "" },
+      tip: "The neighbors of one router send it again what they sent it in a run that recorded it. The router runs alone",
+      fields: [["source", "Recorded run", "text", { placeholder: "result/variant/scenario/run" }],
+        ["router", "Router", "router", { placeholder: "busiest" }],
+        ["schedule", "Schedule", "select", { options: ["flood", "paced"] }],
+        ["timeout", "Timeout s", "number", { placeholder: 3600 }]] },
     announce_rib: { group: "prefixes", label: "Full table", args: { at: "2026-09-01T08:00" },
       tip: "Full table of each AS from RIPE RIS. Needs CAIDA",
       fields: [["at", "Table UTC", "datetime"], ["router", "Routers", "router", { placeholder: "all" }],
@@ -159,6 +165,7 @@
       case "announce_real": return `${a.per_router ?? 20} per router${a.router && a.router !== "all" ? ` from ${a.router}` : ""}`;
       case "announce_rib": return `${a.prefixes ? `${a.prefixes} prefixes` : "full table"} of ${String(a.at).replace("T", " ")} UTC`;
       case "replay": return `${a.minutes ?? 30} min from ${String(a.start).replace("T", " ")} UTC, ${a.speed ?? 10}× faster`;
+      case "feed": return `${a.router ?? "busiest"} from ${a.source || "a recorded run"}${a.schedule === "paced" ? ", paced" : ""}`;
       case "withdraw": return `${a.percent ?? 100} %${a.router && a.router !== "origins" ? ` of ${a.router}` : ""}`;
       case "originate": return `${a.router}${a.more_specific ? ", more specific" : ""}`;
       case "down": return `${target()}${count}${a.mode && a.mode !== "session" ? `, ${a.mode}` : ""}`;
@@ -278,7 +285,7 @@
         // Offered for sweeps: the experiment can run the scenario once for each of several values.
         const sweep = el("button", `ml-auto rounded px-1 text-xs font-medium ${ref ? "sweep-badge" : "text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"}`, "sweep");
         Object.assign(sweep, { type: "button" });
-        sweep.dataset.tip = ref ? "Offered for sweeps as a parameter. Click to keep the number in the step" : "Offer this number for sweeps: an experiment can run the scenario once for each of several values";
+        sweep.dataset.tip = ref ? "Offered for sweeps as a parameter. Click to keep the number in the step" : "Offer this number for sweeps over several values";
         sweep.setAttribute("aria-pressed", !!ref);
         sweep.onclick = (e) => { e.preventDefault(); toggleParam(n, key, extra.placeholder); edited(n); render(); };
         head.append(sweep);
@@ -313,7 +320,7 @@
       } else {
         // Decimals as text: a number field shows them in the browser's language, 0,1 in German.
         const number = extra.step < 1 ? { inputMode: "decimal", pattern: "[0-9]*[.,]?[0-9]+" } : { type: "number", step: extra.step || 1, min: 0 };
-        const attrs = { number, datetime: { type: "datetime-local" }, asns: {}, words: {}, igp: { list: "igp-links" }, neighbor: { list: "neighbors" } }[type] || { list: "routers" };
+        const attrs = { number, datetime: { type: "datetime-local" }, asns: {}, words: {}, text: {}, igp: { list: "igp-links" }, neighbor: { list: "neighbors" } }[type] || { list: "routers" };
         control = input(value, (v) => {
           // A list of AS numbers, e.g. the AS_SET of an aggregate: "64601, 64600".
           const asns = () => { const l = String(v).split(/[\s,;]+/).filter(Boolean).map(Number).filter(Number.isInteger); return l.length ? l : undefined; };

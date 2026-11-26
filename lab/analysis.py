@@ -17,6 +17,12 @@ settle_end_s    the same from the last event to the end of the run: for a
 hold_churn      updates per router and second in the longest stretch without
                 events, a replay being one, from the time the routes came
                 to rest in it; zero unless routes keep changing
+updates_prefix_max  the most updates a router received from one neighbor,
+                from the first announcement to the first other step, per
+                announced prefix; OBGP sends each neighbor at most one per
+                prefix then (Theorem 4 of the proofs), BGP may send more.
+                Counted from each router's last sample before the
+                announcement, routers without one left out
 sample_hz       how often the routers really sampled, the median router;
                 sample_hz_min the slowest one. Busy routers sample less often
                 than set, and the times above are then only as exact. Per
@@ -92,6 +98,20 @@ heap_mean       the heap in use, garbage included until the next collection
 objects_mean    the heap objects, likewise
 cpu_s_mean      CPU seconds per router within the window, of the whole
                 daemon, its API and sampling included
+alloc_mb_mean   MiB a router allocated within the window, mean over the
+                routers: the garbage it made for the collector
+cpu_cores_max   the most CPU cores a router used, over spans of at least
+                two sampling intervals and 2 s, at the time gobgpd was read
+prof_s          CPU seconds the profiled routers spent from the first
+                announcing step until rest and its quiet time, all of them
+                together, see lab/profile.py, only where every profile
+                reached rest uncut; prof_<bucket>_s the
+                same per part of the router: gc, api (what the lab reads),
+                policy, export, decision, tables (per neighbor), obgp, rib,
+                send, receive and other
+saturated_s     how long any router used at least 90 % of the threads that
+                run its Go code (bgp.procs, else the cluster's CPUs): a
+                router at its limit lags behind the others
 For each of these, <metric>_routers holds the smallest and the largest
 router, each at its own peak: how the routers differ.
 """
@@ -107,17 +127,19 @@ from collections import Counter, defaultdict
 from contextlib import contextmanager
 from statistics import mean, median
 
+from . import profile
 from .config import write_atomic
 from .results import COUNTERS, Dataset, RunKey
 
-VERSION = 46  # of the metrics; a change recomputes the cached summaries
+VERSION = 49  # of the metrics: a change recomputes the cached summaries
 METRICS = ["convergence_s", "settle_s", "settle_end_s", "hold_churn", "oscillates", "rest_s", "unreached", "stale_end", "loops_end", "holes_end", "loops_s", "loops_max", "holes_s", "holes_max", "loops_beyond_s", "holes_beyond_s", "flaps", "sessions_down_end", "flaps_unplanned", "down_unplanned", "hops_sampled",
            "blocked_s", "blocked_max", "known_mean", "sample_hz", "sample_hz_min", "host_cpu_max", "host_others_spread", "host_others_mean", "adj_in_mean", "rib_mean", "rib_max", "suppressed_mean",
-           "selected_mean", "path_len_avg", "rss_mean", "heap_mean", "objects_mean", "cpu_s_mean"]
+           "selected_mean", "path_len_avg", "rss_mean", "heap_mean", "objects_mean", "cpu_s_mean", "updates_prefix_max",
+           "alloc_mb_mean", "cpu_cores_max", "saturated_s", "prof_s", *(f"prof_{b}_s" for b in profile.NAMES)]
 # The sizes and resources that differ by router, and the field of each in the samples.
 ROUTER_FIELDS = {"adj_in_mean": "adj_in", "rib_mean": "paths", "suppressed_mean": "suppressed", "known_mean": "known", "selected_mean": "destinations",
                  "rss_mean": "rss_mb", "heap_mean": "heap_mb", "objects_mean": "heap_objects"}
-ROUTER_METRICS = [*ROUTER_FIELDS, "cpu_s_mean"]
+ROUTER_METRICS = [*ROUTER_FIELDS, "cpu_s_mean", "alloc_mb_mean", "cpu_cores_max"]
 SERIES = ["destinations", "known", "blocked", "paths", "suppressed", "adj_in", "rss_mb", "heap_mb", "heap_objects", "cpu", "path_len_avg", "churn",
           "sessions_down", "looping", "holed", "sample_rate", "host_cpu"]
 WAY = ("looping", "holed")  # of the whole network, from the sampled next hops, not per router
@@ -273,6 +295,40 @@ def used(by_t: dict, times: list[float], counter: str) -> dict[str, float]:
                 out[r["router"]] += max(0.0, r[counter] - before)
             last[r["router"]] = r[counter]
     return out
+
+
+def cpu_spans(rows: list[dict], start: float, end: float, span: float) -> list[tuple[float, float, float]]:
+    """The CPU cores a router used, as (from, to, cores) over spans of at
+    least `span` seconds between start and end. A busy gobgpd answers its
+    metrics late: they stand for the time they were read, metrics_age_s
+    before the sample, and a repeated reading counts once."""
+    points: list[tuple[float, float]] = []
+    for r in rows:
+        if r.get("cpu_s") is None:
+            continue
+        read = r["t"] - (r.get("metrics_age_s") or 0)
+        if start <= read <= end and (not points or read > points[-1][0] + 1e-6):
+            points.append((read, r["cpu_s"]))
+    out, j = [], 0
+    for i, (a, used_a) in enumerate(points):
+        j = max(j, i + 1)
+        while j < len(points) and points[j][0] - a < span:
+            j += 1
+        if j == len(points):
+            break
+        b, used_b = points[j]
+        out.append((a, b, max(0.0, used_b - used_a) / (b - a)))
+    return out
+
+
+def covered(spans: list[tuple[float, float]]) -> float:
+    """The seconds the union of the spans covers."""
+    total, end = 0.0, float("-inf")
+    for a, b in sorted(spans):
+        if b > end:
+            total += b - max(a, end)
+            end = b
+    return total
 
 
 def held_since(times: list[float], condition, seconds: float) -> float | None:
@@ -499,6 +555,23 @@ def run_metrics(dataset: Dataset, key: RunKey, run: dict | None = None) -> dict:
     if by:
         out["flaps_unplanned"] = sum(max(0, b - a) for (r, p), (a, b) in by.items() if unplanned(r, p))
         out["down_unplanned"] = sum(1 for r, peers in down_by.items() for p in peers if unplanned(r, p))
+    # Updates per session after the announcement alone, per announced prefix.
+    start = next((e["t"] for e in events if e["name"] in PREFIX_EVENTS), None)
+    if start is not None and (final := final_of(run)) and final.get("prefixes"):
+        stop = min((e["t"] for e in events if e["t"] > start and e["name"] not in PREFIX_EVENTS), default=float("inf"))
+        before, upto = {}, {}
+        for row in sorted(every, key=lambda r: r["t"]):
+            if row.get("peers_rx"):
+                (before if row["t"] < start else upto if row["t"] <= stop else {})[row["router"]] = _peers(row["peers_rx"])
+        counts = [n - before[r].get(p, 0) for r, peers in upto.items() if r in before for p, n in peers.items()]
+        if counts:
+            out["updates_prefix_max"] = round(max(counts) / final["prefixes"], 3)
+    # Where the profiled routers spent their CPU, from the profiles beside the run.
+    # Only complete ones: from the first announcing step until rest, never cut before, so that no mode gains by a shorter window.
+    complete = all(p.get("complete") for p in run.get("profiles", [])) and run.get("profiles")
+    if complete and (folder := getattr(dataset, "path", None)) is not None and (found := profile.of_run(folder / key.path)):
+        out["prof_s"] = round(found["seconds"], 2)
+        out.update({f"prof_{b}_s": round(v, 2) for b, v in found["buckets"].items()})
     if final := final_of(run):
         out["unreached"] = sum(final["prefixes"] - h for h in final["held"].values())
         out["loops_end"], out["holes_end"] = final["loops"], final["holes"]
@@ -551,7 +624,7 @@ def run_metrics(dataset: Dataset, key: RunKey, run: dict | None = None) -> dict:
         out["blocked_s"] = round(sum(b - a for a, b in zip(window, window[1:]) if any(r.get("blocked") for r in by_t[a])), 3)
     # Loops on the way, from the next hops the routers sampled on every change of their table.
     checks: list = []
-    if (found := loops_on_the_way(dataset, key, run, hops, window[0], window[-1], checks=checks)) is not None:
+    if sampling.paths and (found := loops_on_the_way(dataset, key, run, hops, window[0], window[-1], checks=checks)) is not None:
         out["loops_s"], out["loops_max"], out["holes_s"], out["holes_max"] = found
         out["loops_beyond_s"], out["holes_beyond_s"] = lasting(checks, window[0], window[-1], 2 * sampling.interval)
         out["hops_sampled"] = next((e["prefixes"] for e in run["events"] if e["name"] == "hops_sample"), None)
@@ -559,6 +632,22 @@ def run_metrics(dataset: Dataset, key: RunKey, run: dict | None = None) -> dict:
         cpu = used(by_t, window, "cpu_s")
         out["cpu_s_mean"] = mean(cpu.values())
         out["cpu_s_mean_routers"] = [min(cpu.values()), max(cpu.values())]
+        # What the routers allocated: the garbage their collector has to find.
+        if all(values_of(by_t[t], "alloc_mb") is not None for t in window):
+            allocated = used(by_t, window, "alloc_mb")
+            out["alloc_mb_mean"] = round(mean(allocated.values()), 1)
+            out["alloc_mb_mean_routers"] = [min(allocated.values()), max(allocated.values())]
+        # The busiest router: the most cores it used and how long one ran at its limit.
+        span = max(2 * sampling.interval, 2.0)
+        spans = {router: cpu_spans(rows, window[0], window[-1], span) for router, rows in own.items()}
+        peaks = {router: max(c for _, _, c in found) for router, found in spans.items() if found}
+        if peaks:
+            out["cpu_cores_max"] = round(max(peaks.values()), 2)
+            out["cpu_cores_max_routers"] = [round(min(peaks.values()), 2), round(max(peaks.values()), 2)]
+            out["cpu_cores_max_router"] = max(peaks, key=peaks.get)
+            if limit := dataset.experiment.bgp.procs or dataset.experiment.cluster.cpus:
+                at_limit = [(a, b) for found in spans.values() for a, b, c in found if c >= 0.9 * limit]
+                out["saturated_s"] = round(covered(at_limit), 1)
     # How the routers differ: each router at its own peak, the smallest and the largest.
     for metric, field in ROUTER_FIELDS.items():
         peaks = {}
@@ -1321,7 +1410,7 @@ def wilcoxon_p(differences: list[float]) -> float | None:
     for r in doubled:
         for t in range(total, r - 1, -1):
             counts[t] += counts[t - r]
-    extreme = abs(2 * w - total)  # distance from the centre, doubled again
+    extreme = abs(2 * w - total)  # distance from the center, doubled again
     return sum(c for t, c in enumerate(counts) if abs(2 * t - total) >= extreme) / 2 ** n
 
 
@@ -1381,6 +1470,191 @@ def primary(dataset: Dataset) -> dict | None:
             for v in variants}
     return {"metric": p.metric, "variants": variants, "baseline": p.baseline, "cells": cells, "each": each,
             "tested": len(tested), "significant": sum(c["holm"] < 0.05 for c in tested)}
+
+
+PROFILE_CELLS: dict = {}  # (result, cell, runs used, version) -> the profiles of a cell, read once
+PROFILE_CACHE = "profiles.json"  # beside a result: its cells' profiles, read once also across restarts
+PROFILE_LOCK = threading.Lock()
+
+
+def kept(dataset: Dataset, key: list, stamp: list):
+    """What profiles.json keeps under key, if it was kept for stamp, else None."""
+    try:
+        entry = json.loads((dataset.path / PROFILE_CACHE).read_text()).get(json.dumps(key))
+    except (OSError, ValueError):
+        return None
+    return entry["value"] if entry and entry.get("stamp") == stamp else None
+
+
+def keep(dataset: Dataset, key: list, stamp: list, value) -> None:
+    """Keeps value in profiles.json under key for stamp, best effort: else it is made again."""
+    with PROFILE_LOCK:
+        file = dataset.path / PROFILE_CACHE
+        try:
+            cache = json.loads(file.read_text())
+        except (OSError, ValueError):
+            cache = {}
+        cache[json.dumps(key)] = {"stamp": stamp, "value": value}
+        try:
+            write_atomic(file, json.dumps(cache))
+        except OSError:
+            pass
+
+
+def profiled_fully(run: dict) -> bool:
+    """Whether every profile of a run reached rest uncut, see Run.keep_cpu."""
+    return bool(run.get("profiles")) and all(p.get("complete") for p in run["profiles"])
+
+
+def profile_cell(dataset: Dataset, topology: str, scenario: str, variant: str, run: int = 0) -> dict:
+    """Where the profiled routers of a cell spent their CPU, per run on average:
+    in all and per part, by function at the leaf (flat) and on the stack
+    (cum), and the MiB allocated by function. Only runs whose profiles all
+    reached rest uncut count, as for the metrics; the others are told."""
+    keys = [k for k in dataset.keys() if (k.topology, k.scenario, k.variant) == (topology, scenario, variant) and dataset.is_done(k)
+            and (not run or k.index == int(run)) and dataset.run(k)["status"] != "error"]
+    used = [k for k in keys if profiled_fully(dataset.run(k))]
+    stamp = (str(dataset.path), topology, scenario, variant, tuple(k.index for k in used), VERSION)
+    if stamp in PROFILE_CELLS:
+        return PROFILE_CELLS[stamp]
+    # On disk too, valid for the same runs and metrics, as the profiles of a finished run do not change.
+    key, on_disk = ["cell", topology, scenario, variant, run], [list(stamp[4]), VERSION]
+    if (cell := kept(dataset, key, on_disk)) is not None:
+        PROFILE_CELLS[stamp] = cell
+        return cell
+    windows = [{"run": k.index, **{x: p.get(x) for x in ("router", "end", "complete")},
+                "start": p["chunks"][0]["t"] if p.get("chunks") else None} for k in keys for p in dataset.run(k).get("profiles", [])]
+    out = {"runs": len(used), "left_out": len(keys) - len(used), "windows": windows}
+    if used:
+        n = len(used)
+        folders = [dataset.path / k.path for k in used]
+        c = profile.cpu([p for f in folders for p in sorted(f.glob("cpu-*.pb.gz"))])
+        allocated: dict[str, float] = defaultdict(float)
+        for f in folders:
+            for start in f.glob("allocs-*-start.pb.gz"):
+                if (end := start.with_name(start.name.replace("-start", "-end"))).exists():
+                    for fn, mb in profile.allocated(start, end)["flat"].items():
+                        allocated[fn] += mb / n
+        out["tree"] = profile.tree([p for f in folders for p in sorted(f.glob("cpu-*.pb.gz"))])
+        out["tree_runs"] = n
+        out |= {"seconds": c["seconds"] / n, "buckets": {b: s / n for b, s in c["buckets"].items()},
+                "flat": {f: s / n for f, s in c["flat"].items()}, "cum": {f: s / n for f, s in c["cum"].items()}, "allocated": dict(allocated)}
+    PROFILE_CELLS[stamp] = out
+    keep(dataset, key, on_disk, out)
+    return out
+
+
+def cores(dataset: Dataset, topology: str, scenario: str, variant: str, run: int = 1) -> dict | None:
+    """The cores the profiled router of a run used over time, over spans of two
+    seconds at the time gobgpd was read, and when the announcement began and
+    ended and the routes came to rest; kept beside the result as the profiles."""
+    key = RunKey(topology, variant, scenario, run)
+    if not dataset.is_done(key):
+        return None
+    info = dataset.run(key)
+    router = next((p["router"] for p in info.get("profiles", [])), None)
+    if router is None:
+        return None
+    stamp = [(dataset.path / key.path / "run.json").stat().st_mtime, VERSION]
+    if (found := kept(dataset, ["cores", topology, scenario, variant, run], stamp)) is not None:
+        return found
+    rows = sorted((r for r in dataset.samples(key) if r["router"] == router), key=lambda r: r["t"])
+    spans = cpu_spans(rows, float("-inf"), float("inf"), max(2 * dataset.experiment.sampling_of(variant).interval, 2.0))
+    events = {"announce": next((x["t"] for x in info["events"] if x["name"] == "announce"), None),
+              "announced": next((x["t"] for x in info["events"] if x["name"] == "announced"), None),
+              "rest": info["profiles"][0].get("end")}
+    out = {"router": router, "line": [[(a + b) / 2, c] for a, b, c in spans], "events": {k: t for k, t in events.items() if t is not None}}
+    keep(dataset, ["cores", topology, scenario, variant, run], stamp, out)
+    return out
+
+
+def profile_cells(dataset: Dataset) -> None:
+    """Reads the profiles of every cell with any once, into the cache beside
+    the result, so that a page of it need not: after its metrics, see cli.py."""
+    cells = {(k.topology, k.scenario, k.variant) for k in dataset.keys() if dataset.is_done(k) and dataset.run(k).get("profiles")}
+    for topology, scenario, variant in sorted(cells):
+        profile_cell(dataset, topology, scenario, variant)
+        cores(dataset, topology, scenario, variant)
+
+
+TIMES = ("convergence_s", "settle_s", "settle_end_s")
+
+
+def speed(dataset: Dataset, found: list[dict] | None = None) -> dict | None:
+    """Whether each candidate commit is faster than the baseline commit of
+    its mode, by the experiment's speed rule (config.Speed), in every cell.
+    The level of each interval is corrected for the number of comparisons
+    (Bonferroni), the p values by Holm. found: the problems, else computed.
+    None without a rule."""
+    from . import problems
+
+    e = dataset.experiment
+    if not (rule := e.speed):
+        return None
+    refs = {v.name: v.ref for v in e.variants}
+    runs = run_summary(dataset)
+
+    def pairs(metric: str, variant: str, baseline: str, topology: str, case: str) -> list[tuple[float, float]]:
+        out = []
+        for i in range(1, e.runs + 1):
+            a = (runs.get(str(RunKey(topology, variant, case, i))) or {}).get(metric)
+            b = (runs.get(str(RunKey(topology, baseline, case, i))) or {}).get(metric)
+            if a is not None and b is not None:
+                out.append((a, b))
+        return out
+
+    candidates = [(v, base, aa) for v, (base, aa) in problems.twins_of(e).items() if refs[v] != refs[base]]
+    cells = [(v, base, aa, t, c) for v, base, aa in candidates for t in e.topologies for c in e.cases_of(t)]
+    level = 1 - 0.05 / max(1, len(cells))
+    found = problems.broken(dataset) if found is None else found
+    out = []
+    for v, base, aa, t, c in cells:
+        row = {"variant": v, "baseline": base, "topology": t, "scenario": c, "metric": rule.metric}
+        p = pairs(rule.metric, v, base, t, c)
+        row["n"] = len(p)
+        if len(p) >= 2:
+            diffs = [a - b for a, b in p]
+            shift = hodges_lehmann(diffs, level)
+            reference = median(b for _, b in p)
+            row |= {"p": wilcoxon_p(diffs), "shift": shift["estimate"], "low": shift["low"], "high": shift["high"],
+                    "level": round(shift["level"], 4), "level_wanted": round(level, 4), "baseline_median": reference,
+                    "margin": rule.margin_pct / 100 * reference}
+        # The baseline's own commit against itself: its estimated shift beyond the margin means the lab, not the code, moved.
+        if aa and len(q := pairs(rule.metric, aa, base, t, c)) >= 2 and "margin" in row:
+            drift = hodges_lehmann([a - b for a, b in q])
+            row["aa"] = {"variant": aa, "shift": drift["estimate"], "low": drift["low"], "high": drift["high"], "level": round(drift["level"], 4),
+                         "drifts": abs(drift["estimate"]) > row["margin"]}
+        guards = {}
+        for g in rule.guards:
+            if len(q := pairs(g, v, base, t, c)) < 2:
+                guards[g] = None
+                continue
+            bound = hodges_lehmann([a - b for a, b in q], level)
+            # Times are exact to two sampling intervals, of the slowest router where it sampled below the rate set.
+            rates = [(runs.get(str(RunKey(t, x, c, i))) or {}).get("sample_hz_min") for x in (v, base) for i in range(1, e.runs + 1)]
+            slowest = min([r for r in rates if r] or [1 / e.sampling_of(v).interval])
+            resolution = 2 * max(e.sampling_of(v).interval, 1 / slowest)
+            allowed = rule.guard_pct / 100 * abs(median(b for _, b in q)) + (resolution if g in TIMES else 0)
+            guards[g] = {"high": bound["high"], "allowed": allowed, "holds": bound["high"] <= allowed}
+        row["guards"] = guards
+        out.append(row)
+    tested = [r for r in out if r.get("p") is not None]
+    for r, adjusted in zip(tested, holm([r["p"] for r in tested])):
+        r["holm"] = adjusted
+    for r in out:
+        causes = {x["cause"] for x in found if (x["variant"], x["topology"], x["scenario"]) == (r["variant"], r["topology"], r["scenario"])}
+        r["verdict"] = (
+            "behaves differently" if "output" in causes
+            else "unchecked" if "output-unchecked" in causes
+            else "too few runs" if r.get("p") is None or r["level"] < r["level_wanted"]
+            else "lab drifts" if (r.get("aa") or {}).get("drifts")
+            else "faster" if r["holm"] < 0.05 and r["high"] < -r["margin"] and all(g and g["holds"] for g in r["guards"].values())
+            else "faster, a guard unmeasured" if r["holm"] < 0.05 and r["high"] < -r["margin"] and all(g is None or g["holds"] for g in r["guards"].values())
+            else "faster, worse elsewhere" if r["holm"] < 0.05 and r["high"] < -r["margin"]
+            else "slower" if r["holm"] < 0.05 and r["low"] > r["margin"]
+            else "slower, within the margin" if r["holm"] < 0.05 and r["low"] > 0
+            else "no change shown")
+    return {"rule": rule.model_dump(), "level": level, "cells": out}
 
 
 BUSY_HOST = 0.9  # a larger share of the CPUs in use, and a run may measure the host

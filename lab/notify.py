@@ -27,7 +27,7 @@ from .results import BOOT_WAIT_S
 
 log = logging.getLogger("lab")
 WEBHOOK = re.compile(r"https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+")
-# The colours of the states in the interface: emerald, rose and amber.
+# The colors of the states in the interface: emerald, rose and amber.
 COLORS = {"finished": 0x059669, "failed": 0xE11D48, "stopped": 0xD97706, "interrupted": 0xD97706}
 STARTED = 0x1E3765  # U of T Blue
 
@@ -266,7 +266,7 @@ def _properties(dataset) -> str | None:
 
 
 def search_ended(entry: dict) -> None:
-    """Tells how a search of the simulator ended: its problems and how many contradict the proofs."""
+    """Tells how a search of the simulator ended: its problems and how many contradict the proof."""
     from . import simulation
 
     state = entry.get("state")
@@ -276,7 +276,7 @@ def search_ended(entry: dict) -> None:
     if state == "done":
         found = simulation.problems(entry)
         against = sum(p["proof"] == "contradicts it" for p in found)
-        text = f"{len(found)} problems on networks up to {entry.get('routers')} routers" + (f", {against} contradict{'s' * (against == 1)} the proofs" if against else "")
+        text = f"{len(found)} problems on networks up to {entry.get('routers')} routers" + (f", {against} contradict{'s' * (against == 1)} the proof" if against else "")
     else:
         text = entry.get("error") or "stopped by hand"
     embed = {"title": f"Simulator search {state}", "color": color, "description": text[:4000]}

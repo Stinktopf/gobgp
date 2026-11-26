@@ -1,0 +1,154 @@
+{% from "macros.html" import icon %}
+{# The profiles of the chosen pair, the compared variant against the reference: cores used, by part, the long runners and the call tree, loaded after the page. #}
+{% set p = perf %}{% set mine = p.mine %}
+{% set here = "/benchmark?result=" ~ result.name ~ "&topology=" ~ topology ~ "&scenario=" ~ scenario ~ "&reference=" ~ reference ~ "&compare=" ~ compare %}
+<div class="space-y-4">
+
+{% if busy %}{% set b = busy %}
+{# Is the router at its limit, and when: the cores it used over the run against the threads it may use. #}
+<section class="card overflow-hidden">
+  <div class="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-b border-slate-100 px-4 py-2 text-sm dark:border-white/5">
+    <span class="font-medium">Cores used</span><span class="muted text-xs font-mono" data-tip="The router with the most neighbors, profiled, in run 1">{{ b.router }}</span>
+    <span class="ml-auto flex flex-wrap items-center gap-x-4 text-xs">
+      {% for v in b.lines %}<span class="flex items-center gap-1.5 font-mono">{% if loop.last %}<span class="h-0.5 w-4 bg-uoft-600 dark:bg-uoft-300"></span>{% else %}<span class="h-0 w-4 border-t-2 border-dashed border-slate-500 dark:border-slate-400"></span>{% endif %}{{ v }}</span>{% endfor %}
+      {% if b.limit %}<span class="flex items-center gap-1.5"><span class="h-0 w-4 border-t border-dotted border-slate-500"></span>{{ b.limit }} threads</span>{% endif %}
+    </span>
+  </div>
+  <div class="grid grid-cols-[auto_1fr] gap-x-2 px-4 pt-3 pb-2 text-xs text-slate-500 dark:text-slate-400">
+    <div class="flex h-36 flex-col justify-between text-right tabular-nums" aria-hidden="true"><span>{{ "%.1f" | format(b.top) }}</span><span>cores</span><span>0</span></div>
+    <svg viewBox="0 0 600 144" preserveAspectRatio="none" class="h-36 w-full overflow-visible" role="img" aria-label="Cores used over the run">
+      {% set X = 600 / b.t_max %}{% set Y = 144 / b.top %}
+      {% for name, t in b.events.items() %}<line x1="{{ t * X }}" x2="{{ t * X }}" y1="0" y2="144" class="stroke-slate-200 dark:stroke-slate-700" stroke-width="1" vector-effect="non-scaling-stroke"/>{% endfor %}
+      {% if b.limit %}<line x1="0" x2="600" y1="{{ 144 - b.limit * Y }}" y2="{{ 144 - b.limit * Y }}" class="stroke-slate-500" stroke-dasharray="2 3" stroke-width="1" vector-effect="non-scaling-stroke"/>{% endif %}
+      {% for v, pts in b.lines.items() %}
+      <polyline fill="none" points="{% for t, c in pts %}{{ '%.1f' | format(t * X) }},{{ '%.1f' | format(144 - c * Y) }} {% endfor %}" class="{{ 'stroke-uoft-600 dark:stroke-uoft-300' if loop.last else 'stroke-slate-500 dark:stroke-slate-400' }}" {% if not loop.last %}stroke-dasharray="6 4"{% endif %} stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+      {% endfor %}
+    </svg>
+    <span></span>
+    {# The markers at their times, a label only where it does not run into the one before. #}
+    <div class="relative h-4" aria-hidden="true">
+      {# A phone has room for fewer: there a label needs more distance to the one before. #}
+      {% set ns = namespace(last=-1.0, phone=-1.0) %}
+      {% for name, t in b.events.items() %}{% set at = t / b.t_max %}
+      {% if at - ns.last > 0.12 %}<span class="absolute whitespace-nowrap {{ '-translate-x-1/2' if at > 0.05 else '' }} {{ 'max-sm:hidden' if at - ns.phone <= 0.3 else '' }}" style="left: {{ 100 * at }}%">{{ name }} {{ "%.0f" | format(t) }} s</span>{% set ns.last = at %}{% if at - ns.phone > 0.3 %}{% set ns.phone = at %}{% endif %}{% endif %}
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+{# Side by side as high as the parts: the long runners scroll within that height, out of the row's height. #}
+<div class="grid gap-4 lg:grid-cols-5">
+  {# Where the router spends its CPU: reference and compared variant side by side, each part with a bar. #}
+  {% set cols = [p.against, p.variant] | select | list if p.against else [p.variant] %}
+  {% set heads = cols %}
+  {% set parts_max = namespace(v=0.01) %}
+  {% for key in profile_parts %}{% for v in cols %}{% set m = ((groups.get(v) or {}).get("metrics") or {}).get("prof_" ~ key ~ "_s") %}{% if m and m.median > parts_max.v %}{% set parts_max.v = m.median %}{% endif %}{% endfor %}{% endfor %}
+  <section class="card overflow-hidden lg:col-span-2">
+    <div class="border-b border-slate-100 px-4 py-2 text-sm font-medium dark:border-white/5">By part <span class="muted text-xs font-normal">s per run, median</span></div>
+    <table class="w-full text-sm">
+      <thead><tr class="text-xs text-slate-500 dark:text-slate-400"><th class="px-4 py-1.5 text-left font-medium max-sm:px-2">Part</th>{% for v in cols %}<th class="px-4 py-1.5 text-right font-mono font-normal max-sm:px-2" data-tip="{{ v }}{{ ', the reference' if p.against and loop.first }}"><span class="max-sm:inline-block max-sm:max-w-20 max-sm:truncate max-sm:align-bottom">{{ heads[loop.index0] }}</span></th>{% endfor %}</tr></thead>
+      <tbody class="divide-y divide-slate-100 dark:divide-white/5">
+      {% for key, label in profile_parts.items() %}
+        <tr><td class="px-4 py-1.5 whitespace-nowrap max-sm:px-2 max-sm:py-1 max-sm:whitespace-normal">{{ label }}</td>
+        {% for v in cols %}{% set m = ((groups.get(v) or {}).get("metrics") or {}).get("prof_" ~ key ~ "_s") %}
+          <td class="px-4 py-1.5 text-right tabular-nums max-sm:px-2 max-sm:py-1">{% if m %}{{ "%.2f" | format(m.median) }}<span class="mt-0.5 ml-auto block h-1 rounded-full {{ 'bg-uoft-600/70 dark:bg-uoft-300/70' if loop.last else 'bg-slate-400/70' }}" style="width: {{ (100 * m.median / parts_max.v) | round(1) }}%"></span>{% else %}–{% endif %}</td>{% endfor %}</tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  {# The functions with the most CPU time of their own, as a bar, and the change of that time against the baseline. #}
+  <section class="card flex flex-col overflow-hidden lg:col-span-3">
+    <div class="border-b border-slate-100 px-4 py-2 text-sm font-medium dark:border-white/5">Long runners <span class="muted text-xs font-normal font-mono max-sm:block max-sm:truncate">{{ p.variant }}{% if p.against %} against {{ p.against }}, the reference{% endif %}</span></div>
+    {% if p.hotspots %}{% set top = (p.hotspots | map(attribute="flat") | max) or 1 %}
+    <div class="lg:relative lg:min-h-40 lg:flex-1"><div class="overflow-y-auto max-lg:max-h-80 lg:absolute lg:inset-0">
+    <table class="w-full text-sm">
+      <thead class="sticky top-0 bg-white dark:bg-slate-900">
+      <tr class="text-xs text-slate-500 dark:text-slate-400"><th class="px-4 py-1.5 text-left font-medium">Function</th><th class="px-3 py-1.5 text-right font-medium whitespace-nowrap" data-tip="Seconds per run in the function itself">Own</th>{% if p.against %}<th class="px-4 py-1.5 text-right font-medium" data-tip="Own seconds against {{ p.against }}">Change</th>{% endif %}</tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100 dark:divide-white/5">
+      {% for h in p.hotspots %}
+        <tr>
+          <td class="max-w-0 w-full px-4 py-1.5">
+            <span class="block truncate font-mono text-xs" data-tip="{{ h.name }}&#10;with what it calls {{ '%.2f' | format(h.cum) }} s per run">{{ h.short_name }}</span>
+            <span class="mt-1 block h-1 rounded-full bg-uoft-600/70 dark:bg-uoft-300/70" style="width: {{ (100 * h.flat / top) | round(1) }}%"></span>
+          </td>
+          <td class="px-3 py-1.5 text-right tabular-nums">{{ "%.2f" | format(h.flat) }}</td>
+          {% if p.against %}<td class="px-4 py-1.5 text-right tabular-nums {{ 'text-emerald-700 dark:text-emerald-300' if h.shown and h.change < 0 else 'text-rose-700 dark:text-rose-300' if h.shown else 'muted' }}"{% if not h.shown %} data-tip="Within what the A/A twin shows: timing"{% endif %}>{{ "%+.2f" | format(h.change) | replace("-", "−") }}</td>{% endif %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div></div>
+    {% else %}<p class="muted px-4 py-3 text-sm" data-tip="Only profiles that reached rest uncut count">No complete profiles.</p>{% endif %}
+  </section>
+</div>
+
+{% if flame %}{% set f = flame %}
+{# The hues of the main branches, none green or red: those tell a change. Two shades each, by depth, so that a call stands apart from its caller. #}
+{% set BRANCHES = [
+  ["bg-sky-100 text-sky-950 dark:bg-sky-400/20 dark:text-sky-50", "bg-sky-200 text-sky-950 dark:bg-sky-400/35 dark:text-sky-50"],
+  ["bg-violet-100 text-violet-950 dark:bg-violet-400/20 dark:text-violet-50", "bg-violet-200 text-violet-950 dark:bg-violet-400/35 dark:text-violet-50"],
+  ["bg-amber-100 text-amber-950 dark:bg-amber-400/20 dark:text-amber-50", "bg-amber-200 text-amber-950 dark:bg-amber-400/35 dark:text-amber-50"],
+  ["bg-cyan-100 text-cyan-950 dark:bg-cyan-400/20 dark:text-cyan-50", "bg-cyan-200 text-cyan-950 dark:bg-cyan-400/35 dark:text-cyan-50"],
+  ["bg-indigo-100 text-indigo-950 dark:bg-indigo-400/20 dark:text-indigo-50", "bg-indigo-200 text-indigo-950 dark:bg-indigo-400/35 dark:text-indigo-50"],
+] %}
+{# Where in the call tree the time goes and where a commit changed it. #}
+<section class="card overflow-hidden" id="tree">
+  <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-slate-100 px-4 py-2 text-sm dark:border-white/5">
+    <span class="font-medium">Call tree</span>
+    <span class="muted text-xs max-sm:hidden">Each box is a function, below it what it calls. Width is CPU time. Select a box to zoom.</span>
+  </div>
+  <div class="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 pt-3 text-xs">
+    <nav class="flex min-w-0 flex-wrap items-baseline gap-x-1 font-mono" aria-label="Zoomed into">
+      <a href="{{ here }}#tree" class="hit hover:underline">whole tree</a>
+      {% for fn in f.focus %}<span class="muted">›</span><a href="{{ here }}&focus={{ f.focus[:loop.index] | join(';') | urlencode }}#tree" class="hit max-w-48 truncate hover:underline" data-tip="{{ fn }}">{{ fn.rsplit('/', 1)[-1] }}</a>{% endfor %}
+      {% if f.focus %}<a href="{{ here }}{% if f.focus | length > 1 %}&focus={{ f.focus[:-1] | join(';') | urlencode }}{% endif %}#tree" class="hit ml-2 text-uoft-700 hover:underline dark:text-uoft-300">up one level</a>{% endif %}
+    </nav>
+    {% if not p.against %}<span class="ml-auto flex items-center gap-1 text-slate-500 dark:text-slate-400">{% for b in BRANCHES[:3] %}<span class="size-3 rounded-sm {{ b[1] }}"></span>{% endfor %}a color per branch</span>{% endif %}
+    {% if p.against %}<span class="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500 dark:text-slate-400">
+      <span class="flex items-center gap-1"><span class="size-3 rounded-sm bg-slate-100 dark:bg-white/10"></span>no change beyond A/A</span>
+      <span class="flex items-center gap-1"><span class="size-3 rounded-sm bg-emerald-100 dark:bg-emerald-400/20"></span><span class="size-3 rounded-sm bg-emerald-200 dark:bg-emerald-400/40"></span>faster</span>
+      <span class="flex items-center gap-1"><span class="size-3 rounded-sm bg-rose-100 dark:bg-rose-400/20"></span><span class="size-3 rounded-sm bg-rose-200 dark:bg-rose-400/40"></span>slower or new, darker from 20 %</span>
+      <span class="font-mono">vs {{ p.against }}</span>
+    </span>{% endif %}
+  </div>
+  <div class="overflow-x-auto px-4 py-3">
+    <div class="relative sm:min-w-[40rem]" style="height: {{ 26 * f.depth - 2 }}px">
+      {% for x in f.boxes %}{% set c = x.change %}
+      {% set tone_class = "bg-slate-200 text-slate-900 dark:bg-white/15 dark:text-white" if x.root
+         else "bg-rose-200 text-rose-950 dark:bg-rose-400/40 dark:text-rose-50" if x.new or (c is not none and c >= 0.2)
+         else "bg-rose-100 text-rose-950 dark:bg-rose-400/20 dark:text-rose-50" if c is not none and c > 0
+         else "bg-emerald-200 text-emerald-950 dark:bg-emerald-400/40 dark:text-emerald-50" if c is not none and c <= -0.2
+         else "bg-emerald-100 text-emerald-950 dark:bg-emerald-400/20 dark:text-emerald-50" if c is not none and c < 0
+         else "bg-slate-100 text-slate-700 dark:bg-white/10 dark:text-slate-300" if p.against
+         else BRANCHES[x.branch % BRANCHES | length][x.depth % 2] %}
+      {% set labelled = x.width > 0.06 %}
+      <a href="{{ here }}{% if x.path %}&focus={{ x.path | join(';') | urlencode }}{% endif %}#tree" {% if not labelled %}tabindex="-1"{% endif %}
+         class="absolute block overflow-hidden rounded-sm px-1.5 text-xs leading-6 text-ellipsis whitespace-nowrap ring-1 ring-white hover:brightness-95 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-uoft-500 dark:ring-slate-900 {{ tone_class }}"
+         style="left: {{ (100 * x.left) | round(3) }}%; width: {{ (100 * x.width) | round(3) }}%; top: {{ 26 * x.depth }}px; height: 24px"
+         data-tip="{{ x.name or 'whole tree' }}&#10;{{ '%.2f' | format(x.s) }} s per run{% if x.before is not none %}, {{ p.against }} {{ '%.2f' | format(x.before) }} s{% endif %}{% if x.new %}&#10;new{% elif c %}&#10;{{ '%+.0f' | format(100 * c) | replace('-', '−') }} %{% endif %}">{% if labelled %}<span class="{{ 'max-sm:hidden' if x.width < 0.15 }}"><span class="font-mono">{{ x.short }}</span> <span class="opacity-70 tabular-nums">{{ "%.1f" | format(x.s) }} s{% if x.new %} new{% elif c %} {{ "%+.0f" | format(100 * c) | replace("-", "−") }} %{% endif %}</span></span>{% endif %}</a>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+{# What the page needs not show at once: the guards of the rule, what the router allocated and the windows of its profiles. #}
+{% set mine_cells = cells | selectattr("variant", "equalto", compare) | selectattr("baseline", "equalto", reference) | list %}
+<details class="group card overflow-hidden">
+  <summary class="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm font-medium [&::-webkit-details-marker]:hidden">Guards, allocations and profile windows{{ icon("chevron-down", "ml-auto transition group-open:rotate-180") }}</summary>
+  <div class="grid gap-4 border-t border-slate-100 p-4 text-sm lg:grid-cols-3 dark:border-white/5">
+    <div><h3 class="label mb-2">Guards</h3>
+      {% for c in mine_cells %}{% for g, x in c.guards.items() %}<div class="flex justify-between gap-3"><span>{{ g }}</span><span class="{{ 'text-rose-700 dark:text-rose-300' if x and not x.holds else 'muted' }}" data-tip="{% if x %}at most {{ '%.3g' | format(x.high) }} worse, {{ '%.3g' | format(x.allowed) }} allowed{% else %}not measured{% endif %}">{{ "ok" if x and x.holds else "worse" if x else "–" }}</span></div>{% endfor %}{% else %}<p class="muted">No speed rule.</p>{% endfor %}
+    </div>
+    <div><h3 class="label mb-2">Allocated, MiB per run</h3>
+      {% for a in p.allocated[:8] %}<div class="flex justify-between gap-3"><span class="truncate font-mono text-xs" data-tip="{{ a.name }}">{{ a.short }}</span><span class="tabular-nums">{{ "%.1f" | format(a.mb) }}</span></div>{% else %}<p class="muted">None kept.</p>{% endfor %}
+    </div>
+    <div><h3 class="label mb-2">Profile windows of {{ p.variant }}</h3>
+      {% for w in mine.windows %}<div class="flex justify-between gap-3 tabular-nums"><span>#{{ w.run }} <span class="font-mono">{{ w.router }}</span></span><span>{{ "%.0f" | format(w.start or 0) }} to {{ "%.0f" | format(w.end or 0) }} s{% if not w.complete %} <span class="muted" data-tip="Cut before rest, without rest, or not kept">not counted</span>{% endif %}</span></div>{% endfor %}
+    </div>
+  </div>
+</details>
+</div>

@@ -642,7 +642,7 @@
     } else {
       const prefs = cy.edges().reduce((s, e) => s + custom(e.data("prefSource")) + custom(e.data("prefTarget")), 0);
       const stats = el("dl", "grid grid-cols-3 gap-2");
-      for (const [label, value] of [["Routers", cy.nodes().not(".as").length], ["Sessions", cy.edges().length], ["Preferences", prefs]]) {
+      for (const [label, value] of [["Routers", cy.nodes().not(".as").length], ["Links", cy.edges().length], ["Preferences", prefs]]) {
         const d = el("div");
         d.append(el("dt", "label", label), el("dd", "mt-0.5 text-lg font-medium tabular-nums", value));
         stats.append(d);

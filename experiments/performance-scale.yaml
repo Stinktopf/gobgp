@@ -1,0 +1,21 @@
+name: performance-scale
+description: Where a router spends its CPU in every mode, and what limits the busiest one, on the 128 largest networks of the Internet's core with their real prefixes. The three routers with the most neighbors keep CPU profiles from the first announcement until rest. The routers read no paths while they sample, so the lab's reading costs every mode alike little.
+cluster: {cpus: 128, memory_mb: 262144, memory_min_mb: 262144}
+runs: 6
+sampling: {interval: 1.0, stable_s: 5, profile_s: 300, profile_routers: 3, paths: false}
+bgp: {procs: 2}
+variants:
+  - {name: bgp, mode: bgp}
+  - {name: bgp-pn, mode: bgp, per_neighbor: true}
+  - {name: obgp-rp, mode: obgp-rp}
+  - {name: obgp-rp-pn, mode: obgp-rp, per_neighbor: true}
+  - {name: obgp-sp, mode: obgp-sp}
+  - {name: obgp-sp-pn, mode: obgp-sp, per_neighbor: true}
+  - {name: obgp-hp, mode: obgp-hp}
+  - {name: obgp-hp-pn, mode: obgp-hp, per_neighbor: true}
+  - {name: obgp-np, mode: obgp-np}
+  - {name: obgp-np-pn, mode: obgp-np, per_neighbor: true}
+  - {name: obgp-paper, mode: obgp-paper}
+topologies: [core-128]
+scenarios: [real-fill-20]
+primary: {metric: cpu_s_mean, baseline: bgp}

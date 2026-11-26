@@ -100,7 +100,7 @@ MODELS = {
     "waxman": Model("Waxman", "Routers at random places link more often when close.",
                     "meshes with many alternative paths.",
                     "Waxman, IEEE JSAC 1988", "Routing of multipoint connections", "https://doi.org/10.1109/49.12889",
-                    [Field("alpha", "Link density", 0.4, "From 0.01 to 1, higher gives more links. Larger networks get denser, so lower it as they grow", step=0.01, min=0.01, max=1),
+                    [Field("alpha", "Link density", 0.4, "Higher gives more links. Lower it for larger networks", step=0.01, min=0.01, max=1),
                      Field("beta", "Long links", 0.1, "Higher links far routers more often, lower keeps links short. Often 0.1 to 0.5", step=0.01, min=0.01),
                      RELATIONS]),
     "elmokashfi": Model("Elmokashfi", "Tier-1s, transit, content and stubs in regions, as on the Internet.",

@@ -20,13 +20,16 @@
   {% if metric in time_metrics %}
   {% for row in table %}{% for cell in row.cells if cell and cell.runs and (cell.metrics[metric] or cell.measurable or metric in settle_metrics) %}{% set ns.runs = ns.runs + cell.runs %}{% set ns.reached = ns.reached + ((cell.metrics[metric] or {}).n or 0) %}{% endfor %}{% endfor %}
   {% endif %}
+  {# No run of any variant reached every prefix, BGP included: the prefixes are not all reachable here, not a fault of one variant. #}
+  {% set nowhere = metric == "convergence_s" and ns.runs and not ns.reached %}
+  {% set slowest = ((integrity.slow | default([])) | map(attribute="resolution") | select | max) if metric in time_metrics and integrity is defined and integrity.slow else none %}
 
   {# The table: one metric of every scenario and variant. #}
   <section class="card overflow-hidden">
     <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-slate-100 px-4 py-1.5 dark:border-white/5">
       {# The metric and its unit, what it measures in the tooltip; how many runs and how exact in the bar on the right. #}
-      <span class="muted min-w-0 basis-full text-xs sm:basis-0 sm:flex-1">{% if metric == "checks" %}<span class="font-semibold" data-tip="Runs that passed every expect step">Checks</span>{% else %}<span class="font-semibold" data-tip="{{ label }} in {{ unit }}: {{ help }}{% if caveat %}&#10;{{ caveat }}{% endif %}">{{ label }}</span> in {{ unit }}{% if ns.runs and ns.reached < ns.runs %}. {{ ns.runs - ns.reached }} of {{ ns.runs }} runs did not {{ 'reach every prefix' if metric == 'convergence_s' else 'settle' }}{% endif %}{% endif %}</span>
-      <span class="muted text-xs whitespace-nowrap tabular-nums" data-tip="The median of the runs{% if metric in time_metrics %}, exact to two sampling intervals{% endif %}">{{ experiment.runs }} run{{ "s" if experiment.runs != 1 }}{% if metric in time_metrics %}, ±{{ (2 * experiment.sampling.interval) | round(3) }} s{% endif %}</span>
+      <span class="muted min-w-0 basis-full text-xs sm:basis-0 sm:flex-1">{% if metric == "checks" %}<span class="font-semibold" data-tip="Runs that passed every expect step">Checks</span>{% else %}<span class="font-semibold" data-tip="{{ label }} in {{ unit }}: {{ help }}{% if caveat %}&#10;{{ caveat }}{% endif %}">{{ label }}</span> in {{ unit }}{% if nowhere %}. No run reached every prefix, BGP included: see <a href="{{ base }}&metric=settle_s" class="underline">Settle</a>{% elif ns.runs and ns.reached < ns.runs %}. {{ ns.runs - ns.reached }} of {{ ns.runs }} runs did not {{ 'reach every prefix' if metric == 'convergence_s' else 'settle' }}{% endif %}{% endif %}</span>
+      <span class="muted text-xs whitespace-nowrap tabular-nums" data-tip="The median of the runs{% if metric in time_metrics %}, exact to two sampling intervals{% endif %}">{{ experiment.runs }} run{{ "s" if experiment.runs != 1 }}{% if metric in time_metrics %}, ±{{ (2 * experiment.sampling.interval) | round(3) }} s{% if slowest %}, ±{{ "%.2g" | format(slowest) }} s sampled slowly{% endif %}{% endif %}</span>
       {% if metric != "checks" %}
       <label class="muted flex items-center gap-1.5 text-xs whitespace-nowrap" data-tip="Every other value as its difference to this variant">Relative to
         <select class="btn px-2 py-1 font-mono text-xs" aria-label="Relative to"
@@ -49,7 +52,7 @@
         <thead class="border-b border-slate-100 dark:border-white/5">
           <tr class="text-left [&>th]:px-4 [&>th]:py-2.5 [&>th]:font-medium [&>th]:text-slate-500 dark:[&>th]:text-slate-400">
             <th>Scenario</th>
-            {% for v in experiment.variants %}<th class="text-right font-mono" data-variant="{{ v.name }}">{{ v.name }}{% if v.name == baseline %}<span class="block font-sans text-xs font-normal text-slate-400">baseline</span>{% endif %}</th>{% endfor %}
+            {% for v in experiment.variants %}<th class="text-right font-mono whitespace-nowrap" data-variant="{{ v.name }}">{{ v.name }}{% if v.name == baseline %}<span class="block font-sans text-xs font-normal text-slate-400">baseline</span>{% endif %}</th>{% endfor %}
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-100 dark:divide-white/5">
@@ -121,6 +124,8 @@
               {# Settling needs no expected prefixes: never reached means routes kept changing. #}
               {% set osc = (cell.metrics.oscillates or {}).median %}
               <span class="{{ worst_badge }}" data-tip="{{ 'Routes kept changing to the end of every run' if osc else 'No run settled before its next step' if metric == 'settle_s' else 'No run came to rest after its last step' }}">never</span>
+              {% elif metric == "convergence_s" and cell.measurable and nowhere %}
+              <span class="px-1.5 text-slate-400 dark:text-slate-500" data-tip="No run of any variant reached every prefix">–</span>
               {% elif metric == "convergence_s" and cell.measurable %}
               <span class="{{ worst_badge }}" data-tip="No run reached every prefix">never</span>
               {% else %}<span class="px-1.5 text-slate-300 dark:text-slate-600" data-tip="Not measured in this scenario or by these runs">–</span>{% endif %}

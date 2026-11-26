@@ -10,7 +10,7 @@ import (
 // a path.
 type Finding struct {
 	Mode    Mode   `json:"mode"`
-	Kind    string `json:"kind"` // no-convergence, unreachable, loop, black-hole, leaked, forward-valley, transient-loop, transient-blocked, transient-hole
+	Kind    string `json:"kind"` // no-convergence, unreachable, loop, black-hole, leaked, forward-valley, transient-loop, transient-blocked, transient-hole, repeat-update
 	Routers []int  `json:"routers"`
 	Detail  string `json:"detail"`
 }
@@ -19,6 +19,14 @@ type Finding struct {
 // delivered message, BGP included. No proof rules them out: the proofs claim
 // loop freedom at rest only. Off by default, as BGP loops on the way as a rule.
 var Transient bool
+
+// Updates makes Check report a session to another AS that carried more than
+// one update or withdrawal in a run whose only change is the origin's
+// announcement: no event but expect, and every router in the mode. A table
+// admits a better path without changing its worst, so a hypothesis is that
+// every export of OBGP then changes once at most. Off by default, as the lab
+// does not know the kind.
+var Updates bool
 
 // MaxSteps bounds a run: a network still busy then counts as not converging.
 const MaxSteps = 20000
@@ -49,6 +57,17 @@ func Check(inst *Instance, modes ...Mode) (map[Mode]Result, []Finding) {
 		}
 		if Transient && r.Holes > 0 {
 			findings = append(findings, Finding{m, "transient-hole", nil, fmt.Sprintf("after %d of %d messages some router had lost its route for a while", r.Holes, r.Steps)})
+		}
+		if Updates && !m.plain() && onlyAnnounced(inst, m) {
+			var repeated []int
+			for _, u := range r.Updates {
+				if u[2] > 1 && !slices.Contains(repeated, u[0]) {
+					repeated = append(repeated, u[0])
+				}
+			}
+			if len(repeated) > 0 {
+				findings = append(findings, Finding{m, "repeat-update", repeated, fmt.Sprintf("these routers sent a neighbor more than one update after the origin's announcement alone, in %d messages", r.Steps)})
+			}
 		}
 		if !r.Converged {
 			if ref.Converged || m == BGP {
@@ -82,6 +101,15 @@ func Check(inst *Instance, modes ...Mode) (map[Mode]Result, []Finding) {
 		}
 	}
 	return results, findings
+}
+
+// onlyAnnounced: the run's only change is the origin's announcement, no
+// event but expect, and no router of another mode.
+func onlyAnnounced(inst *Instance, m Mode) bool {
+	if _, mixed := inst.Mixed[m]; mixed {
+		return false
+	}
+	return !slices.ContainsFunc(inst.Events, func(e Event) bool { return e.Kind != "expect" })
 }
 
 // busy tells why a run did not come to rest: an order without end, or only

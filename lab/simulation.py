@@ -324,11 +324,16 @@ def searches() -> list[dict]:
 
 
 KINDS = ("unreachable", "black-hole", "loop", "no-convergence", "leaked", "forward-valley", "inconsistent-export",
-         "transient-loop", "transient-blocked", "transient-hole")
+         "transient-loop", "transient-blocked", "transient-hole", "repeat-update")
 
 
-CLAIMED = ("no-convergence", "loop")  # what Theorems 1 and 2 rule out inside their model
-COVERED = OBGP_ONE  # the modes the proofs cover: OBGP with one table
+CLAIMED = ("no-convergence", "loop")  # what the proof rules out inside its model: no rest, loops at rest
+COVERED = OBGP_ONE  # the modes the proof covers: OBGP with one table
+# The families inside the proof's model, as DESIGN.md (What the router supports) marks them "holds", the same as
+# Families in internal/pkg/obgpsim/search.go. Decided by family, so that searches from before tell the same.
+IN_MODEL = frozenset({"withdraw", "link-down", "gao-rexford", "partial-transit", "siblings", "communities", "tagging",
+                      "poison", "export-filter", "as-path-filter", "import-filter", "local-pref", "route-server",
+                      "route-leak"})
 _order = lambda seq, x: seq.index(x) if x in seq else len(seq)
 
 
@@ -361,9 +366,10 @@ def cases(entry: dict) -> list[dict]:
         kind, net = e["finding"]["kind"], {k: v for k, v in e["instance"].items() if k != "family"}
         c = out.setdefault((kind, json.dumps(net, sort_keys=True)), {
             "id": e.get("id", i), "ids": [], "kind": kind, "instance": e["instance"], "families": [],
-            "in_model": e.get("in_model", False), "per_mode": {}})
+            "in_model": False, "per_mode": {}})
         c["ids"].append(e.get("id", i))
         family = e["instance"].get("family")
+        c["in_model"] = c["in_model"] or (family in IN_MODEL if family else e.get("in_model", False))
         if family not in c["families"]:
             c["families"].append(family)
         shown = [f for f in e.get("findings") or [] if f["kind"] == kind] or [e["finding"]]
@@ -379,7 +385,7 @@ def cases(entry: dict) -> list[dict]:
     for c in out.values():
         c["modes"] = sorted(c["per_mode"], key=lambda m: _order(MODES, m))
         # Each mode's causes once, a cause two modes share named once.
-        c["cause"] = " and ".join(sorted({x for m in c["modes"] for x in c["per_mode"][m]["cause"].split(" and ")} - {""}))
+        c["cause"] = ", ".join(sorted({x for m in c["modes"] for x in c["per_mode"][m]["cause"].split(", ")} - {""}))
         c["proof"] = proof(c["kind"], c["in_model"], c["modes"])
         # How long a case plays: the most messages of its modes, so that long runners show in the list.
         steps = [p["steps"] for p in c["per_mode"].values() if p.get("steps") is not None]
@@ -425,20 +431,20 @@ def cause(e: dict, mode: str) -> str:
             if frozenset((x, h)) in down:
                 found.add("the link is down")
             elif out.get("deny_export") or denied.get(("deny-export", x, h)) or (out.get("deny_via") and offer and out["deny_via"] in offer):
-                found.add("an export filter drops the offer")
+                found.add("an export filter drops the path")
             elif out.get("deny_import") or denied.get(("deny-import", x, h)):
-                found.add("an import filter drops the offer")
+                found.add("an import filter drops the path")
             elif offer and (asn(h) in offer or confed(h) in offer):
-                found.add("the offer runs through its own AS")
+                found.add("the path runs through its own AS")
             elif f"0:{asn(h)}" in tagged:
-                found.add("a community withholds the offer")
+                found.add("a community withholds the path")
             elif frozenset((x, h)) in related or out.get("partial_transit") or x in (inst.get("leakers") or []):
-                found.add("a relation stops the offer")
+                found.add("a relation stops the path")
             elif offer is None:
                 found.add("no neighbor offers a route")
             else:
-                found.add("it does not admit the offer")
-    return " and ".join(sorted(found))
+                found.add("it does not admit the path")
+    return ", ".join(sorted(found))
 
 
 def proof(kind: str, in_model: bool, modes: list[str]) -> str:
@@ -498,7 +504,7 @@ def seen(path: str) -> str:
     if not counts:
         return ""
     more = f" and {len(counts) - 3} modes more" if len(counts) > 3 else ""
-    return f"The simulator saw it in {', '.join(counts[:3])}{more} orders of messages. The lab cannot replay their order."
+    return f"The simulator saw it in {', '.join(counts[:3])}{more} orders of messages."
 
 
 def modes_label(modes: list[str]) -> str:
@@ -621,7 +627,7 @@ def to_lab(search_id: str, case_id: int) -> str:
 # Per kind of deviation, the properties of a lab run that show it; a failed check of the case counts as well.
 SHOWN_BY = {"unreachable": ("reach",), "black-hole": ("holes", "holes-alone"), "loop": ("loops",),
             "no-convergence": ("rest-end", "rest-step", "rest-final"), "leaked": ("policy", "policy-alone"), "forward-valley": (), "inconsistent-export": (),
-            "transient-loop": ("loops-way",), "transient-blocked": ("blocked",), "transient-hole": ("holes-way",)}
+            "transient-loop": ("loops-way",), "transient-blocked": ("blocked",), "transient-hole": ("holes-way",), "repeat-update": ()}
 
 
 def played(search_id: str, case_id: int, kind: str) -> list[dict]:

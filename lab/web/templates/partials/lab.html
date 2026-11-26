@@ -41,7 +41,7 @@
     {% for label, value, unit, tip in [
          ("Destinations", r.destinations | compact, "", "Prefixes a router reaches, on average" ~ (("&#10;Highest in this run: " ~ (r.peak | compact)) if r.peak is not none else "")),
          ("Paths", r.paths | compact if r.paths is not none else "–", "", "Paths a router admits, on average"),
-         ("Updates", ("%.1f" | format(r.updates_s)) if r.updates_s is not none and r.updates_s < 10 else (r.updates_s | compact if r.updates_s is not none else "–"), "/s", "Updates a router receives per second, on average over the last 10 s")] %}
+         ("Updates", ("%.1f" | format(r.updates_s)) if r.updates_s is not none and r.updates_s < 10 else (r.updates_s | compact if r.updates_s is not none else "–"), "/s", "Per router, mean over the last 10 s")] %}
     <div class="min-w-0" data-tip="{{ tip | safe }}">
       <dt class="label">{{ label }}</dt>
       <dd class="mt-1 flex items-baseline gap-1"><span class="text-xl leading-none font-semibold tracking-tight whitespace-nowrap tabular-nums">{{ value }}</span>{% if unit and value != "–" %}<span class="muted text-sm">{{ unit }}</span>{% endif %}</dd>
@@ -80,8 +80,8 @@
 {% macro since(ago) -%}
 <div class="muted mt-1.5 flex justify-between text-xs tabular-nums"><span>{{ ago }} ago</span><span>now</span></div>
 {%- endmacro %}
-{% macro key(colour, label, value) -%}
-<span class="flex items-center gap-1.5 whitespace-nowrap"><span class="h-0.5 w-3 rounded {{ colour }}"></span>{{ label }} <span class="tabular-nums text-slate-900 dark:text-slate-100">{{ value }}</span></span>
+{% macro key(color, label, value) -%}
+<span class="flex items-center gap-1.5 whitespace-nowrap"><span class="h-0.5 w-3 rounded {{ color }}"></span>{{ label }} <span class="tabular-nums text-slate-900 dark:text-slate-100">{{ value }}</span></span>
 {%- endmacro %}
 {# A share in percent, with a decimal below 10, so that a lab on a large host does not read as 0. #}
 {% macro pct(x) -%}{{ ("%.1f" | format(100 * x)) if 100 * x < 9.95 else (100 * x) | round | int }}{%- endmacro %}

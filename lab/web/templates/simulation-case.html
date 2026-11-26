@@ -19,6 +19,7 @@
   "transient-loop": "Packets circle on the way to rest",
   "transient-blocked": "Routers wait without a route",
   "transient-hole": "Routers lose their route for a while",
+  "repeat-update": hit ~ (" sends" if rs | length == 1 else " send") ~ " a neighbor more than one update",
 } %}
 {% block title %}{{ title.get(f.kind, f.kind) | capitalize }} – Simulation – OBGP Lab{% endblock %}
 {% block head %}<script src="{{ static('sim-map.js') }}" defer></script><script src="{{ static('simulation.js') }}" defer></script>{% endblock %}
@@ -82,7 +83,7 @@
         <dt class="muted">Shows the problem in</dt><dd>{{ label }}</dd>
         {# Counted per family, mode and kind over every network of the family, this network one of them, and over the orders of messages tried on it. #}
         {% if pm.of %}<dt class="muted">How often</dt><dd {% if shown | length > 1 %}data-tip="{% for m in shown %}{{ m }}: {{ per_mode[m].count }} of {{ per_mode[m].of }} networks{% if per_mode[m].orders %}, {{ per_mode[m].shown }} of {{ per_mode[m].orders }} orders{% endif %}{% if not loop.last %}&#10;{% endif %}{% endfor %}"{% endif %}>in {{ "{:,}".format(pm.count) }} of {{ "{:,}".format(pm.of) }} {{ example.instance.family }} networks, {% set pct = 100 * pm.count / pm.of %}{{ "under 0.1" if pct < 0.1 else "{:.1f}".format(pct) }} %{% if pm.orders %}, and in {{ pm.shown }} of {{ pm.orders }} orders of messages{% endif %}</dd>{% endif %}
-        {% if lab %}{% set mine = lab[0].modes | selectattr("mode", "equalto", named) | first %}{% if mine and mine.runs %}<dt class="muted">Lab</dt><dd><a href="#lab" class="hover:underline">in {{ mine.seen }} of {{ mine.runs }} runs</a></dd>{% endif %}{% endif %}
+        {% if lab %}{% set mine = lab[0].modes | selectattr("mode", "equalto", named) | first %}{% if mine and mine.runs %}<dt class="muted">Lab</dt><dd><a href="#lab" class="hit hover:underline">in {{ mine.seen }} of {{ mine.runs }} runs</a></dd>{% endif %}{% endif %}
       </dl>
     </div>
   </div>
@@ -92,12 +93,12 @@
 <div id="lab" class="card mt-4 overflow-x-auto">
   <div class="flex flex-wrap items-baseline gap-x-3 px-4 pt-3 text-sm">
     <p class="label">In the lab</p>
-    <a href="/results/{{ lab[0].name }}" class="font-medium hover:underline">{{ lab[0].name }}</a>
+    <a href="/results/{{ lab[0].name }}" class="hit font-medium hover:underline">{{ lab[0].name }}</a>
     {% if lab[0].state != "finished" %}<span class="muted">{{ lab[0].state }}</span>{% endif %}
-    {% for r in lab[1:] %}<a href="/results/{{ r.name }}" class="muted hover:underline">{{ r.name }}</a>{% endfor %}
+    {% for r in lab[1:] %}<a href="/results/{{ r.name }}" class="hit muted hover:underline">{{ r.name }}</a>{% endfor %}
   </div>
   <table class="list">
-    <thead><tr><th>Mode</th><th data-tip="Whether the simulator saw the problem in this mode">Simulator</th><th class="num" data-tip="Runs done without an error">Runs</th><th class="num" data-tip="Runs that failed the case's check or showed the problem's kind at their end or on the way">With the problem</th></tr></thead>
+    <thead><tr><th>Mode</th><th data-tip="Whether the simulator saw the problem in this mode">Simulator</th><th class="num" data-tip="Runs done without an error">Runs</th><th class="num" data-tip="Runs that showed the problem">With the problem</th></tr></thead>
     <tbody>
     {% for m in lab[0].modes if m.runs %}
       <tr><td class="font-mono">{{ m.mode }}</td>
@@ -109,7 +110,7 @@
     {% endfor %}
     </tbody>
   </table>
-  <p class="muted px-4 pb-3 text-xs">The lab cannot replay the simulator's order of messages: a problem of few orders may not show in its runs.</p>
+  <p class="muted px-4 pb-3 text-xs">The lab cannot replay the simulator's orders, so a rare problem may not show.</p>
 </div>
 {% endif %}
 <script type="application/json" id="pure-modes">{{ pure_modes | tojson }}</script>

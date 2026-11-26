@@ -18,18 +18,38 @@ from .. import config
 KINDS = ("experiments", "scenarios", "topologies")
 OTHER = "Other"
 ORDER = {
-    "experiments": ["Paper", "Behaviour", "Semantics", "Internet", "Lab", "Simulator"],
-    "scenarios": ["Paper", "Behaviour", "Semantics", "Internet", "Lab", "Simulator", "Unused"],
+    "experiments": ["Paper", "Behaviour", "Semantics", "Internet", "Benchmark", "Lab", "Simulator"],
+    "scenarios": ["Paper", "Behaviour", "Semantics", "Internet", "Benchmark", "Lab", "Simulator", "Unused"],
     "topologies": ["Hand-made", "SNDlib", "CAIDA", "Simulator", "Generated"],
 }
 PREFIX = {"ifip": "Paper", "behaviour": "Behaviour", "semantics": "Semantics", "internet": "Internet", "lab": "Lab",
-          "sim": "Simulator"}  # sim-: a case of the simulator played in the lab
+          "sim": "Simulator", "performance": "Benchmark", "benchmark": "Benchmark"}  # sim-: a case of the simulator played in the lab
 SOURCE = {"sndlib": "SNDlib", "caida": "CAIDA", "obgp-sim": "Simulator", "generated": "Generated"}
 NAME = re.compile(r"[^\s].{0,38}[^\s]|[^\s]")
 
 
 def of_experiment(name: str) -> str:
+    """By its name, a benchmark by what it is, whatever its name."""
+    if benchmark(name):
+        return "Benchmark"
     return PREFIX.get(name.split("-")[0], OTHER)
+
+
+_BENCHMARKS: dict = {}  # file -> (modified, whether it is a benchmark)
+
+
+def benchmark(name: str) -> bool:
+    """Whether the experiment of a name is a benchmark, read from its file once per change."""
+    try:
+        file = config.path(name)
+        stamp = file.stat().st_mtime_ns
+    except (OSError, ValueError):
+        return False
+    if (kept := _BENCHMARKS.get(file)) and kept[0] == stamp:
+        return kept[1]
+    found = any(line.startswith("benchmark:") for line in file.read_text().splitlines())
+    _BENCHMARKS[file] = (stamp, found)
+    return found
 
 
 def of_topology(source: str | None) -> str:

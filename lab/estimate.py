@@ -169,5 +169,5 @@ def experiment_s(experiment, past: dict | None = None, skip=()) -> float:
     total = STARTUP_S
     for t, s in experiment.combinations():
         for v in experiment.variants if s in planned and t not in skip else []:
-            total += experiment.runs * guess(RunKey(t, v.name, s, 1), {}, past, planned, size)
+            total += (1 if v.records else experiment.runs) * guess(RunKey(t, v.name, s, 1), {}, past, planned, size)
     return total

@@ -97,6 +97,7 @@ func newDynamicPeer(g *oc.Global, neighborAddress string, pg *oc.PeerGroup, loc 
 
 type peer struct {
 	tableId           string
+	operaSlot         int // its entry in the operaUpdate being handled, see slot
 	fsm               *fsm
 	adjRibIn          *table.AdjRib
 	policy            *table.RoutingPolicy

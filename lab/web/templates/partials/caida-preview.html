@@ -13,7 +13,7 @@
   {% for value, label, tip in [("{:,}".format(p.routers), "routers", "Every AS a router, in a pod of its own"),
                                ("{:,}".format(p.sessions), "sessions", "Relations between the ASes in the part"),
                                ("%.1f" | format(p.per_router), "sessions per router", "How densely the part is meshed"),
-                               (share ~ " %", "multihomed, Internet " ~ ((100 * p.internet) | round | int) ~ " %", "ASes with more than one provider in the part, so with alternative paths, against all of the Internet"),
+                               (share ~ " %", "multihomed, Internet " ~ ((100 * p.internet) | round | int) ~ " %", "ASes with more than one provider, in the part and in the whole Internet"),
                                ("%.1f GiB" | format(p.memory_mb / 1024), "of the cluster", "What the routers reserve, Kubernetes included")] %}
   <span class="rounded-md bg-slate-100 px-2 py-1 dark:bg-white/5" data-tip="{{ tip }}"><span class="font-medium tabular-nums">{{ value }}</span> <span class="muted">{{ label }}</span></span>
   {% endfor %}

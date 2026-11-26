@@ -244,7 +244,7 @@ def preflight(settings: dict, target: cluster.Cluster) -> None:
         ui.warning(f"Kernel inotify limits are low ({low}). Larger topologies may fail with too many open files. "
                    "An administrator can raise fs.inotify.max_user_instances to 8192 and max_user_watches to 1048576.")
     if low := host.low_neigh():
-        ui.warning(f"The kernel's neighbour table holds {low}. Topologies with thousands of BGP sessions, such as core-64, "
+        ui.warning(f"The kernel's neighbor table holds {low}. Topologies with thousands of BGP sessions, such as core-64, "
                    "cannot run. Setup with sudo raises it, see docs/setup.md.")
     if host.gpu_busy(host.gpus()):
         from .web.cluster_control import gpu_quiet_minutes

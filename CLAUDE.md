@@ -10,6 +10,7 @@ GoBGP fork with OBGP (oscillation-free BGP) and a lab that measures it.
   It also holds what the router supports, where the modes differ and the limitations in detail.
 - `docs/router.md` settings, modes, limitations, `docs/setup.md` operation and host sizes, `docs/evaluation.md` questions, runs, metrics, problems, statistics, threats, `docs/agents.md` agents and their limits, `docs/simulator.md`. The README stays short, each fact in one file only.
 - `pkg/server/mrai.go`: the MRAI, which GoBGP read but never applied, set per experiment with `bgp.mrai`.
+- `cmd/obgp-replay/`: the feeder of a feed, which sends a router again what one neighbor sent it in a recorded run.
 - `internal/pkg/obgpsim/`, `cmd/obgp-sim/`: simulator of one prefix with the real decision code, BGP vs OBGP, counterexample search. Not in GitHub Actions.
 - `lab/`: the lab in Python, `uv run lab …`.
   - `cli.py` commands, `runner.py` runs, `cluster.py` minikube, Helm and what fits the host, `host.py` host load
@@ -21,8 +22,10 @@ GoBGP fork with OBGP (oscillation-free BGP) and a lab that measures it.
   - `scenario.py` steps, `topology.py`, `modes.py`, `forwarding.py` forwarding and valley-free checks as the simulator's, `simulate.py` lab and simulator in each other's terms,
     `simulation.py` searches of the Simulation area in the lab's queue, their problems, and cases played in the lab (`sim-<search>-<case>`, git-ignored)
   - `config.py` experiments and settings, `analysis.py` metrics (bump `VERSION` when they change), `results.py`, `estimate.py`, `calibration.py`
+  - `profile.py` CPU profiles of a run, `web/routes/performance.py` the Benchmark area
   - `problems.py` which runs failed and why, the properties every run is checked for, judged against the simulator's predictions a result keeps (docs/evaluation.md, Problems), `web/agent.py` what agents read and do, `web/tokens.py`, `web/approvals.py` changes that wait for a person, `web/mcp_server.py` MCP, `web/routes/api.py` API
-  - `legacy.py`: imports the paper's runs into `results/public/ifip-networking-2026`, run once
+  - `legacy.py`: imports the paper's runs into `results/public/ifip-networking-2026`, run once, the only result in the state legacy
+  - `archive.py` archived results: frozen with a manifest, packed for Zenodo, fetched back from the index `results/archived.json`, `zenodo.py` its API
   - `caida.py`, `prefixes.py`, `mrt.py`, `rib.py`, `sndlib.py`: Internet data
   - `generate.py`: generated topologies (Erdős–Rényi, Watts–Strogatz, Barabási–Albert, Waxman, Elmokashfi)
   - `marks.py` stars and notes on results, searches, cases and pages, `web/context.py` what every page and the dock get
@@ -55,7 +58,7 @@ Paths below are relative to the repository root. The README starts inside `scrip
 - UI cluster controls leave the web server online. Idle stops allow automatic wake on queued work. Explicit Stop disables wake until Start. Default idle timeout is 30 minutes, saved timeouts take precedence.
 - Stop and teardown keep the crontab watchdog off until start.
 - Script, UI and MCP updates restart only the web server and preserve cluster state. Local changes block updates. After a rewritten history a branch switch is needed, MCP updates switch by themselves.
-- Setup, start and update keep results and configuration. Public results and settings always remain.
+- Setup, start and update keep results and configuration. Legacy and archived results and settings always remain.
 - The lab is a guest on a shared host: it never stops, restarts or prunes Docker and touches only its own container,
   profile and the images inside minikube. Recovery only starts its own cluster.
 - Uninstall uses `~/obgp-lab/installed.txt` to undo recorded changes. Never remove unowned or changed tools, unrelated containers, shared caches or packages that APT needs for other software. Keep results unless `--purge` is explicit. Old installations have incomplete host provenance.

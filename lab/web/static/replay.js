@@ -7,10 +7,10 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
 // In the look of the Simulation's map at small size: routers are small cards
 // that fill with blue with the updates they receive per second, sized by
 // their admitted, suppressed or received paths, with a solid border in their
-// colour while they hold every expected prefix and a pale dashed one before.
+// color while they hold every expected prefix and a pale dashed one before.
 // Routers that run OBGP in a hybrid have a double border. Among few routers
 // a link is two belts, one per direction, with running dashes in the
-// sender's colour as fast as its updates; among many one line with blue
+// sender's color as fast as its updates, among many one line with blue
 // dashes. Down links are dashed and pale with a rose cross, degraded ones
 // dotted.
 (() => {
@@ -45,7 +45,7 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
 
   const makeClock = () => ReplayClock.make(runs, root.querySelector("input[name=clock]:checked")?.value === "steps");
 
-  // Colours of the tokens, read once per colour scheme.
+  // Colors of the tokens, read once per color scheme.
   function palette() {
     // A quiet router is a card of the map, white or dark, and the more updates it gets, the bluer.
     heat = Graph.ramp("--graph-bg", "--activity-high");
@@ -98,9 +98,9 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
   function build(name, data) {
     const pane = q(`[data-pane="${name}"]`);
     graphs[name]?.destroy();
-    // A small topology fills its pane, its routers as large as ever. One legend, under the first pane.
+    // A small topology fills its pane, its routers as large as ever. One legend for all panes, under the timeline.
     graphs[name] = Graph.view(q("[data-graph]", pane), data.topology, { node: 11, label: 10, padding: 36, maxZoom: 4,
-      keyed: pane === q("[data-pane]"), styles: [
+      keyed: false, styles: [
       { selector: "node", style: { "underlay-shape": "round-rectangle", "underlay-color": colors["--activity-halo"], "text-background-opacity": 0.85 } },
       // A link cut: a rose cross at its middle, as on the Simulation's map.
       { selector: "edge", style: { "font-weight": 700, "font-family": "ui-sans-serif, system-ui, sans-serif",
@@ -112,6 +112,9 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
     // Among few routers each link is two belts, one per direction, as on the Simulation's map, when the
     // run has the updates per direction. Else one line per link, both directions together.
     const cy = graphs[name];
+    // Every pane shows the same topology: the legend of the last one built stands for all.
+    const key = Graph.legend(cy, { inline: true });
+    q("[data-legend]")?.replaceChildren(...(key.children.length ? [key] : []));
     const prefers = (e, at) => Graph.customPref(e.data(e.source().id() === at ? "prefSource" : "prefTarget"));
     cy.edges().forEach((e) => e.scratch("prefEnds", [prefers(e, e.source().id()), prefers(e, e.target().id())]));
     if (Graph.belts(cy) && data.directed) {
@@ -164,7 +167,7 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
 
   const tidied = {};  // seconds of play since the labels made room, per variant
   // Keeping the frame rate, as games do: an element is styled only when its look changed, and once frames take
-  // longer than PACE_S on average, the belts stop moving for this run. They keep their colour, width and dashes.
+  // longer than PACE_S on average, the belts stop moving for this run. They keep their color, width and dashes.
   const PACE_S = 1 / 25;
   const pace = { frame: 1 / 60, still: false };
   function set(element, look) {
@@ -195,7 +198,7 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
           const v = level(churn, scale.churn);
           const off = routers.has(n.id());
           const full = i >= 0 && expected != null && f.destinations[i] === expected;
-          // As on the map: a solid border in its colour once it holds its routes, dashed and pale before.
+          // As on the map: a solid border in its color once it holds its routes, dashed and pale before.
           const lacks = i < 0 || (expected != null ? f.destinations[i] < expected : !f.destinations[i]);
           total += churn; watched++; complete += full;
           const size = (8 + 18 * Math.sqrt(paths / scale.size)) / zoom;
@@ -219,7 +222,7 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
           } else {
             const rate = i < 0 ? 0 : lane ? run.directed[e.id()]?.[i] ?? 0 : run.links[e.id()]?.[i] ?? 0;
             const v = state ? 0 : Math.min(1, level(rate, scale.link));
-            // A belt runs in its sender's colour, among many routers in blue, as fast as its updates, as on the map.
+            // A belt runs in its sender's color, among many routers in blue, as fast as its updates, as on the map.
             const c = lane ? Graph.hue(from) || live : live;
             const offset = pace.still ? e.scratch("offset") || 0 : ((e.scratch("offset") || 0) - dt * 60 * v) % 1100;
             e.scratch("offset", offset);
@@ -270,7 +273,7 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
   // An event in words, e.g. "Link toronto–fulda cut, silently".
   const and = (names) => (names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
   const links = (e) => (e.links || []).map((l) => l.join("–"));
-  const outcome = (stable) => (stable ? "stable" : "not stable within the timeout");
+  const outcome = (stable) => (stable ? "at rest" : "not at rest in time");
   // The parameters of an action, as label and value, shown under it.
   function settingsOf(e) {
     const out = [];
@@ -357,7 +360,7 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
     c.scale(ratio, ratio);
     const w = canvas.clientWidth, h = canvas.clientHeight - 1;
     const x = (t) => (t / end) * w;
-    // Phases, from each event to the next, in turn tinted in two colours;
+    // Phases, from each event to the next, in turn tinted in two colors;
     // events closer than a few pixels are one edge, e.g. the end of a step
     // and the action right after it. Times before 0 or after the end are
     // clamped to it, e.g. an action at -0.0 s by its own clock.
@@ -417,7 +420,7 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
       c.fillText("Updates not recorded", w / 2, h / 2);
       c.textAlign = "start";
     }
-    // The lane of one variant, in its colour at the left.
+    // The lane of one variant, in its color at the left.
     if (lane.own) {
       c.fillStyle = color(lane.own);
       c.fillRect(0, 0, 3, h + 1);
@@ -498,7 +501,7 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
       dot.style.background = color(name);
       line.append(dot, UI.el("span", "font-mono", name));
     }
-    line.append(UI.el("span", stable ? "text-emerald-300" : "text-rose-300", stable ? "stable" : "not stable within the timeout"));
+    line.append(UI.el("span", stable ? "text-emerald-300" : "text-rose-300", stable ? "at rest" : "not at rest in time"));
     return line;
   }
 
@@ -565,7 +568,7 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
     show();
   }
 
-  // Draws the loaded run, e.g. again for another colour scheme.
+  // Draws the loaded run, e.g. again for another color scheme.
   function show() {
     palette();
     runs = {};
@@ -575,7 +578,7 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
       const data = loaded[name];
       if (!data || pane.hidden) { graphs[name]?.destroy(); delete graphs[name]; continue; }
       q("[data-missing]", pane).hidden = !data.missing;
-      q("[data-status]", pane).textContent = data.status || "";
+      q("[data-status]", pane).textContent = ({timeout: "not at rest in time", failed: "check failed"})[data.status] || data.status || "";
       if (data.missing) { graphs[name]?.destroy(); delete graphs[name]; q("[data-stats] span", pane).textContent = ""; continue; }
       // Per link, both directions together, where the replay draws one line: given by older analyses and for many routers.
       data.links ||= summed(data.directed || {});

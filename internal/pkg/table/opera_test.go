@@ -1003,7 +1003,7 @@ func TestOperaRedundantPathChangesNothing(t *testing.T) {
 	held := d.knownPathList[0]
 	v := newOperaView(d.nlri, 1)
 	v.dest.opera = &operaState{suppressed: []*Path{held.Clone(false)}}
-	d.views = map[string]*operaView{"a": v}
+	d.setView("a", v)
 	assert.False(t, d.OperaRedundant(operaPath("1.1.1.1", []uint32{1, 9}, false)))
 	d.views = nil
 

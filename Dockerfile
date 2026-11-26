@@ -12,6 +12,16 @@ COPY --from=daemon . .
 RUN CGO_ENABLED=0 go build -o /out/gobgpd ./cmd/gobgpd \
  && CGO_ENABLED=0 go build -o /out/gobgp ./cmd/gobgp
 
+# The feeder of a router replay comes from this tree, as the controller does,
+# so that a replay runs with the daemon of any commit.
+FROM golang:1.24 AS replay
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY pkg/packet/ pkg/packet/
+COPY cmd/obgp-replay/ cmd/obgp-replay/
+RUN CGO_ENABLED=0 go build -o /out/obgp-replay ./cmd/obgp-replay
+
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 # iptables and tc inject link failures and degradation.
 RUN apt-get update && apt-get install -y --no-install-recommends iptables iproute2 \
@@ -22,6 +32,7 @@ RUN uv sync --frozen --no-cache --no-install-project --only-group controller
 COPY --from=daemon proto/ proto/
 RUN uv run --no-sync python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/api/*.proto
 COPY --from=build /out/ /usr/local/bin/
+COPY --from=replay /out/ /usr/local/bin/
 COPY controller/app.py .
 EXPOSE 179 8080
 ENTRYPOINT ["uv", "run", "--no-sync", "app.py"]

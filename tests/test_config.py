@@ -236,7 +236,7 @@ def test_the_settings_set_what_the_host_keeps_free_and_the_routers_per_thread(cl
     monkeypatch.setattr(cluster, "capacity", lambda: {"cpus": 14, "memory_mb": 16000, **config.host_limit()})
     assert config.host_settings() == {"keep_cpus": 4, "keep_mb": 4096, "routers_per_cpu": 4}
     r = client.post("/settings/host", data={"cpus": "14", "memory_gb": "", "keep_cpus": "6", "keep_gb": "5", "routers_per_cpu": "2"}, follow_redirects=False)
-    assert "Host+saved" in r.headers["location"]
+    assert "Budget+saved" in r.headers["location"]
     assert config.host_settings() == {"keep_cpus": 6, "keep_mb": 5120, "routers_per_cpu": 2}  # all threads count as no cap
     assert cluster.limits()["memory_mb"] == 16000 - 5120 and cluster.max_routers() == 8 * 2
     for data, problem in (({"keep_cpus": "20"}, "Keep+fewer+threads"), ({"keep_cpus": "-1"}, "cannot+be+negative"), ({"keep_gb": "-1"}, "cannot+be+negative")):
@@ -337,12 +337,28 @@ def test_an_experiment_refuses_what_does_not_fit_the_cluster(lab_files):
     experiment(4).check_capacity()
 
 
-def test_routers_that_ran_out_of_memory_are_named(monkeypatch):
-    pod = lambda name, restarts, reason: {"metadata": {"labels": {"app": name}}, "status": {"containerStatuses": [
-        {"restartCount": restarts, "lastState": {"terminated": {"reason": reason}} if reason else {}}]}}
+def test_routers_that_ran_out_of_memory_are_named_and_a_crash_says_where(monkeypatch):
+    pod = lambda name, restarts, reason: {"metadata": {"name": f"{name}-0", "labels": {"app": name}}, "status": {"containerStatuses": [
+        {"name": "router", "restartCount": restarts, "lastState": {"terminated": {"reason": reason, "exitCode": 1}} if reason else {}}]}}
     c = cluster.Cluster(Cluster())
     monkeypatch.setattr(c, "_pods", lambda: [pod("as1", 1, "OOMKilled"), pod("as2", 0, None), pod("as3", 2, "Error")])
+    log = """INFO started
+panic: runtime error: invalid memory address or nil pointer dereference
+[signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x1]
+
+goroutine 42 [running]:
+github.com/osrg/gobgp/v4/internal/pkg/table.(*Path).GetAsPath(0x0)
+	/src/internal/pkg/table/path.go:701 +0x1c
+github.com/osrg/gobgp/v4/pkg/server.(*BgpServer).operaFilter(0xc0)
+	/src/pkg/server/opera_neighbor.go:88 +0x2a
+"""
+    asked = []
+    monkeypatch.setattr(cluster, "sh", lambda *a, **k: asked.append(a) or log)
     assert c.restarts() == (3, ["as1"])
+    assert c.restarted()[2] == ("as3 exited with 1: panic: runtime error: invalid memory address or nil pointer dereference"
+                                " in table.(*Path).GetAsPath (path.go:701)")
+    assert "--previous" in asked[0] and "as3-0" in asked[0]
+    assert cluster.crash("INFO all fine") == ""
 
 
 def test_a_variant_name_is_a_plain_word_and_a_ref_never_an_option_of_git():
@@ -350,3 +366,70 @@ def test_a_variant_name_is_a_plain_word_and_a_ref_never_an_option_of_git():
         with pytest.raises(ValueError):
             Variant.model_validate(bad)
     assert Variant.model_validate({"name": "obgp-rp", "mode": "obgp-rp", "ref": "origin/master~2"}).ref == "origin/master~2"
+
+
+def test_a_feed_needs_its_recording_and_a_scenario_of_its_own(tmp_path, monkeypatch):
+    from lab import results, scenario
+    network = scenario.Network({"a": {"neighbors": [{"name": "b"}]}, "b": {"neighbors": [{"name": "a"}]}}, {})
+    feed = scenario.parse({"name": "f", "steps": [{"feed": {"source": "rec/obgp/fill/1"}}]}).steps
+    dataset = type("D", (), {"path": tmp_path, "experiment": None})()
+    monkeypatch.setattr(results.Dataset, "find", classmethod(lambda cls, name: dataset))
+    assert "feeds a from rec/obgp/fill/1, which has no recording of it" in config.feed_problems("f", "core", feed, network)[0]
+    (tmp_path / "core" / "obgp" / "fill" / "1").mkdir(parents=True)
+    (tmp_path / "core" / "obgp" / "fill" / "1" / "updates-a.mrt.gz").write_bytes(b"")
+    assert config.feed_problems("f", "core", feed, network) == []
+    mixed = scenario.parse({"name": "f", "steps": [{"feed": {"source": "rec/obgp/fill/1"}}, {"announce": {"rate": 1, "for": 1}}]}).steps
+    assert "one feed" in config.feed_problems("f", "core", mixed, network)[0]
+
+
+def test_a_feed_gives_the_recording_of_a_mode_only_to_that_mode(tmp_path, monkeypatch):
+    from lab import results, scenario
+    network = scenario.Network({"a": {"neighbors": [{"name": "b"}]}, "b": {"neighbors": [{"name": "a"}]}}, {})
+    feed = scenario.parse({"name": "f", "steps": [{"feed": {"source": "rec/obgp-rp-pn/fill/1"}}]}).steps
+    recorded = Experiment.model_validate({"name": "rec", "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                          "variants": [{"name": "obgp-rp-pn", "mode": "obgp-rp", "per_neighbor": True}]})
+    dataset = type("D", (), {"path": tmp_path, "experiment": recorded})()
+    monkeypatch.setattr(results.Dataset, "find", classmethod(lambda cls, name: dataset))
+    (tmp_path / "core" / "obgp-rp-pn" / "fill" / "1").mkdir(parents=True)
+    (tmp_path / "core" / "obgp-rp-pn" / "fill" / "1" / "updates-a.mrt.gz").write_bytes(b"")
+    same = [config.Variant(name="base", mode="obgp-rp", per_neighbor=True, ref="x"), config.Variant(name="new", mode="obgp-rp", per_neighbor=True, ref="y")]
+    assert config.feed_problems("f", "core", feed, network, same) == []
+    other = same + [config.Variant(name="bgp", mode="bgp", ref="x")]
+    assert "not bgp" in config.feed_problems("f", "core", feed, network, other)[0]
+
+
+def test_a_benchmark_gives_per_mode_a_recording_the_baseline_its_aa_and_the_candidates():
+    e = Experiment.model_validate({"name": "b", "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "benchmark": {"baseline": "master", "candidates": ["fast"], "modes": ["obgp-rp-pn", "bgp"], "feed": True}, "runs": 7})
+    assert [(v.name, v.ref, v.mode, v.per_neighbor, v.records) for v in e.variants] == [
+        ("obgp-rp-pn-record", "master", "obgp-rp", True, True), ("obgp-rp-pn", "master", "obgp-rp", True, False),
+        ("obgp-rp-pn-aa", "master", "obgp-rp", True, False), ("obgp-rp-pn-new", "fast", "obgp-rp", True, False),
+        ("bgp-record", "master", "bgp", False, True), ("bgp", "master", "bgp", False, False),
+        ("bgp-aa", "master", "bgp", False, False), ("bgp-new", "fast", "bgp", False, False)]
+    assert e.speed.baseline == "master" and e.sampling.profile_s == 300 and e.sampling.paths is False
+    assert e.record_of("bgp-new") == "bgp-record" and e.record_of("obgp-rp-pn-aa") == "obgp-rp-pn-record" and e.record_of("bgp-record") is None
+    from lab import problems
+    assert problems.twins_of(e) == {"obgp-rp-pn-aa": ("obgp-rp-pn", None), "obgp-rp-pn-new": ("obgp-rp-pn", "obgp-rp-pn-aa"),
+                                    "bgp-aa": ("bgp", None), "bgp-new": ("bgp", "bgp-aa")}
+    with pytest.raises(ValueError, match="2 comparisons, which need 7 runs"):
+        Experiment.model_validate({"name": "b", "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "benchmark": {"baseline": "master", "candidates": ["fast"], "modes": ["obgp-rp-pn", "bgp"]}})
+
+
+def test_a_benchmark_with_feed_records_once_before_all_its_runs():
+    from lab import results
+    e = Experiment.model_validate({"name": "b", "topologies": ["noble-eu"], "scenarios": ["fill-60"], "runs": 6,
+                                   "benchmark": {"baseline": "master", "candidates": ["fast"], "modes": ["obgp-rp-pn"], "feed": True}})
+    keys = results.Dataset.keys(type("D", (), {"experiment": e})())
+    assert keys[0].variant == "obgp-rp-pn-record" and [k.variant for k in keys].count("obgp-rp-pn-record") == 1 and len(keys) == 19
+
+
+def test_an_experiment_file_keeps_its_benchmark_and_speed_rule():
+    for data in ({"name": "b", "topologies": ["noble-eu"], "scenarios": ["fill-60"], "runs": 6,
+                  "benchmark": {"baseline": "master", "candidates": ["fast"], "modes": ["obgp-rp-pn"]}},
+                 {"name": "s", "topologies": ["noble-eu"], "scenarios": ["fill-60"], "runs": 6,
+                  "variants": [{"name": "a", "mode": "bgp", "ref": "x"}, {"name": "aa", "mode": "bgp", "ref": "x"}, {"name": "b", "mode": "bgp", "ref": "y"}],
+                  "speed": {"baseline": "x", "margin_pct": 3, "guards": ["settle_s"]}}):
+        e = Experiment.model_validate(data)
+        again = Experiment.model_validate(yaml.safe_load(e.to_yaml()))
+        assert again.model_dump() == e.model_dump(), e.to_yaml()

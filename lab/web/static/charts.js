@@ -57,7 +57,7 @@
     const old = shown.get(root);
     old?.charts.forEach(([c]) => c.destroy());
     old?.observer.disconnect();
-    // Eight colours of variants, then again. A colour stays with its variant
+    // Eight colors of variants, then again. A color stays with its variant
     // when others are hidden.
     const colors = data.variants.map((_, i) => css(`--series-${(i % 8) + 1}`));
     const shownVariants = data.variants.map((v, i) => [v, i]).filter(([v]) => !hidden.has(v));
@@ -73,7 +73,7 @@
     if (waiting.length) {
       const all = waiting.length === shownVariants.length;
       if (all) return root.append(el("p", "empty-state", "No run of this scenario is done yet."));
-      root.append(el("p", "notice notice-warn mb-3", `No run done yet for ${waiting.join(", ")}. Their lines appear once one is, after a reload.`));
+      root.append(el("p", "notice notice-warn mb-3", `No run done yet for ${waiting.join(", ")}. Reload once one is.`));
     }
     // One legend for all charts, keyed with the line of each variant.
     const legend = el("div", "mb-3 flex flex-wrap gap-4 text-sm text-slate-600 dark:text-slate-300");
@@ -162,12 +162,14 @@
         return out;
       };
       // One chart in the grid, or large in the lightbox, where it zooms.
+      // Prefixes of the whole network are whole numbers: no ticks between them.
+      const whole = metric === "looping" || metric === "holed";
       const options = (width, height, zoom) => ({
         width,
         height,
         // asinh is logarithmic for large values and linear around zero, so 0 stays visible.
         // Linear scales start at zero, so sizes compare honestly.
-        scales: { x: { time: false }, y: log ? { distr: 4, asinh: 1 } : { range: (u, min, max) => [0, max > 0 ? max * 1.08 : 1] } },
+        scales: { x: { time: false }, y: log ? { distr: 4, asinh: 1 } : { range: (u, min, max) => [0, max > 0 ? (whole ? Math.max(1, Math.ceil(max * 1.08)) : max * 1.08) : 1] } },
         series: specs,
         bands,
         legend: { show: false },
@@ -179,6 +181,7 @@
             incrs: [1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 900, 1200, 1800, 3600], values: (u, v) => v.map(clock) },
           { stroke: muted, grid: { stroke: grid, width: 1 }, ticks: { stroke: axis, width: 1, size: 4 }, gap: 4,
             values: (u, v) => v.map(tick),
+            ...(whole ? { incrs: [1, 2, 5, 10, 20, 50, 100, 200, 500, 1e3, 2e3, 5e3, 1e4, 2e4, 5e4, 1e5] } : {}),
             ...(log && !zoom ? { splits: (u, i, min, max) => [0, 1, 10, 100, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8].filter((x) => x <= Math.max(max, 1)) } : {}),
             // Wide enough for the longest label.
             size: (u, values) => 16 + 7 * Math.max(1, ...(values || []).map((v) => v.length)) },
@@ -335,7 +338,7 @@
   }
 
   // A chart as PNG for slides, at the resolution of the screen or twice that:
-  // its title, its legend and the plot on the colour of the card.
+  // its title, its legend and the plot on the color of the card.
   function png(chart, title, unit, keys) {
     const scale = Math.max(2, devicePixelRatio), plot = chart.ctx.canvas, pad = 12 * scale, line = 18 * scale;
     const out = document.createElement("canvas");

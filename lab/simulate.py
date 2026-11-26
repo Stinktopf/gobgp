@@ -90,7 +90,7 @@ class Unsupported(ValueError):
     """What the other side cannot express, one reason per item."""
 
     def __init__(self, reasons: list[str]) -> None:
-        super().__init__("; ".join(reasons))
+        super().__init__(", ".join(reasons))
         self.reasons = reasons
 
 
@@ -568,8 +568,8 @@ class _Play:
             if a.loss_pct >= 100 or a.delay_ms + a.jitter_ms >= DELAY_MS:
                 self.problems.append(f"{where}: loss of 100 % or delays from {DELAY_MS} ms, sessions may fall")
             return
-        if kind in ("announce_real", "announce_rib", "withdraw_rib", "replay"):  # prefixes of the Internet, from many origins
-            self.problems.append(f"{where}: no counterpart in the simulator")
+        if kind in ("announce_real", "announce_rib", "withdraw_rib", "replay", "feed"):  # prefixes of the Internet, or recorded
+            self.problems.append(f"{where} has no counterpart")
             return
         if not self.started:
             if kind not in ("set_preference", "set_export", "set_import", "prepend", "igp"):
@@ -633,7 +633,7 @@ class _Play:
             e["step"] = self.key  # the lab's check it stands for, which the simulator carries
             self.add("expect", **e)
         else:
-            self.problems.append(f"{where}: no counterpart in the simulator")
+            self.problems.append(f"{where} has no counterpart")
 
 
 def _origin(a) -> dict[str, list]:
@@ -1184,7 +1184,7 @@ def search(routers: int = 4, seeds: int = 20, family: str = "", transient: bool 
         workers = search_workers()
         _simulator(["-routers", str(routers), "-seeds", str(seeds), "-out", str(out), *(["-family", family] if family else []),
                     *(["-workers", str(workers)] if workers else []),
-                    *(["-transient"] if transient else []), *(["-both-tables"] if tables == "both" else ["-per-neighbor"] if tables else []), *(["-progress"] if progress else [])],
+                    *(["-transient"] if transient else []), "-updates", *(["-both-tables"] if tables == "both" else ["-per-neighbor"] if tables else []), *(["-progress"] if progress else [])],
                    timeout=SEARCH_HOURS * 3600, guest=True, started=started, progress=progress)
         found = json.loads(out.read_text())
     if tables and tables != "both":
@@ -1450,7 +1450,7 @@ def agreement(dataset) -> dict:
         p = problems.prediction(dataset, key)
         name, found = stored(kept, key, c["mode"])
         if p is None:
-            c["why_not"] = "; ".join(found.get("unsupported") or found.get(c["mode"], {}).get("unsupported") or []) or "no prediction"
+            c["why_not"] = ", ".join(found.get("unsupported") or found.get(c["mode"], {}).get("unsupported") or []) or "no prediction"
             continue
         if name not in c["seen"]:  # a prediction per run where targets are drawn, else one per cell
             c["seen"].add(name)

@@ -451,10 +451,58 @@ def test_the_metrics_are_read_apart_and_as_often_as_their_cost_allows(controller
     assert len(started) == 2
 
 
-def test_a_router_takes_one_cpu_profile_when_the_lab_asks(controller, monkeypatch):
+def test_a_router_takes_cpu_profiles_in_chunks_until_the_lab_stops_them(controller, monkeypatch):
+    import base64
+    app, _ = controller("b", 65002, [], {})
+    monkeypatch.setattr(app, "CPU", {})
+    monkeypatch.setattr(app, "CPU_CHUNK_S", 5.0)
+    taken = []
+
+    class Answer:
+        def __init__(self, url):
+            self.url = url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return self.url.rsplit("/", 1)[1].encode()
+
+    def urlopen(url, timeout):
+        taken.append(url.rsplit("/", 1)[1])
+        if taken.count("profile?seconds=5") == 2:
+            app.CPU_STOP.set()  # the lab stops it during the second chunk
+        return Answer(url)
+    monkeypatch.setattr(app.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(app.threading, "Thread", lambda target, daemon: type("T", (), {"start": lambda self: target(), "join": lambda self, t: None})())
+    assert app.cpu() == {}
+    app.cpu_start({"seconds": 12})
+    app.cpu_start({"seconds": 60})  # one series only, the first
+    assert taken == ["allocs", "profile?seconds=5", "profile?seconds=5", "allocs"]
+    got = app.cpu()
+    assert got["done"] and got["seconds"] == 12.0 and [c["seconds"] for c in got["chunks"]] == [5.0, 5.0]
+    assert base64.b64decode(got["allocs_end"]) == b"allocs" and app.cpu_stop() == {"done": True}
+
+
+def test_cpu_profiles_end_at_the_seconds_asked_for(controller, monkeypatch):
     app, _ = controller("b", 65002, [], {})
     monkeypatch.setattr(app, "CPU", {})
     taken = []
+    monkeypatch.setattr(app, "pprof", lambda path, timeout: taken.append(path) or b"x")
+    monkeypatch.setattr(app.threading, "Thread", lambda target, daemon: type("T", (), {"start": lambda self: target()})())
+    app.cpu_start({"seconds": 12})
+    assert taken == ["allocs", "profile?seconds=5", "profile?seconds=5", "profile?seconds=2", "allocs"]
+
+
+def test_the_metrics_of_gobgpd_give_its_cpu_and_what_it_allocated(controller, monkeypatch):
+    app, _ = controller("b", 65002, [], {})
+    text = b"""process_cpu_seconds_total 12.345
+go_cpu_classes_gc_total_cpu_seconds_total 3.21
+go_memstats_alloc_bytes_total 1.048576e+08
+"""
 
     class Answer:
         def __enter__(self):
@@ -464,11 +512,54 @@ def test_a_router_takes_one_cpu_profile_when_the_lab_asks(controller, monkeypatc
             return False
 
         def read(self):
-            return b"profile"
-    monkeypatch.setattr(app.urllib.request, "urlopen", lambda url, timeout: taken.append((url, timeout)) or Answer())
-    monkeypatch.setattr(app.threading, "Thread", lambda target, daemon: type("T", (), {"start": lambda self: target()})())
-    assert app.cpu() == {}
-    app.cpu_start({"seconds": 30})
-    app.cpu_start({"seconds": 60})  # one profile only, the first
-    assert taken == [("http://localhost:6060/debug/pprof/profile?seconds=30", 90.0)]
-    assert app.cpu()["seconds"] == 30.0 and app.cpu()["profile"] == "cHJvZmlsZQ=="
+            return text
+    monkeypatch.setattr(app.urllib.request, "urlopen", lambda url, timeout: Answer())
+    found = app.memory()
+    assert (found["cpu_s"], found["alloc_mb"]) == (12.35, 100.0) and "gc_cpu_s" not in found
+    cache = {}
+    monkeypatch.setattr(app, "heap_watch", lambda rss: None)
+    app.read_memory(cache)
+    assert cache["memory"] == found and "memory_read" in cache
+
+
+def test_a_feeder_runs_obgp_replay_towards_the_router_fed_alone(controller, monkeypatch):
+    monkeypatch.setenv("LAB_FEED", "a")
+    app, daemon = controller("b", 65002, [{"name": "a", "peerAs": 65001}, {"name": "c", "peerAs": 65003}], {"a": "10.1.0.2"})
+    assert [n["name"] for n in app.NEIGHBORS] == ["a"]
+    started = []
+    monkeypatch.setattr(app.subprocess, "Popen", lambda args: started.append(args) or type("P", (), {"poll": lambda self: None})())
+    daemon.start()
+    assert started == [["obgp-replay", "-peer", "10.1.0.2", "-as", "65002", "-id", "10.0.0.1", "-address", "10.1.0.1", "-hold", "9"]]
+    monkeypatch.setattr(app, "feed", lambda method, path, body=None, timeout=10: {"established": False})
+    response = app.Response()
+    assert app.ready(response) == {"established": 0, "neighbors": 1} and response.status_code == 503
+
+
+def test_a_router_records_its_updates_when_the_lab_asks_and_hands_them_over_gzipped(controller, monkeypatch, tmp_path):
+    import gzip
+    app, _ = controller("b", 65002, [], {})
+    monkeypatch.setattr(app, "RECORD_FILE", str(tmp_path / "updates.mrt"))
+    asked = []
+    app.stub.EnableMrt = lambda request, timeout: asked.append(request)
+    app.record_start()
+    assert len(asked) == 1
+    (tmp_path / "updates.mrt").write_bytes(b"records")
+    assert gzip.decompress(app.record().body) == b"records"
+
+
+def test_a_run_may_leave_the_paths_unread_so_that_the_routers_cpu_is_its_own(controller, monkeypatch):
+    app, _ = controller("b", 65002, [], {})
+    monkeypatch.setattr(app.recorder, "start", lambda t0, interval: None)
+    app.samples_start(app.Recording(t0=1.0, interval=1.0, paths=False))
+    assert app.READ_PATHS is False
+    app.samples_start(app.Recording(t0=1.0, interval=1.0))
+    assert app.READ_PATHS is True
+    # Without paths read, a sample neither follows next hops nor tells path lengths, unknown rather than 0.
+    monkeypatch.setattr(app, "READ_PATHS", False)
+    monkeypatch.setattr(app, "peers", lambda: [])
+    monkeypatch.setattr(app, "stub", type("Stub", (), {"GetTable": lambda self, req, timeout: type("T", (), {"num_destination": 2, "num_path": 2})()})())
+    monkeypatch.setattr(app.threading, "Thread", lambda target, args=(), daemon=True: type("T", (), {"start": lambda self: None})())
+    followed = []
+    monkeypatch.setattr(app, "hops_changed", lambda cache, table, key: followed.append(key) or "x")
+    row = app.sample({})
+    assert row["path_len_avg"] is None and row["hops"] == "" and not followed

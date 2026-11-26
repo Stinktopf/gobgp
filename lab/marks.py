@@ -130,12 +130,12 @@ def _text(text: str) -> str:
 
 def _color(color: str | None) -> str:
     if color not in (None, "", *COLORS):
-        raise ValueError(f"Colours are {', '.join(COLORS)}.")
+        raise ValueError(f"Colors are {', '.join(COLORS)}.")
     return color or COLORS[0]
 
 
 def add(kind: str, name: str, text: str, color: str | None = None) -> dict:
-    """A new note on an object, open, yellow unless a colour is given."""
+    """A new note on an object, open, yellow unless a color is given."""
     _check(kind)
     note = {"id": secrets.token_hex(4), "text": _text(text), "created": _now(), "done": False, "color": _color(color)}
     with _locked():
@@ -158,7 +158,7 @@ def _find(data: dict, note_id: str) -> tuple[str, str, dict]:
 
 
 def edit(note_id: str, text: str | None = None, done: bool | None = None, color: str | None = None) -> dict:
-    """Changes the text of a note, whether it is done, or its colour."""
+    """Changes the text of a note, whether it is done, or its color."""
     with _locked():
         data = _load()
         kind, name, note = _find(data, note_id)

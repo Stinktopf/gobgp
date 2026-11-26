@@ -270,7 +270,7 @@ def _orgs(month: str) -> dict[int, tuple[str, str, str]]:
     return out
 
 
-_names: dict[str, dict] = {}  # one month: the organisations of a month take tens of MB
+_names: dict[str, dict] = {}  # one month: the organizations of a month take tens of MB
 
 
 def names(source: str, asns) -> dict[int, dict]:

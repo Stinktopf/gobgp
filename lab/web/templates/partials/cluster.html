@@ -29,7 +29,7 @@
   </div>
   {% if cs.error %}<p class="error px-5 pb-4" role="alert">{{ cs.error }}</p>{% endif %}
   {% if cs.busy %}<p class="muted px-5 pb-4 text-sm">This may take a few minutes. The web interface stays online.</p>
-  {% elif running %}<p class="muted px-5 pb-4 text-sm">Pause the active experiment before changing the cluster.</p>
+  {% elif running %}<p class="muted px-5 pb-4 text-sm">Pause the queue before changing the cluster.</p>
   {% elif cs.manual_off %}<p class="muted px-5 pb-4 text-sm">Auto-start disabled.</p>{% endif %}
   <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200/70 bg-slate-50/60 px-5 py-3 dark:border-slate-800 dark:bg-slate-950/30">
     <form method="post" action="/settings/cluster/idle" class="grid w-full grid-cols-[1fr_auto_auto] items-center gap-2 sm:flex sm:w-auto" hx-preserve id="cluster-idle-form">
@@ -38,7 +38,7 @@
       <span class="muted text-sm">min</span>
     </form>
     <form method="post" action="/settings/cluster/gpu" class="grid w-full grid-cols-[1fr_auto_auto] items-center gap-2 sm:flex sm:w-auto" hx-preserve id="cluster-gpu-form">
-      <label for="cluster-gpu-minutes" class="text-sm" data-tip="Waits this long after others used a GPU. 0 turns it off">Wait while others use the GPU</label>
+      <label for="cluster-gpu-minutes" class="text-sm" data-tip="Waits this long after others used a GPU. 0 turns it off">Wait after others used a GPU</label>
       <input id="cluster-gpu-minutes" name="minutes" type="number" min="0" max="1440" required value="{{ cs.gpu_quiet_minutes }}" class="input w-20 tabular-nums" onchange="this.form.requestSubmit()">
       <span class="muted text-sm">min</span>
     </form>

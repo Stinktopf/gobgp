@@ -8,9 +8,9 @@ window.Graph = (() => {
   // Sizes in screen pixels, whatever the zoom.
   const px = (cy, n) => () => n / (cy() ? cy().zoom() : 1);
 
-  // Router colours as on the Simulation's map, --router-1 to --router-8 in styles.css: each router has its
-  // own while there are few, else all are neutral and only the meanings have colours: U of T blue a route,
-  // teal a role or rule, violet waits, rose the problem. Read again when the colour scheme changes.
+  // Router colors as on the Simulation's map, --router-1 to --router-8 in styles.css: each router has its
+  // own while there are few, else all are neutral and only the meanings have colors: U of T blue a route,
+  // teal a role or rule, violet waits, rose the problem. Read again when the color scheme changes.
   const HUES = 8;
   let hues = { theme: undefined, list: [] };
   function palette() {
@@ -33,7 +33,7 @@ window.Graph = (() => {
     }
     return o;
   }
-  // The colour of a router among few, or null.
+  // The color of a router among few, or null.
   function hue(n) {
     const i = order(n.cy()).index.get(n.id());
     return i === undefined ? null : palette()[i];
@@ -51,7 +51,7 @@ window.Graph = (() => {
     const stops = (e) => { const [s, t] = ends(e); return [s ? role : link, s ? role : link, t ? role : link, t ? role : link].join(" "); };
     return { "line-fill": "linear-gradient", "line-gradient-stop-colors": stops, "line-gradient-stop-positions": "0% 50% 50% 100%" };
   }
-  // A colour token with transparency as a colour and an opacity, which Cytoscape takes apart.
+  // A color token with transparency as a color and an opacity, which Cytoscape takes apart.
   function tone(token) {
     const c = document.createElement("canvas").getContext("2d");
     c.fillStyle = css(token);
@@ -69,7 +69,7 @@ window.Graph = (() => {
     // Smaller cards among many routers, so that the links between them show.
     const side = (n) => (belts(n.cy()) ? node : node * 0.75) / zoom();
     return [
-      // A router: a card of the map in miniature, its border and name in its colour.
+      // A router: a card of the map in miniature, its border and name in its color.
       { selector: "node", style: {
         shape: "round-rectangle", "background-color": C["--graph-bg"], "border-width": px(cy, 1.75),
         "border-color": (n) => hue(n) || C["--graph-node"], width: side, height: side, label: labelOf, "text-wrap": "wrap",
@@ -109,7 +109,7 @@ window.Graph = (() => {
         "source-arrow-shape": "circle", "target-arrow-shape": "circle", "source-arrow-color": C["--graph-role"],
         "target-arrow-color": C["--graph-role"], "arrow-scale": (e) => (belts(e.cy()) ? 0.7 : 0.8),
       } },
-      // Two lines: the link in the background's colour inside an outline in the link's colour.
+      // Two lines: the link in the background's color inside an outline in the link's color.
       { selector: "edge.s2s", style: { "line-color": C["--graph-bg"], width: px(cy, 1.5), "line-outline-width": px(cy, 1.5), "line-outline-color": C["--graph-link"] } },
       // An AS of several routers is a shaded area behind them, a confederation also has a dashed border, as on the map,
       // each named inside at its top left: Cytoscape puts a left label outside, the margins move it in.
@@ -257,7 +257,7 @@ window.Graph = (() => {
   }
 
   // Routers in rings by their distance in hops from the origins; each ring
-  // follows the angles of the inner neighbours, which keeps edges short.
+  // follows the angles of the inner neighbors, which keeps edges short.
   function rings(topology) {
     const names = Object.keys(topology.routers);
     if (!names.length) return {};
@@ -285,7 +285,7 @@ window.Graph = (() => {
         let a = -Math.PI / 2 + (2 * Math.PI * i) / ring.length + (level % 2 ? 0 : Math.PI / ring.length);
         // Two around the origin stand below it, 60° apart: a triangle of equal sides, not a line through the origin.
         if (ring.length === 2 && level === 1) a = Math.PI / 2 + (i ? -1 : 1) * Math.PI / 6;
-        // A router alone on its ring goes where its inner neighbours are, beside them where they lie opposite.
+        // A router alone on its ring goes where its inner neighbors are, beside them where they lie opposite.
         if (ring.length === 1 && level > 0) {
           const as = inner(n), sx = as.reduce((t, x) => t + Math.cos(x), 0), sy = as.reduce((t, x) => t + Math.sin(x), 0);
           if (as.length) a = Math.hypot(sx, sy) > 1e-6 ? Math.atan2(sy, sx) : as[0] + Math.PI / 2;
@@ -567,7 +567,7 @@ window.Graph = (() => {
       });
       // Frames keep their label: it sits above them, not where the box below assumes.
       cy.batch(() => routers.sort((a, b) => b.hasClass("origin") - a.hasClass("origin") || b.degree() - a.degree()).forEach((n) => {
-        const lines = labelOf(n).split("\n"), p = n.renderedPosition(), w = Math.max(...lines.map((l) => l.length)) * label * 0.6, h = lines.length * (label + 2);
+        const lines = labelOf(n).split("\n"), p = n.renderedPosition(), w = Math.max(...lines.map((l) => l.length)) * label * 0.66 + 6, h = lines.length * (label + 2);
         const box = { x1: p.x - w / 2, x2: p.x + w / 2, y1: p.y + n.renderedWidth() / 2 + 2, y2: p.y + n.renderedWidth() / 2 + 2 + h };  // below its own card
         const covers = placed.some((o) => box.x1 < o.x2 && o.x1 < box.x2 && box.y1 < o.y2 && o.y1 < box.y2);
         n.toggleClass("crowded", covers);
@@ -613,7 +613,7 @@ window.Graph = (() => {
     c.fillRect(0, 0, 1, 1);
     return [...c.getImageData(0, 0, 1, 1).data.slice(0, 3)];
   }
-  // Colour between two colours of the tokens, 0 ≤ v ≤ 1.
+  // Color between two colors of the tokens, 0 ≤ v ≤ 1.
   function ramp(from, to) {
     const a = rgb(css(from)), b = rgb(css(to));
     return (v) => `rgb(${a.map((x, i) => Math.round(x + (b[i] - x) * Math.max(0, Math.min(1, v)))).join(",")})`;

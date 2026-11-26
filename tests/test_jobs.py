@@ -75,13 +75,13 @@ def test_a_worker_failing_before_it_starts_is_not_retried(lab_files, monkeypatch
     assert jobs.worker is None and jobs.queue() == []
 
 
-def test_a_result_that_runs_or_waits_is_neither_moved_nor_deleted(lab_files, monkeypatch):
+def test_a_result_that_runs_or_waits_is_not_deleted(lab_files, monkeypatch):
     from lab import cluster
 
     d = waiting_result("t-busy")
     J.Jobs()._save(["t-busy"])
     with pytest.raises(ValueError, match="queued"):
-        d.publish(True)
+        d.delete()
     J.Jobs()._save([])
     monkeypatch.setattr(cluster, "holder", lambda: "t-busy")
     with pytest.raises(ValueError, match="running"):

@@ -429,3 +429,189 @@ def test_a_run_rests_does_not_or_was_not_measured():
 def test_the_wilcoxon_test_is_exact_for_many_pairs_too():
     assert analysis.wilcoxon_p([float(i) for i in range(1, 26)]) == 2 / 2 ** 25
     assert analysis.wilcoxon_p([1, 1, 2, -2, 3]) == 0.375  # ties share their ranks
+
+
+def test_updates_per_neighbor_count_from_the_last_sample_before_the_announcement():
+    # Two prefixes. r1 received 3 updates from r2 before the announcement (End-of-RIB and earlier), then 2 until the
+    # withdrawal, and 5 more after it. r2 has no sample before the announcement and is left out.
+    e = Experiment.model_validate({"name": "x", "sampling": {"interval": 1.0}, "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "variants": [{"name": "a", "mode": "obgp-rp"}]})
+    run = {"watched": ["r1", "r2"], "events": [{"name": "announce", "t": 1.0}, {"name": "announced", "t": 5.0, "expected": 2},
+                                               {"name": "withdraw", "t": 10.0, "expected": 0},
+                                               {"name": "final", "t": 20.0, "prefixes": 2, "held": {"r1": 0, "r2": 0}, "loops": 0, "holes": 0}]}
+    rx = lambda t: 3 if t < 1 else 5 if t <= 10 else 10
+    samples = [{"t": float(t), "router": "r1", "destinations": 2, "paths": 2, "path_len_avg": 1, "updates_rx": rx(t), "peers_rx": f"r2={rx(t)}"}
+               for t in range(0, 21)]
+    samples += [{"t": float(t), "router": "r2", "destinations": 2, "paths": 2, "path_len_avg": 1, "updates_rx": 9, "peers_rx": "r1=9"}
+                for t in range(2, 21)]
+    dataset = type("D", (), {"experiment": e, "samples": lambda self, k: samples})()
+    assert analysis.run_metrics(dataset, RunKey("t", "a", "s", 1), run)["updates_prefix_max"] == 1.0
+
+
+def test_cpu_spans_use_the_time_gobgpd_was_read_and_count_a_repeated_reading_once():
+    # Read at 0, 1, then busy: the samples at 2 to 4 repeat the reading of 1, the one at 5 was read at 5.
+    rows = [{"t": 0.0, "cpu_s": 0.0, "metrics_age_s": 0}, {"t": 1.0, "cpu_s": 1.0, "metrics_age_s": 0},
+            {"t": 2.0, "cpu_s": 1.0, "metrics_age_s": 1}, {"t": 4.0, "cpu_s": 1.0, "metrics_age_s": 3},
+            {"t": 5.0, "cpu_s": 9.0, "metrics_age_s": 0}]
+    assert analysis.cpu_spans(rows, 0, 5, 2.0) == [(0.0, 5.0, 1.8), (1.0, 5.0, 2.0)]
+    assert analysis.covered([(0, 2), (1, 3), (5, 6)]) == 4
+
+
+def test_a_router_at_the_limit_of_its_threads_counts_as_saturated_and_what_it_allocated():
+    e = Experiment.model_validate({"name": "x", "sampling": {"interval": 1.0}, "bgp": {"procs": 2}, "topologies": ["noble-eu"],
+                                   "scenarios": ["fill-60"], "variants": [{"name": "a", "mode": "obgp-rp"}]})
+    run = {"watched": ["r1", "r2"], "events": [{"name": "announce", "t": 0.0}, {"name": "announced", "t": 1.0, "expected": 2}]}
+    # r1 uses 2 cores from 2 s to 6 s, else 0.5; r2 always 0.5.
+    use = lambda t, r: 0.5 * t + (1.5 * (min(t, 6) - 2) if r == "r1" and t > 2 else 0)
+    row = lambda t, r: {"t": float(t), "router": r, "destinations": 2, "paths": 2, "path_len_avg": 1, "cpu_s": use(t, r),
+                        "alloc_mb": 10.0 * t, "metrics_age_s": 0}
+    samples = [row(t, r) for t in range(0, 13) for r in ("r1", "r2")]
+    dataset = type("D", (), {"experiment": e, "samples": lambda self, k: samples})()
+    out = analysis.run_metrics(dataset, RunKey("t", "a", "s", 1), run)
+    assert out["cpu_cores_max"] == 2.0 and out["cpu_cores_max_router"] == "r1" and out["cpu_cores_max_routers"] == [0.5, 2.0]
+    assert out["saturated_s"] == 4.0 and out["alloc_mb_mean"] == 120.0
+
+
+def _pprof(samples: list[tuple[list, int]]) -> bytes:
+    """A small CPU profile as Go writes one: samples of stacks, leaf first, with their nanoseconds.
+    A frame is a function's name, or its name and source file."""
+    import gzip
+
+    def varint(n):
+        out = bytearray()
+        while True:
+            b, n = n & 0x7F, n >> 7
+            out.append(b | (0x80 if n else 0))
+            if not n:
+                return bytes(out)
+
+    def field(number, value):
+        if isinstance(value, bytes):
+            return varint(number << 3 | 2) + varint(len(value)) + value
+        return varint(number << 3) + varint(value)
+    strings = ["", "samples", "count", "cpu", "nanoseconds"]
+    functions, msg = {}, b""
+    samples = [([fn if isinstance(fn, tuple) else (fn, "") for fn in stack], ns) for stack, ns in samples]
+    for stack, _ in samples:
+        for fn in stack:
+            if fn not in functions:
+                strings += [x for x in fn if x not in strings]
+                functions[fn] = len(functions) + 1
+    msg += field(1, field(1, 1) + field(2, 2)) + field(1, field(1, 3) + field(2, 4))
+    for stack, ns in samples:
+        ids = b"".join(varint(functions[fn]) for fn in stack)
+        msg += field(2, field(1, ids) + field(2, varint(1) + varint(ns)))
+    for fn, i in functions.items():
+        msg += field(4, field(1, i) + field(4, field(1, i)))
+        msg += field(5, field(1, i) + field(2, strings.index(fn[0])) + field(4, strings.index(fn[1])))
+    for s in strings:
+        msg += field(6, s.encode())
+    return gzip.compress(msg)
+
+
+def test_profiles_tell_the_cpu_by_part_of_the_router_and_by_function(tmp_path):
+    from lab import profile
+    gc = ["runtime.scanobject", "runtime.gcBgMarkWorker"]
+    policy = ["table.(*CommunityCondition).Evaluate", "github.com/osrg/gobgp/v4/internal/pkg/table.(*RoutingPolicy).ApplyPolicy",
+              "github.com/osrg/gobgp/v4/pkg/server.(*BgpServer).filterpath"]
+    read = ["proto.Marshal", "github.com/osrg/gobgp/v4/pkg/server.(*server).ListPath"]
+    inject = ["github.com/osrg/gobgp/v4/pkg/server.(*BgpServer).propagateUpdate", "github.com/osrg/gobgp/v4/pkg/server.(*BgpServer).handleMGMTOp"]
+    (tmp_path / "cpu-a-0.pb.gz").write_bytes(_pprof([(gc, 2 * 10**9), (policy, 10**9)]))
+    (tmp_path / "cpu-a-5.pb.gz").write_bytes(_pprof([(read, 10**9), (inject, 5 * 10**8)]))
+    c = profile.of_run(tmp_path)
+    assert c["seconds"] == 4.5 and c["buckets"]["gc"] == 2 and c["buckets"]["policy"] == 1 and c["buckets"]["api"] == 1
+    assert c["buckets"]["rib"] == 0.5  # routes the controller injects take the router's own way, not the API's
+    assert c["flat"]["runtime.scanobject"] == 2 and c["cum"]["github.com/osrg/gobgp/v4/pkg/server.(*BgpServer).filterpath"] == 1
+    assert profile.of_run(tmp_path / "none") is None
+
+
+def test_without_paths_read_loops_and_black_holes_on_the_way_stay_unmeasured_not_zero():
+    e = Experiment.model_validate({"name": "x", "sampling": {"interval": 1.0, "paths": False}, "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "variants": [{"name": "a", "mode": "obgp-rp"}]})
+    run = {"watched": ["r1"], "events": [{"name": "announce", "t": 0.0}, {"name": "announced", "t": 1.0, "expected": 1}]}
+    samples = [{"t": float(t), "router": "r1", "destinations": 1, "paths": 1, "path_len_avg": None, "hops": ""} for t in range(10)]
+    dataset = type("D", (), {"experiment": e, "samples": lambda self, k: samples})()
+    out = analysis.run_metrics(dataset, RunKey("t", "a", "s", 1), run)
+    assert out["loops_s"] is None and out["holes_s"] is None and out["settle_s"] is not None
+
+
+def test_profile_metrics_come_only_from_profiles_that_reached_rest_uncut(tmp_path):
+    e = Experiment.model_validate({"name": "x", "sampling": {"interval": 1.0}, "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "variants": [{"name": "a", "mode": "obgp-rp"}]})
+    key = RunKey("t", "a", "s", 1)
+    (tmp_path / key.path).mkdir(parents=True)
+    (tmp_path / key.path / "cpu-r1-0.pb.gz").write_bytes(_pprof([(["runtime.gcBgMarkWorker"], 10**9)]))
+    samples = [{"t": float(t), "router": "r1", "destinations": 1, "paths": 1, "path_len_avg": 1} for t in range(10)]
+    dataset = type("D", (), {"experiment": e, "path": tmp_path, "samples": lambda self, k: samples})()
+    run = lambda complete: {"watched": ["r1"], "events": [{"name": "announce", "t": 0.0}, {"name": "announced", "t": 1.0, "expected": 1}],
+                            "profiles": [{"router": "r1", "chunks": [{"t": 0, "seconds": 5}], "complete": complete}]}
+    assert analysis.run_metrics(dataset, key, run(True))["prof_gc_s"] == 1.0
+    assert analysis.run_metrics(dataset, key, run(False))["prof_gc_s"] is None
+
+
+def test_a_function_falls_in_the_same_part_in_every_mode(tmp_path):
+    # Frames as gobgpd's profiles name them, with their files.
+    from lab import profile
+    T, S = "github.com/osrg/gobgp/v4/internal/pkg/table.", "github.com/osrg/gobgp/v4/pkg/server."
+    table, opera, neighbor = "/src/internal/pkg/table/destination.go", "/src/internal/pkg/table/opera.go", "/src/internal/pkg/table/opera_neighbor.go"
+    decided_per_neighbor = [(T + "(*Destination).Calculate", table), (T + "(*operaView).feed", neighbor), (T + "(*Destination).OperaFeedSorted", neighbor)]
+    decided_alone = [(T + "(*Destination).Calculate", table), (T + "(*TableManager).Update", "/src/internal/pkg/table/table_manager.go")]
+    view = [(T + "(*operaView).export", neighbor), (T + "(*Destination).OperaExports", neighbor)]
+    pruned = [(T + "(*Destination).operaPruned", opera), (S + "(*BgpServer).propagateUpdate", "/src/pkg/server/server.go")]
+    read = [(T + "isOperaValid", opera), (T + "(*Table).Info", "/src/internal/pkg/table/table.go"), (S + "(*BgpServer).getRibInfo.func1", "/src/pkg/server/server.go")]
+    (tmp_path / "cpu-a-0.pb.gz").write_bytes(_pprof([(decided_per_neighbor, 10**9), (decided_alone, 10**9), (view, 10**9), (pruned, 10**9), (read, 10**9)]))
+    c = profile.of_run(tmp_path)["buckets"]
+    # The decision process wherever it is called, NS-BGP's tables are no OBGP, and what the lab reads is the API's, OBGP code in it too.
+    assert (c["decision"], c["tables"], c["obgp"], c["api"]) == (2, 1, 1, 1)
+
+
+def test_a_commit_is_faster_only_beyond_its_margin_with_its_guards_held_and_the_lab_steady(monkeypatch):
+    e = Experiment.model_validate({"name": "x", "runs": 8, "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "variants": [{"name": "base", "mode": "obgp-rp", "ref": "a"}, {"name": "fast", "mode": "obgp-rp", "ref": "b"},
+                                                {"name": "small", "mode": "obgp-rp", "ref": "c"}, {"name": "aa", "mode": "obgp-rp", "ref": "a"}],
+                                   "speed": {"baseline": "a", "metric": "cpu_s_mean", "margin_pct": 5, "guards": ["rss_mean"]}})
+    cpu = {"base": 100.0, "fast": 80.0, "small": 98.0, "aa": 100.0}
+    rss = {"base": 50.0, "fast": 50.0, "small": 50.0, "aa": 50.0}
+    runs = lambda: {str(RunKey("noble-eu", v, "fill-60", i)): {"cpu_s_mean": cpu[v] + i * 0.1 * (v not in ("base", "aa")) + i, "rss_mean": rss[v] + i}
+                    for v in cpu for i in range(1, 9)}  # noqa: E731
+    monkeypatch.setattr(analysis, "run_summary", lambda d: runs())
+    dataset = type("D", (), {"experiment": e})()
+    verdicts = {r["variant"]: r["verdict"] for r in analysis.speed(dataset, found=[])["cells"]}
+    # 20 % below: faster. 2 % below a margin of 5 %: no change shown. aa is the baseline's own commit, no candidate.
+    assert verdicts == {"fast": "faster", "small": "no change shown"}
+    rss["fast"] = 70.0
+    assert {r["variant"]: r["verdict"] for r in analysis.speed(dataset, found=[])["cells"]}["fast"] == "faster, worse elsewhere"
+    rss["fast"] = 50.0
+    cpu["aa"] = 110.0  # the baseline's own commit shifts: the lab is not steady, nothing is claimed
+    assert {r["variant"]: r["verdict"] for r in analysis.speed(dataset, found=[])["cells"]}["fast"] == "lab drifts"
+    cpu["aa"] = 100.0
+    found = [{"variant": "fast", "topology": "noble-eu", "scenario": "fill-60", "cause": "output"}]
+    assert {r["variant"]: r["verdict"] for r in analysis.speed(dataset, found=found)["cells"]}["fast"] == "behaves differently"
+
+
+def test_a_speed_rule_needs_commits_to_compare_an_aa_variant_and_runs_enough_for_every_comparison():
+    import pytest
+    make = lambda variants, runs=10: Experiment.model_validate({  # noqa: E731
+        "name": "x", "runs": runs, "topologies": ["noble-eu"], "scenarios": ["fill-60"], "variants": variants,
+        "speed": {"baseline": "a", "margin_pct": 5}})
+    v = lambda name, mode, ref: {"name": name, "mode": mode, "ref": ref}  # noqa: E731
+    with pytest.raises(ValueError, match="differ in their ref only"):
+        make([v("x", "obgp-rp", "a"), v("y", "bgp", "a")])
+    with pytest.raises(ValueError, match="A/A variant"):
+        make([v("x", "obgp-rp", "a"), v("y", "obgp-rp", "b")])
+    # Two modes, a candidate each: 2 comparisons at 2.5 % each need 7 runs.
+    two = [v("rp", "obgp-rp", "a"), v("rp-aa", "obgp-rp", "a"), v("rp-new", "obgp-rp", "b"),
+           v("bgp", "bgp", "a"), v("bgp-aa", "bgp", "a"), v("bgp-new", "bgp", "b")]
+    with pytest.raises(ValueError, match="2 comparisons, which need 7 runs, not 6"):
+        make(two, runs=6)
+    assert make(two, runs=7).speed.baseline == "a"
+
+
+def test_the_baseline_commit_is_the_same_in_every_mode_whatever_the_order_of_the_variants():
+    from lab import problems
+    v = lambda name, mode, ref: {"name": name, "mode": mode, "ref": ref}  # noqa: E731
+    e = Experiment.model_validate({"name": "x", "runs": 10, "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "variants": [v("bgp", "bgp", "old"), v("bgp-new", "bgp", "cand"), v("bgp-aa", "bgp", "old"),
+                                                v("rp-new", "obgp-rp", "cand"), v("rp", "obgp-rp", "old"), v("rp-aa", "obgp-rp", "old")],
+                                   "speed": {"baseline": "old", "margin_pct": 5}})
+    assert problems.twins_of(e) == {"bgp-new": ("bgp", "bgp-aa"), "bgp-aa": ("bgp", None), "rp-new": ("rp", "rp-aa"), "rp-aa": ("rp", None)}

@@ -16,7 +16,7 @@ from contextvars import ContextVar
 
 from pydantic import ValidationError
 
-from .. import analysis, cluster, config, estimate, host, marks, scenario, simulate, simulation, topology, update
+from .. import analysis, archive, cluster, config, estimate, host, marks, scenario, simulate, simulation, topology, update
 from ..config import Experiment
 from ..modes import MODES
 from ..problems import grouped, verdict
@@ -80,9 +80,14 @@ def experiments() -> list[dict]:
 
 
 def results() -> list[dict]:
-    """Every result, the newest first, with its progress and, once finished, its verdict."""
-    return [{"name": d.name, "experiment": d.experiment.name, "public": d.public, "created": d.meta.get("created"), **_progress(d),
-             "verdict": _verdict_of(d)} for d in Dataset.all()]
+    """Every result, the newest first, with its state (private, archived or legacy), its progress and, once
+    finished, its verdict. Then the archived results on Zenodo not in this lab, which fetch_result fetches."""
+    here = Dataset.all()
+    names = {d.name for d in here}
+    return [*({"name": d.name, "experiment": d.experiment.name, "state": d.state, "created": d.meta.get("created"), **_progress(d),
+               "verdict": _verdict_of(d)} for d in here),
+            *({"name": line["name"], "state": "on Zenodo", "doi": line["doi"], "bytes": line["bytes"]}
+              for line in archive.index() if line["name"] not in names)]
 
 
 def _verdict_of(d: Dataset) -> dict:
@@ -103,7 +108,8 @@ def result(name: str) -> dict:
             "variants": [{"name": v.name, "mode": v.summary(), "commit": d.commits.get(v.name, "")[:12]} for v in e.variants],
             "bgp": e.bgp.model_dump(), "sampling": e.sampling.model_dump(), "cluster": {**e.cluster.model_dump(), **(d.meta.get("cluster") or {})},
             "problems": {kind: sum(p["kind"] == kind for p in found) for kind in ("error", "check", "property", "unmeasured", "retried")},
-            "verdict": verdict(d, found), "marks": marks.of("result", d.name)}
+            "verdict": verdict(d, found), "marks": marks.of("result", d.name),
+            "state": d.state, "zenodo": d.zenodo or None, "index_entry": archive.entry(d) if d.state == "archived" else None}
 
 
 def metrics() -> dict:
@@ -137,6 +143,48 @@ def runs(name: str, topology: str = "", scenario: str = "", variant: str = "", m
         if (topology and t != topology) or (scenario and s != scenario) or (variant and v != variant):
             continue
         out.append({"topology": t, "variant": v, "scenario": s, "run": int(i), "metrics": {k: x for k, x in m.items() if not metrics or k in metrics}})
+    return out
+
+
+def profile(name: str, topology: str, scenario: str, variant: str, run: int = 0, baseline: str = "", top: int = 15) -> dict:
+    """Where the profiled routers spent their CPU in a cell, from the CPU profiles
+    beside its runs, per run on average: seconds in all and per part, the
+    functions with the most seconds at the leaf (flat) and anywhere on the stack
+    (cum), and the allocated MiB by function. Only runs whose profiles reached
+    rest uncut count. All runs or one. With baseline, the same of that variant and
+    each function's change against it."""
+    from .. import profile as prof
+
+    d = _result(name)
+
+    def of(v: str) -> dict:
+        found = analysis.profile_cell(d, topology, scenario, v, run)
+        if not found["runs"]:
+            raise LookupError(f"no complete CPU profiles of {topology}/{v}/{scenario}{f' run {run}' if run else ''} "
+                              f"({found['left_out']} runs cut before rest or without one): run it with sampling.profile_s")
+        return found
+
+    mine = of(variant)
+    out = {"variant": variant, "runs": mine["runs"], "left_out": mine["left_out"], "seconds_per_run": round(mine["seconds"], 2),
+           "buckets": {b: round(s, 2) for b, s in mine["buckets"].items()},
+           "flat": prof.top(mine["flat"], top), "cum": prof.top(mine["cum"], top),
+           "allocated_mb": prof.top(mine["allocated"], top), "buckets_are": prof.__doc__.split("\n\n")[1].replace("\n", " ")}
+    if baseline:
+        base = of(baseline)
+        change = {fn: mine["cum"].get(fn, 0) - base["cum"].get(fn, 0) for fn in mine["cum"].keys() | base["cum"].keys()}
+        out["baseline"] = {"variant": baseline, "runs": base["runs"], "seconds_per_run": round(base["seconds"], 2),
+                           "buckets": {b: round(s, 2) for b, s in base["buckets"].items()},
+                           "cum_change": [[fn, round(c, 3)] for fn, c in sorted(change.items(), key=lambda x: (-abs(x[1]), x[0]))[:top]]}
+    return out
+
+
+def speed(name: str) -> dict:
+    """Whether each candidate commit is faster than the baseline commit of its
+    mode, by the speed rule the experiment set before its runs: per cell the
+    paired shift with its interval at the corrected level, Holm's p, the
+    guards, the A/A variant and the verdict."""
+    if (out := analysis.speed(_result(name))) is None:
+        raise LookupError(f"{name} has no speed rule: its experiment sets none")
     return out
 
 
@@ -485,6 +533,17 @@ def start(experiment: str) -> dict:
     return {"result": result, "queue": jobs.queue()}
 
 
+@controlled(lambda name: f"fetch {name} from Zenodo")
+def fetch_result(name: str) -> dict:
+    """Fetches an archived result of the index from Zenodo into this lab, checked file by file against its manifest."""
+    line = next((line for line in archive.index() if line["name"] == name), None)
+    if not line:
+        raise ValueError(f"{name} is not in the index of archived results")
+    archive.fetch(line)
+    tokens.record(f"fetched {name} from Zenodo")
+    return result(name)
+
+
 @controlled(lambda name: f"stop {name}")
 def stop(name: str) -> dict:
     """Stops a running or waiting result. It can be resumed later."""
@@ -728,7 +787,7 @@ def add_note(kind: str, name: str, text: str, color: str = "") -> dict:
 
 @controlled(lambda note_id, text=None, done=None, color=None: f"change note {note_id}")
 def edit_note(note_id: str, text: str | None = None, done: bool | None = None, color: str | None = None) -> dict:
-    """Changes the text or colour of a note, or marks it done or open again."""
+    """Changes the text or color of a note, or marks it done or open again."""
     note = marks.edit(note_id, text, done, color)
     tokens.record(f"changed note {note_id}")
     return note

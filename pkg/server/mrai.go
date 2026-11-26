@@ -12,7 +12,8 @@ import (
 // of them goes out per MinRouteAdvertisementInterval (RFC 4271, 9.2.1.1),
 // as routers commonly do towards eBGP peers. A newer advertisement of a
 // route replaces the one that waits. Withdrawals are not held back, and
-// drop an advertisement of the same route that waits. A route is a prefix,
+// drop an advertisement of the same route that waits. An End-of-RIB marker
+// goes out after what waits. A route is a prefix,
 // or with Add-Path send a path of it. Without an interval everything goes
 // out at once.
 type mrai struct {
@@ -41,6 +42,14 @@ func (m *mrai) add(paths []*table.Path, now time.Time) []*table.Path {
 	}
 	var send []*table.Path
 	for _, p := range paths {
+		if p.IsEOR() { // no route: behind what waits, else at once
+			if len(m.waiting) > 0 {
+				m.order = append(m.order, p)
+			} else {
+				send = append(send, p)
+			}
+			continue
+		}
 		k := m.key(p)
 		if i, ok := m.waiting[k]; ok {
 			m.order[i] = nil
@@ -56,7 +65,23 @@ func (m *mrai) add(paths []*table.Path, now time.Time) []*table.Path {
 	if len(m.waiting) > 0 && now.Sub(m.last) >= m.interval {
 		send = append(send, m.flush(now)...)
 	}
-	return send
+	return append(send, m.leftover()...)
+}
+
+// leftover returns the End-of-RIB markers that waited behind routes that are
+// gone, as nothing else waits now.
+func (m *mrai) leftover() []*table.Path {
+	if len(m.waiting) > 0 || len(m.order) == 0 {
+		return nil
+	}
+	var out []*table.Path
+	for _, p := range m.order {
+		if p != nil {
+			out = append(out, p)
+		}
+	}
+	m.order = nil
+	return out
 }
 
 // answer takes the paths that answer a route refresh, which go out at once:
@@ -64,12 +89,15 @@ func (m *mrai) add(paths []*table.Path, now time.Time) []*table.Path {
 // that waits is dropped.
 func (m *mrai) answer(paths []*table.Path) []*table.Path {
 	for _, p := range paths {
+		if p.IsEOR() { // no route, nothing to drop
+			continue
+		}
 		if i, ok := m.waiting[m.key(p)]; ok {
 			m.order[i] = nil
 			delete(m.waiting, m.key(p))
 		}
 	}
-	return paths
+	return append(paths, m.leftover()...)
 }
 
 // flush returns what waits, if its interval has passed.

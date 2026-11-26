@@ -41,7 +41,7 @@ a subset of what the proof allows.
   and oscillate.
 - **Fewer lost routes.** Admitting more makes the advertised worst path longer, so neighbors filter or
   reject it more often.
-- **Less state.** Fewer admitted paths are the measured gain of OBGP over BGP.
+- **Less state.** Fewer paths are admitted.
 
 In the search the proof's rule oscillates behind route servers, in iBGP and in confederations, this
 rule never does. Under policies the proof's rule also loses routes more often.
@@ -140,8 +140,8 @@ forward valley (`obgp-sim`, kind `forward-valley`), under Gao-Rexford from four 
 packet follows the AS path the router sent, hop by hop: at rest each router sends a path it holds from
 its next hop, which sent it exactly the rest of that path. So forwarding is loop-free as AS paths are
 and follows the relations as the exports do. The router's own packets join that chain at their next
-hop. *Cost:* a FIB per table, shared where the tables are, and tunnels inside an AS, as NS-BGP.
-gobgpd installs no FIB, so lab and simulator check forwarding by ingress, as for NS-BGP.
+hop. That needs a FIB per table, shared where the tables are, and tunnels inside an AS, as NS-BGP.
+gobgpd installs none, so lab and simulator check forwarding by ingress.
 
 *Proof:* outside, simulated. For BGP, [Neighbor-Specific BGP](https://arxiv.org/abs/0906.3846) (Y. Wang,
 M. Schapira, J. Rexford, SIGMETRICS 2009) shows that BGP with a choice per neighbor converges under
@@ -152,8 +152,7 @@ eBGP neighbors that is up to n² entries per destination. Neighbors whose export
 alike on every path fed so far share one table, under Gao-Rexford the customers. The first path they
 differ on copies the table. A table a path brings into the state of another, and a table built for a
 neighbor that comes up, joins that one, much as routers group neighbors with the same outbound policy
-into update groups. So a
-shared table decides exactly as a table of its own. *Proof:* as for tables per neighbor, sharing
+into update groups. So a shared table decides exactly as a table of its own. *Proof:* as for tables per neighbor, sharing
 changes nothing.
 *Code:* `OperaFeedAll`, `operaMerge`, `OperaShare`, tested against tables of their own in every pruning mode.
 
@@ -219,7 +218,8 @@ AS. The paper's code loses more.
 
 - **MRAI:** GoBGP read it but never applied it. `pkg/server/mrai.go` holds back advertisements per
   peer and prefix, per path with Add-Path send. Withdrawals go out at once and drop what waits for
-  the prefix. *Proof:* holds, the last message computed is the last one the neighbor gets.
+  the prefix. An End-of-RIB marker, which has no prefix, goes out after what waits. *Proof:* holds,
+  the last message computed is the last one the neighbor gets.
 - **Forwarding:** the FIB gets GoBGP's best path, chosen among admitted paths. *Proof:* holds, the
   paper's local preference may choose any admitted path.
 - **Fixes:** soft reset out withdraws newly rejected routes, the API marks the best path again, ties

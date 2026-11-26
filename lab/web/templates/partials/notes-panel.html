@@ -6,7 +6,7 @@
 <input type="hidden" name="here_kind" value="{{ here.kind if here else '' }}"><input type="hidden" name="here_name" value="{{ here.name if here else '' }}"><input type="hidden" name="view" value="{{ view }}">
 {%- endmacro %}
 {% macro colors(chosen) -%}
-<span class="note-colors" role="radiogroup" aria-label="Colour">{% for c in ["yellow", "pink", "blue", "violet", "orange"] %}<label class="note-swatch note-{{ c }}" data-tip="{{ c | capitalize }}"><input type="radio" name="color" value="{{ c }}" class="sr-only" {% if c == (chosen or "yellow") %}checked{% endif %} aria-label="{{ c | capitalize }}"></label>{% endfor %}</span>
+<span class="note-colors" role="radiogroup" aria-label="Color">{% for c in ["yellow", "pink", "blue", "violet", "orange"] %}<label class="note-swatch note-{{ c }}" data-tip="{{ c | capitalize }}"><input type="radio" name="color" value="{{ c }}" class="sr-only" {% if c == (chosen or "yellow") %}checked{% endif %} aria-label="{{ c | capitalize }}"></label>{% endfor %}</span>
 {%- endmacro %}
 {% macro card(n, show_done=true) -%}
 <article class="note note-{{ n.color or 'yellow' }}{{ ' is-done' if n.done }}" data-note>

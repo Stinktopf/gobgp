@@ -113,13 +113,13 @@ elif [ "$instances" -lt 1024 ] || [ "$watches" -lt 524288 ]; then
   record "inotify-after $instances $watches"
   record_hash /etc/sysctl.d/90-obgp-lab.conf
 fi
-# One neighbour (ARP) table for all containers of the host: each router holds an entry per BGP neighbour.
+# One neighbor (ARP) table for all containers of the host: each router holds an entry per BGP neighbor.
 # Full, it drops packets, also of the cluster's own API. Its own file, so that the inotify rollback stays as it is.
 neigh=/proc/sys/net/ipv4/neigh/default
 neigh_conf=/etc/sysctl.d/90-obgp-lab-neigh.conf
 t1="$(cat $neigh/gc_thresh1)" t2="$(cat $neigh/gc_thresh2)" t3="$(cat $neigh/gc_thresh3)"
 if [ "$t3" -lt 16384 ] && [ "$no_sudo" = yes ]; then
-  printf '  %s\n' "The kernel's neighbour table holds $t3 entries and setup does not change it without sudo." \
+  printf '  %s\n' "The kernel's neighbor table holds $t3 entries and setup does not change it without sudo." \
     "Topologies with thousands of BGP sessions, such as core-64, cannot run." \
     "An administrator can raise it, never lowering anything:" \
     "  printf 'net.ipv4.neigh.default.gc_thresh1 = 8192\\nnet.ipv4.neigh.default.gc_thresh2 = 32768\\nnet.ipv4.neigh.default.gc_thresh3 = 65536\\n' | sudo tee $neigh_conf" \

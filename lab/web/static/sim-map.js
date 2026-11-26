@@ -13,7 +13,7 @@
   const r = (x) => `r${x}`;
   const mix = (c, f) => { const n = parseInt(c.slice(1), 16), m = (v) => Math.round(v + (255 - v) * f); return "#" + [n >> 16, (n >> 8) & 255, n & 255].map((v) => m(v).toString(16).padStart(2, "0")).join(""); };
   const tint = (c, a) => c + Math.round(a * 255).toString(16).padStart(2, "0");
-  // A colour light enough to read on the dark bubble.
+  // A color light enough to read on the dark bubble.
   const light = (c) => mix(c, 0.45);
   const kinds = { update: "update", withdraw: "withdrawal", refresh: "request to resend", "end-of-rib": "end of its table" };
   // What a router does with a route that arrives, from the trace's fate, and why the other route wins.
@@ -429,17 +429,17 @@
       TL, phaseText, problemAt
     } = m;
     const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-    // Router colours, --router-1 to --router-8 in styles.css: none of the lab's meanings (U of T blue a route,
+    // Router colors, --router-1 to --router-8 in styles.css: none of the lab's meanings (U of T blue a route,
     // teal a role, violet waits, rose the problem), lighter in dark mode.
     let HUES = [];
     const hue = (x) => HUES[x % HUES.length];
     let C = {};
-    const colours = () => {
+    const colors = () => {
       HUES = Array.from({ length: 8 }, (_, i) => css(`--router-${i + 1}`));
       C = { card: css("--graph-bg"), tip: css("--graph-tip"), belt: css("--graph-none"), muted: css("--graph-node"), faint: css("--graph-none-line"),
         rose: css("--graph-problem"), roseSoft: css("--graph-problem-soft"), violet: css("--graph-waits"), role: css("--graph-role"), group: css("--graph-node"), frame: css("--graph-as-1") };
     };
-    colours();
+    colors();
 
     // A chip in a path: the router of that AS, the AS when it holds several routers, the confederation, or "ext".
     // A chip in a path: the router of that AS, the letter of its frame for an AS of several routers or a confederation,
@@ -514,7 +514,7 @@
         el("text", { x: mx - g.nx * d, y: my - g.ny * d + 5, "text-anchor": "middle", "font-size": 13.5, "font-weight": 600, fill: C.rose, stroke: C.card, "stroke-width": 4, "paint-order": "stroke" }, svg).textContent = "packets circle";
         break;
       }
-      // Belts: grey and still, or running in the colour of the router whose packets go on them, finer and paler where it
+      // Belts: grey and still, or running in the color of the router whose packets go on them, finer and paler where it
       // only passes on packets of a neighbor (a table per neighbor). A link that is down: cut.
       for (const [p, q] of lanes) {
         if (down(k, p, q)) {
@@ -588,7 +588,7 @@
         pg.addEventListener("mouseleave", () => lab.setAttribute("opacity", pinned ? 1 : 0));
         pg.addEventListener("click", () => { pinned = !pinned; lab.setAttribute("opacity", pinned ? 1 : 0); });
       });
-      // Routers: a card with a border in its colour, dashed without a route, rose in the loop. Inside, its table,
+      // Routers: a card with a border in its color, dashed without a route, rose in the loop. Inside, its table,
       // each route as the full path from the router. With OBGP the worst kept one is the threshold a new route must beat.
       for (let x = 0; x < N; x++) {
         const [cx, cy] = POS[x], rt = R(k, x), on = !!rt.best, c = hue(x), g = el("g", { "data-router": x }, svg);
@@ -663,7 +663,7 @@
       tailSide = best.tail;
       return [best.left, best.top];
     }
-    // A bubble of items: a text, wrapped, router names in their colour, or {chips: path} on a line of its own.
+    // A bubble of items: a text, wrapped, router names in their color, or {chips: path} on a line of its own.
     // A small tail points at the router it speaks for.
     function drawBubble(x, items) {
       const rows = [];
@@ -774,7 +774,7 @@
       parts.speedLabel.textContent = speed() === 0.5 ? "½×" : `${speed()}×`;
       if (timer) { clearInterval(timer); timer = setInterval(tick, 1400 / speed()); }
     };
-    const onTheme = () => { colours(); go(pos, true); };
+    const onTheme = () => { colors(); go(pos, true); };
     document.addEventListener("lab:theme", onTheme);
     buildTrack();
     go(0, true);

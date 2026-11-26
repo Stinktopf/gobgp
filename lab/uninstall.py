@@ -15,7 +15,7 @@ SETTINGS_FILES = {
     "host.yaml", "lifecycle.json", "web.json", "initial-password", "tls.crt", "tls.key",
     "notify.json", "cluster-policy.json", "serve.json", "serve.log", "serve.lock", "lifecycle.lock",
     "gpu-seen", "web-stopped", "watch.log", "watch.json", "serve.log.1", "watch.log.1", "watch.path",
-    "tokens.json", "agents.json", "agents.log", "groups.json", "pending.json", "cluster-busy",
+    "tokens.json", "zenodo.json", "analyse.lock", "agents.json", "agents.log", "groups.json", "pending.json", "cluster-busy",
     "host-history.jsonl", "host-history.tmp", "marks.lock",
 }
 SETTINGS_DIRS = {"analysing", "served-static"}  # locks of analyses, the copy of the pages a started server serves

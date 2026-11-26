@@ -11,10 +11,10 @@ import re
 import tempfile
 import urllib.request
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ROOT = Path(__file__).resolve().parent.parent
 DIRECTORY = ROOT / "experiments"
@@ -161,6 +161,7 @@ class Variant(Model):
     interval: float | None = Field(None, ge=0.01, description="Seconds between two samples, else the experiment's")
     refresh_delay: float | None = Field(None, gt=0, le=600, description="Seconds the first route refresh to a neighbor waits, else none")
     per_neighbor: bool = Field(False, description="A table per eBGP neighbor (GOBGP_OPERA_EXPORT=neighbor): OBGP per neighbor, with bgp NS-BGP, not in obgp-paper")
+    records: bool = Field(False, description="In a benchmark: runs the workload and records what the router receives, the input of the others' feeds")
 
     @model_validator(mode="before")
     @classmethod
@@ -244,8 +245,16 @@ class Bgp(Model):
 
 class Sampling(Model):
     interval: float = Field(0.1, ge=0.01, description="Seconds between two samples of every router")
-    stable_s: float = Field(3.0, gt=0, description="Seconds a state must hold to count as stable")
-    profile_s: float = Field(0, ge=0, le=300, description="Seconds of a CPU profile of the router with the most neighbors, from the first announcement on, 0 for none")
+    stable_s: float = Field(3.0, gt=0, description="Seconds without route changes or updates that count as rest")
+    profile_s: float = Field(0, ge=0, le=600, description="Seconds at most of CPU profiles of the routers with the most neighbors, in chunks of "
+                                                         "5 s from the first announcing step until rest and its quiet time, 0 for none. "
+                                                         "A profile cut before rest is kept but not measured")
+    profile_routers: int = Field(1, ge=1, le=8, description="How many of the routers with the most neighbors keep CPU profiles")
+    paths: bool = Field(True, description="The routers read their paths while they sample, for loops and black holes on the way and "
+                                          "path lengths; false leaves those unmeasured and the routers' CPU their own")
+    record_routers: int = Field(0, ge=0, le=8, description="How many of the routers with the most neighbors record every UPDATE they receive, "
+                                                           "as MRT beside the run: the source of a feed. Recording costs them time, so such a "
+                                                           "run measures them less exactly")
 
     def digits(self) -> int:
         """Decimals that times measured at this interval can show."""
@@ -265,6 +274,66 @@ class Sweep(Model):
         if len(set(self.values)) != len(self.values):
             raise ValueError("every value only once")
         return self
+
+
+class Speed(Model):
+    """Whether a commit is faster than the baseline commit of its mode, by a
+    rule set before the runs: the commits are variants that differ in their
+    ref only. A candidate is faster where its paired shift of the metric lies
+    below minus margin_pct of the baseline's median, at a level corrected for
+    the number of comparisons, while it chooses and sends what the baseline
+    does at rest, no guard gets worse by more than guard_pct, and an A/A
+    variant of the baseline's own commit shows no shift of its own."""
+
+    baseline: str = Field(pattern=r"^[A-Za-z0-9_.][A-Za-z0-9_./^~@{}-]{0,199}$", description="The ref of the baseline commit, in every mode; "
+                                                                                       "each mode has it twice, the second its A/A variant")
+    metric: str = Field("cpu_s_mean", description="The metric that tells speed, lower is faster")
+    margin_pct: float = Field(gt=0, le=100, description="The smallest gain that counts, in percent of the baseline's median, "
+                                                        "set from A/A pairs before the runs")
+    guards: list[str] = Field(["settle_s", "rss_mean", "flaps"], description="Metrics that must not get worse")
+    guard_pct: float = Field(10, ge=0, le=100, description="How much worse a guard may get, in percent of the baseline's median; "
+                                                           "times also by their resolution")
+
+
+REF = r"^[A-Za-z0-9_.][A-Za-z0-9_./^~@{}-]{0,199}$"
+
+
+class Benchmark(Model):
+    """Whether candidate commits are faster than a baseline commit, in one
+    result: per mode the baseline, the baseline a second time (its A/A
+    variant) and each candidate run the workload, the experiment's
+    topologies and scenarios, on the whole network. With feed, the baseline
+    first records what the router receives, once per mode, and the others
+    get that router alone fed it again: one router on a fixed input. The
+    variants, the speed rule and the profiles follow from it."""
+
+    baseline: str = Field(pattern=REF, description="The ref of the baseline commit")
+    candidates: list[str] = Field(min_length=1, max_length=4, description="The refs of the commits compared with it")
+    modes: list[str] = Field(min_length=1, description="Modes as variants name them, e.g. obgp-rp-pn for OBGP with refresh pruning per neighbor")
+    router: str = Field("busiest", description="The router profiled, and fed with feed: busiest for the one with the most neighbors")
+    feed: bool = Field(False, description="One router alone on what it received in a recording of the baseline, instead of the whole network")
+    schedule: Literal["flood", "paced"] = "flood"
+
+    @field_validator("candidates")
+    @classmethod
+    def _refs(cls, refs: list[str]) -> list[str]:
+        if bad := [r for r in refs if not re.match(REF, r)]:
+            raise ValueError(f"not a git ref: {', '.join(bad)}")
+        return refs
+
+    def variants(self) -> list[dict]:
+        """Per mode the recording, the baseline, its A/A variant and every candidate."""
+        out = []
+        for name in self.modes:
+            mode, per_neighbor = (name[:-3], True) if name.endswith("-pn") else (name, False)
+            base = {"mode": mode, "per_neighbor": per_neighbor}
+            if self.feed:
+                out.append({"name": f"{name}-record", "ref": self.baseline, "records": True, **base})
+            out.append({"name": name, "ref": self.baseline, **base})
+            out.append({"name": f"{name}-aa", "ref": self.baseline, **base})
+            for i, ref in enumerate(self.candidates, 1):
+                out.append({"name": f"{name}-new" if len(self.candidates) == 1 else f"{name}-new{i}", "ref": ref, **base})
+        return out
 
 
 class Primary(Model):
@@ -302,6 +371,32 @@ class Experiment(Model):
     sampling: Sampling = Sampling()
     sweeps: list[Sweep] = []
     primary: Primary | None = None
+    speed: Speed | None = None
+    benchmark: Benchmark | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _benchmark(cls, data):
+        """A benchmark gives its variants, a speed rule against its baseline,
+        and profiles of the router fed until rest without paths read, unless the file sets them."""
+        if not isinstance(data, dict) or not data.get("benchmark"):
+            return data
+        b = Benchmark.model_validate(data["benchmark"])
+        data = dict(data)
+        if not data.get("variants"):
+            data["variants"] = b.variants()
+        if not data.get("speed"):  # also where a form sends none
+            data["speed"] = {"baseline": b.baseline, "margin_pct": 5}
+        data["sampling"] = {"profile_s": 300, "profile_routers": 1, "paths": False} | dict(data.get("sampling") or {})
+        return data
+
+    def record_of(self, variant: str) -> str | None:
+        """In a benchmark, the recording variant whose runs feed this variant."""
+        mine = next((v for v in self.variants if v.name == variant), None)
+        if not self.benchmark or not mine or mine.records:
+            return None
+        same = lambda v: v.model_dump(exclude={"name", "ref", "records"}) == mine.model_dump(exclude={"name", "ref", "records"})  # noqa: E731
+        return next((v.name for v in self.variants if v.records and same(v)), None)
     # Each scenario runs on the topology of its own name only, e.g. the
     # counterexamples of the simulator, instead of on every topology.
     paired: bool = False
@@ -377,6 +472,26 @@ class Experiment(Model):
                 raise ValueError(f"the primary comparison needs a baseline and other variants of {', '.join(names)}")
             if p.metric not in METRICS:
                 raise ValueError(f"the primary comparison needs a metric of the lab, not {p.metric}")
+        if s := self.speed:
+            from .analysis import METRICS
+
+            if unknown := [m for m in [s.metric, *s.guards] if m not in METRICS]:
+                raise ValueError(f"the speed rule needs metrics of the lab, not {', '.join(unknown)}")
+            groups: dict[str, list] = {}
+            for v in self.variants:
+                groups.setdefault(repr(sorted(v.model_dump(exclude={"name", "ref"}).items())), []).append(v)
+            compared = [g for g in groups.values() if any(v.ref != s.baseline for v in g)]
+            if not compared:
+                raise ValueError("the speed rule compares commits: it needs variants that differ in their ref only")
+            for g in compared:
+                if sum(v.ref == s.baseline for v in g) < 2:
+                    raise ValueError(f"the speed rule needs the baseline {s.baseline} twice beside {', '.join(v.name for v in g if v.ref != s.baseline)}: "
+                                     f"the second is its A/A variant, which tells timing and drift")
+            # Exact paired tests reach a level of at most 1 - 2 / 2^n: enough runs for every comparison at its corrected level.
+            cells = sum(v.ref != s.baseline for g in compared for v in g) * sum(len(self.cases_of(t)) for t in self.topologies)
+            if 2 / 2 ** self.runs > 0.05 / cells:
+                need = next(n for n in range(2, 40) if 2 / 2 ** n <= 0.05 / cells)
+                raise ValueError(f"the speed rule makes {cells} comparisons, which need {need} runs, not {self.runs}")
         return self
 
     def check_files(self) -> None:
@@ -452,6 +567,7 @@ class Experiment(Model):
             network = scenario.Network(data["routers"], data["roles"])
             for s in (self.scenarios if not self.paired else [x for x in self.scenarios if x == t]):
                 steps = scenario.load(s).steps
+                problems += feed_problems(s, t, steps, network, self.variants)
                 for index in range(1, self.runs + 1):
                     for step, target in scenario.preview_targets(steps, network, self.seed, index).items():
                         if "error" in target:
@@ -464,7 +580,8 @@ class Experiment(Model):
 
     def runs_total(self, skip=()) -> int:
         """The runs of a result, without those on the topologies in skip: those a host is too small for."""
-        return len(self.variants) * sum(t not in skip for t, _ in self.combinations()) * self.runs
+        per = sum(1 if v.records else self.runs for v in self.variants)  # a benchmark records once
+        return per * sum(t not in skip for t, _ in self.combinations())
 
     @classmethod
     def load(cls, path: Path) -> "Experiment":
@@ -481,7 +598,8 @@ class Experiment(Model):
 
     def to_yaml(self) -> str:
         """The experiment file, compact and without default values."""
-        flow = lambda d: "{" + ", ".join(f"{k}: {_scalar(v)}" for k, v in d.items()) + "}"
+        value = lambda v: "[" + ", ".join(_scalar(x) for x in v) + "]" if isinstance(v, list) else _scalar(v)  # noqa: E731
+        flow = lambda d: "{" + ", ".join(f"{k}: {value(v)}" for k, v in d.items()) + "}"
         lines = [f"name: {self.name}"]
         if self.description:
             lines.append(f"description: {_scalar(self.description)}")
@@ -491,8 +609,12 @@ class Experiment(Model):
         for key in ("cluster", "bgp", "sampling"):
             if values := getattr(self, key).model_dump(exclude_defaults=True):
                 lines.append(f"{key}: {flow(values)}")
-        lines.append("variants:")
-        lines += [f"  - {flow(v.model_dump(exclude_defaults=True))}" for v in self.variants]
+        if self.benchmark:  # its variants follow from it
+            b = self.benchmark.model_dump(exclude_defaults=True)
+            lines.append(f"benchmark: {flow(b)}")
+        else:
+            lines.append("variants:")
+            lines += [f"  - {flow(v.model_dump(exclude_defaults=True))}" for v in self.variants]
         lines.append(f"topologies: [{', '.join(self.topologies)}]")
         if self.paired:
             lines.append("paired: true")
@@ -503,6 +625,9 @@ class Experiment(Model):
             lines += [f"  - {{scenario: {w.scenario}, param: {w.param}, values: [{', '.join(f'{v:g}' for v in w.values)}]}}" for w in self.sweeps]
         if self.primary:
             lines.append(f"primary: {flow({k: ('[' + ', '.join(v) + ']' if isinstance(v, list) else v) for k, v in self.primary.model_dump(exclude_defaults=True).items()})}")
+        if self.speed:
+            s = self.speed.model_dump(exclude_defaults=True) | {"baseline": self.speed.baseline, "margin_pct": self.speed.margin_pct}
+            lines.append(f"speed: {flow(s)}")
         return "\n".join(lines) + "\n"
 
 
@@ -595,3 +720,30 @@ def download_once(url: str, path: Path, limit: int, timeout: float = 120) -> Pat
     finally:
         part.unlink(missing_ok=True)
     return path
+
+
+def feed_problems(name: str, topology: str, steps: list, network, variants: list | None = None) -> list[str]:
+    """What keeps the feeds of a scenario from running on a topology: one feed
+    at most, alone in its scenario, the recording it plays has to exist, and
+    the variants have to be of the recorded variant's mode and settings."""
+    from . import results, scenario
+
+    feeds = [st for st in scenario.each_step(steps) if st.kind == "feed"]
+    if not feeds:
+        return []
+    if len(feeds) > 1 or len(steps) > 1 and any(st.kind not in ("feed", "wait") for st in steps):
+        return [f"{name}: a feed runs the router alone, so its scenario has one feed and waits at most"]
+    f = feeds[0].args
+    target = network.busiest()[0] if f.router == "busiest" else f.router
+    result, variant, scenario_, index = f.source.split("/")
+    dataset = results.Dataset.find(result)
+    path = dataset and dataset.path / topology / variant / scenario_ / index / f"updates-{target}.mrt.gz"
+    if not path or not path.exists():
+        return [f"{name} on {topology} feeds {target} from {f.source}, which has no recording of it: "
+                f"run that result with sampling.record_routers"]
+    # The recording's input was shaped by the recorded mode's own answers: it feeds that mode only, fair to none else.
+    recorded = next((v for v in dataset.experiment.variants if v.name == variant), None) if dataset.experiment else None
+    settings = lambda v: v.model_dump(exclude={"name", "ref", "interval"})  # noqa: E731
+    if recorded and variants and (other := [v.name for v in variants if settings(v) != settings(recorded)]):
+        return [f"{name} feeds the recording of {variant}, which only variants of its mode and settings may get, not {', '.join(other)}"]
+    return []

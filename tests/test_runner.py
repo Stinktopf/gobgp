@@ -99,6 +99,11 @@ class Sampler:
     def wait_quiet(self, seconds, timeout, stop):
         return True
 
+    t0 = 1000.0
+
+    def offset(self, router):
+        return 2.0
+
 
 def engine(lab_files, topology_name="bad-gadget"):
     run = object.__new__(runner.Run)
@@ -120,7 +125,10 @@ def engine(lab_files, topology_name="bad-gadget"):
     run.topology = t
     run.waited = []
     run.wait = run.waited.append
-    run.profiled = ""
+    run.profiled, run.profiles, run.recorded = [], [], []
+    run.profile_end, run.profile_rested = None, False
+    run.feed, run.feeders = None, []
+    run.variant = run.experiment.variants[0]
     return run
 
 
@@ -763,8 +771,8 @@ def test_the_routers_go_away_before_the_run_is_written(lab_files, monkeypatch, l
         def pods(self):
             return {}
 
-        def restarts(self):
-            return 0, []
+        def restarted(self):
+            return 0, [], ""
 
         def addresses(self):
             order.append("addresses")
@@ -970,18 +978,87 @@ def test_the_final_check_gives_up_on_a_router_that_never_answers(lab_files):
         run.final_tables()
 
 
-def test_a_run_profiles_the_router_with_the_most_neighbors_once_and_keeps_the_profile(lab_files, tmp_path):
+def profiling(run, seconds=30, routers=1):
+    sampling = run.experiment.sampling.model_copy(update={"profile_s": seconds, "profile_routers": routers})
+    run.experiment = run.experiment.model_copy(update={"sampling": sampling})
+    return sorted(run.network.routers, key=lambda r: (-len(run.network.routers[r].get("neighbors", [])), r))[:routers]
+
+
+def test_a_run_profiles_the_routers_with_the_most_neighbors_once_and_keeps_each_chunk_in_its_time(lab_files, tmp_path):
     import base64
     run = engine(lab_files)
-    run.experiment = run.experiment.model_copy(update={"sampling": run.experiment.sampling.model_copy(update={"profile_s": 30})})
+    busiest = profiling(run, routers=2)
     run.spool = tmp_path
-    busiest = max(sorted(run.network.routers), key=lambda r: len(run.network.routers[r].get("neighbors", [])))
     run.profile_cpu()
     run.profile_cpu()
-    assert [c for c in run.routers.calls if c[1] == "/cpu"] == [(busiest, "/cpu", {"seconds": 30})]
-    run.routers.get = lambda router, path, timeout=2: {"seconds": 30, "taken": 1.0, "profile": base64.b64encode(b"pprof").decode()}
+    assert [c for c in run.routers.calls if c[1] == "/cpu"] == [(r, "/cpu", {"seconds": 30}) for r in busiest]
+    b64 = lambda b: base64.b64encode(b).decode()  # noqa: E731
+    run.routers.get = lambda router, path, timeout=2: {
+        "seconds": 30, "done": True, "allocs_start": b64(b"a0"), "allocs_end": b64(b"a1"),
+        "chunks": [{"started": 1012.5, "seconds": 5, "profile": b64(b"p0")}, {"started": 1017.5, "seconds": 5, "profile": b64(b"p1")}]}
+    run.sampler.t = 19.9
+    run.stop_cpu(True)  # at rest, 20 s into the run
     run.keep_cpu()
-    assert (tmp_path / f"cpu-{busiest}.pb.gz").read_bytes() == b"pprof"
+    assert sorted(c[0] for c in run.routers.calls if c[1] == "/cpu/stop") == sorted(busiest)  # once each, at rest
+    first = busiest[0]
+    # started 1012.5 on a clock 2 s ahead of a run that began at 1000: 10.5 s into the run
+    assert (tmp_path / f"cpu-{first}-10.5.pb.gz").read_bytes() == b"p0"
+    assert (tmp_path / f"cpu-{first}-15.5.pb.gz").read_bytes() == b"p1"
+    assert (tmp_path / f"allocs-{first}-start.pb.gz").read_bytes() == b"a0" and (tmp_path / f"allocs-{first}-end.pb.gz").read_bytes() == b"a1"
+    assert run.profiles[0] == {"router": first, "chunks": [{"t": 10.5, "seconds": 5}, {"t": 15.5, "seconds": 5}], "end": 20.0, "complete": True}
+
+
+def test_a_profile_cut_before_rest_or_without_rest_is_kept_but_not_complete(lab_files, tmp_path):
+    import base64
+    run = engine(lab_files)
+    profiling(run)
+    run.spool = tmp_path
+    run.profile_cpu()
+    chunk = {"started": 1012.5, "seconds": 5, "profile": base64.b64encode(b"p").decode()}
+    run.routers.get = lambda router, path, timeout=2: {"chunks": [chunk]}
+    run.sampler.t = 59.9
+    run.stop_cpu(True)  # rest at 60 s, the profile stopped at 15.5 s: cut by profile_s
+    run.keep_cpu()
+    assert run.profiles[0]["complete"] is False
+    run = engine(lab_files)
+    profiling(run)
+    run.spool, run.sampler.t = tmp_path, 10.0
+    run.profile_cpu()
+    run.routers.get = lambda router, path, timeout=2: {"chunks": [chunk]}
+    run.stop_cpu(False)  # never at rest
+    run.keep_cpu()
+    assert run.profiles[0]["complete"] is False
+
+
+def test_a_profiled_router_that_gave_no_profile_makes_the_profiles_incomplete(lab_files, tmp_path):
+    import base64
+    run = engine(lab_files)
+    first, second = profiling(run, routers=2)
+    run.spool = tmp_path
+    run.profile_cpu()
+    chunk = {"started": 1000.0, "seconds": 5, "profile": base64.b64encode(b"p").decode()}
+
+    def get(router, path, timeout=2):
+        if router == second:
+            raise LabError(f"{router} /cpu: Read timed out")
+        return {"chunks": [chunk]}
+    run.routers.get = get
+    run.sampler.t = 2.0
+    run.stop_cpu(True)
+    run.keep_cpu()
+    assert {p["router"]: p["complete"] for p in run.profiles} == {first: True, second: False}
+
+
+def test_the_profile_starts_before_an_announcing_step_not_after_it(lab_files):
+    run = engine(lab_files)
+    busiest = profiling(run)
+    order = []
+    run.do_announce = lambda args, position: order.append("announce")
+    run.watch_hops = lambda: order.append("hops")
+    run.profile_cpu = lambda: order.append("profile")
+    step = scenario.parse({"name": "t", "steps": [{"announce": {"rate": 1, "for": 1}}]}).steps[0]
+    run.step(step, (0,))
+    assert order == ["profile", "announce", "hops"] and busiest
 
 
 def test_a_run_takes_no_cpu_profile_unless_the_experiment_asks(lab_files):
@@ -989,3 +1066,162 @@ def test_a_run_takes_no_cpu_profile_unless_the_experiment_asks(lab_files):
     run.profile_cpu()
     run.keep_cpu()
     assert not [c for c in run.routers.calls if c[1] == "/cpu"]
+
+
+def mrt_record(ts: int, peer: str, message: bytes = b"\xff" * 16 + b"\x00\x17\x02" + b"\x00\x00\x00\x00") -> bytes:
+    import ipaddress
+    import struct
+    body = struct.pack("!IIHH", 65001, 65002, 0, 1) + ipaddress.IPv4Address(peer).packed + bytes(4) + message
+    return struct.pack("!IHHI", ts, 16, 4, len(body)) + body
+
+
+def test_a_feed_runs_the_router_with_its_neighbors_as_feeders_of_it_alone():
+    t = {"routers": {"a": {"asn": 1, "neighbors": [{"name": "b"}, {"name": "c"}]}, "b": {"asn": 2, "neighbors": [{"name": "a"}, {"name": "c"}]},
+                     "c": {"asn": 3, "neighbors": [{"name": "a"}, {"name": "b"}, {"name": "d"}]}, "d": {"asn": 4, "neighbors": [{"name": "c"}]}},
+         "roles": {"origins": ["d"]}}
+    star, feeders = runner.feed_topology(t, "a")
+    assert feeders == ["b", "c"] and set(star["routers"]) == {"a", "b", "c"} and star["roles"] == {}
+    assert star["routers"]["c"]["neighbors"] == [{"name": "a"}] and star["routers"]["a"] == t["routers"]["a"]
+
+
+def test_a_recording_splits_by_the_neighbor_that_sent_each_update(tmp_path, monkeypatch):
+    import gzip
+    run_path = tmp_path / "core" / "obgp" / "fill" / "1"
+    run_path.mkdir(parents=True)
+    first, second = mrt_record(100, "10.0.0.2"), mrt_record(101, "10.0.0.3")
+    cut = mrt_record(102, "10.0.0.2")[:-5]  # still being written
+    (run_path / "updates-a.mrt.gz").write_bytes(gzip.compress(first + second + first + cut))
+    samples = [{"router": "a", "flaps": 0}]
+    dataset = type("D", (), {"path": tmp_path, "run": lambda self, key: {"addresses": {"10.0.0.2": "b", "10.0.0.3": "c"}},
+                             "samples": lambda self, key: samples})()
+    monkeypatch.setattr(runner.Dataset, "find", classmethod(lambda cls, name: dataset if name == "rec" else None))
+    assert runner.feed_records("rec/obgp/fill/1", "core", "a") == ({"b": first + first, "c": second}, 100)
+    samples.append({"router": "a", "flaps": 1})  # a session of a fell, not by a step: the recording misses its withdrawal
+    with pytest.raises(LabError, match="sessions of a fell"):
+        runner.feed_records("rec/obgp/fill/1", "core", "a")
+    with pytest.raises(LabError, match="no recording of z"):
+        runner.feed_records("rec/obgp/fill/1", "core", "z")
+    with pytest.raises(LabError, match="no result"):
+        runner.feed_records("gone/obgp/fill/1", "core", "a")
+
+
+def test_a_feed_loads_and_starts_every_feeder_together_and_ends_when_all_sent(lab_files, monkeypatch):
+    run = engine(lab_files)
+    run.network = scenario.Network({"a": {"asn": 1, "neighbors": [{"name": "b"}, {"name": "c"}]}}, {})
+    run.feeders = ["b", "c"]
+    monkeypatch.setattr(runner, "feed_records", lambda source, topology, router: ({"b": b"x" * 3}, 1700000000))
+    monkeypatch.setattr(runner, "FEED_POLL_S", 0)
+    looks = []
+
+    class Feeders(Routers):
+        def post(self, router, path, body=None, timeout=60):
+            self.calls.append((router, path, body))
+            return {"loaded": len(body)} if path == "/feed/load" else {}
+
+        def get(self, router, path, timeout=2):
+            looks.append(router)
+            sent = 3 if router == "b" else 0
+            return {"loaded": sent, "sent": sent if len(looks) > 2 else 0, "done": 1012.5 if sent else None}
+    run.routers = Feeders({})
+    feed = scenario.Feed(source="rec/obgp/fill/1")
+    run.do_feed(feed, (0,))
+    loads = [c for c in run.routers.calls if c[1] == "/feed/load"]
+    assert loads == [("b", "/feed/load", b"xxx"), ("c", "/feed/load", b"")]
+    starts = [c for c in run.routers.calls if c[1] == "/feed/start"]
+    assert [c[0] for c in starts] == ["b", "c"] and len({c[2]["at"] for c in starts}) == 1 and starts[0][2]["schedule"] == "flood"
+    assert {c[2]["base"] for c in starts} == {1700000000}  # one time base for every feeder
+    announce, announced = [e for e in run.events if e["name"] in ("announce", "announced")]
+    assert announce["messages"] == 3 and announce["feed"] == "rec/obgp/fill/1" and announced["routers"] == ["a"]
+    assert announced["t"] == 10.5  # done at 1012.5 on a clock 2 s ahead of a run that began at 1000
+
+
+def test_a_feed_ends_with_what_the_router_sent_each_feeder_and_one_digest(lab_files):
+    run = engine(lab_files)
+    run.feeders = ["b", "c"]
+    answer = {"b": {"updates": 4, "prefixes": 2, "refreshes": 1, "digest": "d1", "quality": "q1", "sent": 9},
+              "c": {"updates": 1, "prefixes": 0, "refreshes": 0, "digest": "d2", "quality": "q2"}}
+    run.routers.get = lambda router, path, timeout=2: answer[router]
+    run.final_feed()
+    final = run.events[-1]
+    assert final["name"] == "final" and final["updates"] == 5 and final["output"]["b"] == {"updates": 4, "prefixes": 2, "refreshes": 1, "digest": "d1", "quality": "q1"}
+    first = final["digest"]
+    answer["c"]["digest"] = "d3"
+    run.final_feed()
+    assert run.events[-1]["digest"] != first and "held" not in final
+
+
+def test_the_busiest_routers_record_their_updates_once_and_keep_them(lab_files, tmp_path):
+    run = engine(lab_files)
+    run.experiment = run.experiment.model_copy(update={"sampling": run.experiment.sampling.model_copy(update={"record_routers": 2})})
+    run.spool = tmp_path
+    run.record_updates()
+    run.record_updates()
+    busiest = run.network.busiest(2)
+    assert [c for c in run.routers.calls if c[1] == "/record"] == [(r, "/record", {}) for r in busiest]
+    run.routers.fetch = lambda router, path, timeout=60: f"mrt of {router}".encode()
+    run.keep_records()
+    assert (tmp_path / f"updates-{busiest[0]}.mrt.gz").read_bytes() == f"mrt of {busiest[0]}".encode()
+
+
+def test_routes_at_rest_digest_alike_whatever_address_the_pods_had():
+    table = {"10.0.0.0/24": {"from": "b", "as_path": [2, 3], "next_hop": "10.1.0.5", "ingress": {"c": {"from": "b", "next_hop": "10.1.0.5"}}}}
+    moved = {"10.0.0.0/24": {"from": "b", "as_path": [2, 3], "next_hop": "10.1.9.9", "ingress": {"c": {"from": "b", "next_hop": "10.1.9.9"}}}}
+    other = {"10.0.0.0/24": {"from": "d", "as_path": [4, 3], "next_hop": "10.1.0.5"}}
+    assert runner.routes_digest(table) == runner.routes_digest(moved) != runner.routes_digest(other)
+
+
+def test_a_recording_with_add_path_or_of_a_run_that_took_sessions_down_is_no_source(tmp_path, monkeypatch):
+    import gzip
+    import struct
+    run_path = tmp_path / "core" / "obgp" / "fill" / "1"
+    run_path.mkdir(parents=True)
+    record = mrt_record(100, "10.0.0.2")
+    add_path = record[:6] + struct.pack("!H", 9) + record[8:]
+    (run_path / "updates-a.mrt.gz").write_bytes(gzip.compress(record + add_path))
+    events = []
+    dataset = type("D", (), {"path": tmp_path, "run": lambda self, key: {"addresses": {"10.0.0.2": "b"}, "events": events},
+                             "samples": lambda self, key: []})()
+    monkeypatch.setattr(runner.Dataset, "find", classmethod(lambda cls, name: dataset))
+    with pytest.raises(LabError, match="Add-Path"):
+        runner.feed_records("rec/obgp/fill/1", "core", "a")
+    events.append({"name": "down", "t": 5})
+    with pytest.raises(LabError, match="took sessions down"):
+        runner.feed_records("rec/obgp/fill/1", "core", "a")
+
+
+def test_a_benchmark_with_feed_feeds_every_run_of_a_mode_its_one_recording_without_on_the_network(lab_files):
+    bench = lambda feed: Experiment.model_validate({"name": "b", "topologies": ["noble-eu"], "scenarios": ["fill-60"], "runs": 6,  # noqa: E731
+                                                    "benchmark": {"baseline": "master", "candidates": ["fast"], "modes": ["obgp-rp-pn"], "feed": feed}})
+    e = bench(True)
+    fed = runner.benchmark_scenario(e, "b-20261125-1200", RunKey("noble-eu", "obgp-rp-pn-new", "fill-60", 3))
+    step = fed.steps[0]
+    assert step.kind == "feed" and step.args.source == "b-20261125-1200/obgp-rp-pn-record/fill-60/1" and step.args.router == "busiest"
+    assert runner.benchmark_scenario(e, "b", RunKey("noble-eu", "obgp-rp-pn-record", "fill-60", 1)) is None  # it runs the workload
+    network = bench(False)
+    assert [v.name for v in network.variants] == ["obgp-rp-pn", "obgp-rp-pn-aa", "obgp-rp-pn-new"]
+    assert runner.benchmark_scenario(network, "b", RunKey("noble-eu", "obgp-rp-pn-new", "fill-60", 3)) is None
+    assert network.runs_total() == 18 and e.runs_total() == 19  # the recording once
+
+
+def test_a_benchmarks_recording_records_one_router_and_keeps_no_profile(lab_files):
+    run = engine(lab_files)
+    run.experiment = Experiment.model_validate({"name": "b", "topologies": ["noble-eu"], "scenarios": ["fill-60"], "runs": 6,
+                                                "benchmark": {"baseline": "master", "candidates": ["fast"], "modes": ["obgp-rp-pn"], "feed": True}})
+    run.variant = run.experiment.variants[0]
+    run.record_updates()
+    run.profile_cpu()
+    assert [c[0] for c in run.routers.calls if c[1] == "/record"] == run.network.busiest(1) and not run.profiled
+    other = engine(lab_files)
+    other.experiment, other.variant = run.experiment, run.experiment.variants[1]
+    other.record_updates()
+    assert not [c for c in other.routers.calls if c[1] == "/record"]  # the fed variants record nothing
+
+
+def test_the_quality_of_routes_at_rest_is_their_length_and_where_they_come_from_not_which_of_equal_paths():
+    relations = {"b": "customer", "c": "customer", "d": "peer"}
+    via_b = {"10.0.0.0/24": {"from": "b", "as_path": [2, 9], "next_hop": "x"}}
+    via_c = {"10.0.0.0/24": {"from": "c", "as_path": [3, 9], "next_hop": "y"}}  # as good: another customer, as long
+    via_d = {"10.0.0.0/24": {"from": "d", "as_path": [4, 9], "next_hop": "z"}}  # from a peer
+    longer = {"10.0.0.0/24": {"from": "b", "as_path": [2, 5, 9], "next_hop": "x"}}
+    q = lambda t: runner.routes_quality(t, relations)  # noqa: E731
+    assert q(via_b) == q(via_c) != q(via_d) and q(via_b) != q(longer)

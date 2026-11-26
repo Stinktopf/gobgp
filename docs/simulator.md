@@ -10,22 +10,24 @@ never comes to rest. Six routers would take days.
   admission, pruning and tables per neighbor, NS-BGP, a route server's choice in `obgp-paper`.
   In a mixed mode each router decides with the settings of its own mode, as each router of the lab is a
   gobgpd of its own.
-- **Modelled:** export and import policies, communities, iBGP and route reflection, confederations, route
+- **Modeled:** export and import policies, communities, iBGP and route reflection, confederations, route
   refresh, a route server passing every path with Add-Path, after the configuration the lab generates.
   Sessions are reliable queues without timers.
 
 ## What a search covers
 
-- **Networks:** up to four routers every connected graph in every numbering of the routers, at five one
-  graph per shape, router 0 the origin. Numbers matter: they are AS numbers and router IDs.
-- **Policies:** Gao-Rexford relations, local preferences (default or 200), IGP costs and MEDs in every
-  assignment up to 4,096 per network, Gao-Rexford relations all of them up to five routers, 1,000 distinct
-  ones drawn beyond, e.g. local preferences on dense networks of five routers. The other families place
+- **Networks:** up to four routers, every connected graph in every numbering of the routers, at five
+  routers one graph per shape, router 0 the origin. Numbers matter: they are AS numbers and router IDs.
+- **Policies:** Gao-Rexford relations in every assignment up to five routers. Local preferences (default
+  or 200), IGP costs and MEDs in every assignment up to 4,096 per network, 1,000 distinct ones drawn
+  beyond, e.g. local preferences on dense networks of five routers. The other families place
   one policy at a time: a filter, a prepend, a tag, a leaker, a provider giving partial transit.
 - **Orders:** 20 per network, drawn by seed. A deviation counts once per network, and each case says in
   how many orders it showed.
 - **Forwarding at rest:** the packets of each router go hop by hop: a loop, a black hole and, with
   relations, a forward valley, packets against the relations although the router's path follows them.
+- **Updates:** where the origin's announcement is the only change, an OBGP router that sends a neighbor
+  more than one update or withdrawal (`-updates`). It tests the hypothesis that without a removal an export changes once at most.
 - **No rest:** a run without rest that returns to an earlier state, every session with messages served
   and a second passed, has an order without end: repeating it never rests. A run stops at 20,000
   messages otherwise and is undecided. Two states are the same where their times have the same order and their path IDs match up to renaming.
@@ -72,8 +74,7 @@ goes behind all others on the session, as in gobgpd's order of held advertisemen
 at once, as the first of its interval, gives way here too, and a withdrawal waits behind the updates of
 other path IDs, which gobgpd sends at once. The mapping in detail: `lab/simulate.py`.
 
-Where a run contradicts the prediction, the simulator plays that cell in 1,000 orders, see
-[Problems](evaluation.md#problems). `lab simulate again` and `predict_again` do the same. Simulator and lab
+`lab simulate again` and `predict_again` replay a contradicted cell, see [Problems](evaluation.md#problems). Simulator and lab
 compare on rest alike: at every step that waits for it and at the end.
 
 ## In the web UI
@@ -81,7 +82,7 @@ compare on rest alike: at every step that waits for it and at the end.
 - **Search:** the Simulation area starts one with a button. It waits in the lab's queue and needs no cluster.
 - **Problems:** grouped by kind, each with the modes that show it, its cause and its networks.
 - **Case:** one network played step by step on a map.
-  It plays also while an experiment runs, one case at a time, at the lowest priority.
+  It also plays while an experiment runs, one case at a time, at the lowest priority.
 - **Play in the lab:** makes the case an experiment of every mode, with the simulator's prediction as checks.
 
 Searches are in `~/.config/obgp-lab/simulation/searches`.

@@ -24,9 +24,7 @@ Configuration and CLI are [GoBGP's](sources/getting-started.md). The code is in
 | `GOBGP_OPERA_EXPORT` | tables for the export | `one` | `neighbor` | `one` |
 | `GOBGP_OPERA_ENHANCED_REFRESH` | Enhanced Route Refresh (RFC 7313) offered | `on` | `off` | `off` |
 
-With OBGP on, the router offers Enhanced Route Refresh (RFC 7313). Where a neighbor offers it too, the
-router asks it again only once the last answer has ended, or after 5 minutes without its end, and drops
-the routes that answer did not repeat. Its answers then go out at once, also with an MRAI.
+With OBGP on, the router offers Enhanced Route Refresh (RFC 7313), see [DESIGN.md](../DESIGN.md#refresh-pruning).
 
 ## Modes
 

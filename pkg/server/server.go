@@ -134,8 +134,9 @@ type BgpServer struct {
 	logger       *slog.Logger
 	logLevelVar  *slog.LevelVar
 	timingHook   FSMTimingHook
-	refresh      operaRefresh    // route refreshes of refresh pruning
-	operaUp      map[string]bool // neighbors whose tables per neighbor are fed, see operaViewPeers
+	refresh      operaRefresh     // route refreshes of refresh pruning
+	operaUp      map[*peer]string // neighbors whose tables per neighbor are fed, with their IDs, see operaViewPeers
+	operaOrder   []*peer          // the neighbors of operaUp sorted by ID, nil after one came or went
 	// manage lifecycle of the server
 	isServing     atomic.Bool
 	shutdownWG    *sync.WaitGroup
@@ -1236,10 +1237,10 @@ func (s *BgpServer) propagateUpdate(peer *peer, pathList []*table.Path) {
 		if d := rib.GetDestination(path); d != nil && d.OperaRedundant(path) {
 			continue
 		}
-		ou, before := s.operaBefore(rib, path)
+		ou := s.operaBefore(rib, path)
 		if dsts := rib.Update(path); len(dsts) > 0 {
 			if ou != nil {
-				s.operaFeed(rib, path, ou, before)
+				s.operaFeed(rib, path, ou)
 				if d := rib.GetDestination(path); d != nil {
 					dsts[0].Waiting = d.OperaWaiting()
 				}
@@ -1329,9 +1330,9 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 			}
 			return family
 		}()
-		if ou != nil && ou.peers[targetPeer] {
-			if change, ok := ou.changes[targetPeer]; ok {
-				s.operaSend(targetPeer, change)
+		if i, ok := ou.slot(targetPeer); ok {
+			if change := ou.changes[i]; change[0] != change[1] {
+				s.operaSend(targetPeer, change, ou.ready[i])
 			}
 			continue
 		}
@@ -1444,7 +1445,7 @@ func (s *BgpServer) propagateUpdateToNeighbors(rib *table.TableManager, source *
 func (s *BgpServer) stopNeighbor(peer *peer, oldState bgp.FSMState, e *fsmMsg) {
 	peer.stopPeerRestarting()
 	delete(s.neighborMap, netip.MustParseAddr(peer.ID()))
-	delete(s.operaUp, peer.ID()) // a neighbor added again later starts down
+	s.operaSessionGone(peer) // a neighbor added again later starts down
 	peer.stopFSM()
 	s.broadcastPeerState(peer, bgp.BGP_FSM_IDLE, oldState, e)
 }

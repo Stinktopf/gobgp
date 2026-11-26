@@ -15,6 +15,7 @@ from ... import (
     estimate,
     scenario,
     topology,
+    update,
 )
 from ...cluster import LabError
 from ...config import Experiment, Variant
@@ -164,9 +165,12 @@ def builder_values(e: Experiment | None, original: str = "") -> dict:
         "cpus": e.cluster.cpus, "memory_mb": e.cluster.memory_mb, "memory_min_mb": e.cluster.memory_min_mb or "", "router_limit_mb": e.cluster.router_limit_mb,
         "hold_time": e.bgp.hold_time, "keepalive": e.bgp.keepalive, "connect_retry": e.bgp.connect_retry, "mrai": e.bgp.mrai, "refresh": e.bgp.refresh, "procs": e.bgp.procs,
         "graceful_restart": e.bgp.graceful_restart,
-        "interval": e.sampling.interval, "stable_s": e.sampling.stable_s, "profile_s": e.sampling.profile_s, "error": "",
+        "interval": e.sampling.interval, "stable_s": e.sampling.stable_s, "profile_s": e.sampling.profile_s,
+        "profile_routers": e.sampling.profile_routers, "record_routers": e.sampling.record_routers, "paths": e.sampling.paths, "error": "",
         "sweeps": [{"scenario": w.scenario, "param": w.param, "values": ", ".join(f"{v:g}" for v in w.values)} for w in e.sweeps],
         "primary": e.primary.model_dump() if e.primary else None,
+        "speed": e.speed.model_dump() if e.speed else None,
+        "benchmark": e.benchmark.model_dump() if e and e.benchmark else None,
     }
 
 
@@ -201,10 +205,21 @@ def parse_builder(form) -> Experiment:
     """The experiment of the builder form; ValueError with a readable message if it is invalid."""
     name = str(form.get("name", "")).strip()
     number = lambda key, kind=int: kind(str(form.get(key) or 0).replace(",", "."))
+    description = str(form.get("description", "")).strip()
+    if not description and form.get("bench_baseline"):  # a benchmark says what it compares
+        candidates = str(form.get("bench_candidates", "")).strip() or "the candidates"
+        description = f"{candidates} against {str(form.get('bench_baseline')).strip()} on {', '.join(form.getlist('topologies'))}, every mode."
     try:
         e = Experiment(
-            name=name, description=str(form.get("description", "")).strip(), runs=number("runs"), seed=number("seed"),
-            variants=_variants(form), topologies=form.getlist("topologies"), scenarios=form.getlist("scenarios"),
+            name=name, description=description, runs=number("runs"), seed=number("seed"),
+            # A benchmark derives its variants: the rows of the table are its last ones.
+            variants=[] if form.get("bench_baseline") else _variants(form),
+            benchmark={"baseline": str(form.get("bench_baseline")).strip(),
+                       "candidates": [c.strip() for c in str(form.get("bench_candidates", "")).split(",") if c.strip()],
+                       "modes": form.getlist("bench_modes"), "router": str(form.get("bench_router") or "busiest").strip(),
+                       "feed": form.get("bench_feed") == "on"}
+            if form.get("bench_baseline") else None,
+            topologies=form.getlist("topologies"), scenarios=form.getlist("scenarios"),
             paired=form.get("paired") == "on",
             cluster={"cpus": number("cpus"), "memory_mb": number("memory_mb"),
                      **({"memory_min_mb": number("memory_min_mb")} if form.get("memory_min_mb") else {}),
@@ -213,10 +228,17 @@ def parse_builder(form) -> Experiment:
                  **({"procs": number("procs")} if form.get("procs") else {}),
                  "graceful_restart": form.get("graceful_restart") == "on"},
             sampling={"interval": number("interval", float), "stable_s": number("stable_s", float),
-                      **({"profile_s": number("profile_s", float)} if form.get("profile_s") else {})},
+                      **({"profile_s": number("profile_s", float)} if form.get("profile_s") else {}),
+                      **({"profile_routers": number("profile_routers")} if form.get("profile_routers") else {}),
+                      **({"record_routers": number("record_routers")} if form.get("record_routers") else {}),
+                      "paths": form.get("paths") == "on"},
             sweeps=_sweeps(form),
             primary={"metric": str(form.get("primary_metric", "")).strip(), "baseline": str(form.get("primary_baseline", "")).strip(),
                      "variants": [v.strip() for v in str(form.get("primary_variants", "")).split(",") if v.strip()]} if form.get("primary_metric") else None,
+            speed={"baseline": str(form.get("speed_baseline", "")).strip(), "metric": str(form.get("speed_metric")),
+                   "margin_pct": number("speed_margin_pct", float),
+                   "guards": [g.strip() for g in str(form.get("speed_guards", "")).split(",") if g.strip()],
+                   "guard_pct": number("speed_guard_pct", float)} if form.get("speed_metric") else None,
         )
         e.check_files()
     except ValidationError as error:
@@ -242,7 +264,7 @@ def host_notes(e: Experiment) -> str:
     limit = here.limit.removeprefix("at most ").replace(", ", " and ")
     lines = [f"{t} needs {' and '.join(why)}." for t, why in skips.items()]
     whole = len(skips) == len(e.topologies)
-    lines.append(f"This host runs at most {limit}, " + ("so the experiment cannot start here." if whole else "so the experiment runs without them."))
+    lines.append(f"This host runs at most {limit}, " + ("so the experiment cannot start here." if whole else f"so the experiment runs without {'them' if len(skips) > 1 else 'it'}."))
     items = "".join(f"<li>{escape(line)}</li>" for line in lines)
     return f'<ul id="host-notes" hx-swap-oob="true" class="notice notice-warn mb-6 space-y-1" aria-label="Limits of this host">{items}</ul>'
 
@@ -301,10 +323,38 @@ def experiment_start(name: str, stay: bool = False, start_cluster: bool = Form(F
     return RedirectResponse(target, 303)
 
 
+BENCHMARK_WORKLOAD = "performance-scale"  # the experiment whose workload a new benchmark starts from
+
+
+def free_benchmark_name() -> str:
+    """A name no experiment has: benchmark and the minute, with -2, -3, … if taken."""
+    from datetime import datetime
+
+    base = f"benchmark-{datetime.now():%Y%m%d-%H%M}"
+    name, n = base, 1
+    while config.path(name).exists():
+        n += 1
+        name = f"{base}-{n}"
+    return name
+
+
 @router.get("/experiments/new", response_class=HTMLResponse)
-def experiment_new(request: Request, like: str = ""):
+def experiment_new(request: Request, like: str = "", benchmark: bool = False):
     base, _ = read_experiment(like) if like else (None, "")
     values = builder_values(base.model_copy(update={"name": f"{base.name}-copy"}) if base else None)
+    if benchmark:  # the section of a benchmark open, only the candidates to fill
+        # The workload of performance-scale, whose A/A noise is known, from its file, against what the lab runs now.
+        workload, _ = read_experiment(BENCHMARK_WORKLOAD)
+        if workload:
+            values = builder_values(workload.model_copy(update={"primary": None, "description": ""}))
+        # Every mode, none favoured. Enough runs for a candidate in each, see config.Experiment.
+        every = [m for p in MODES.values() if not p.inner for m in [p.name] + ([f"{p.name}-pn"] if p.name != "obgp-paper" else [])]
+        try:
+            baseline = update.git("rev-parse", "--short=8", "HEAD")
+        except Exception:  # not a checkout: the person names it
+            baseline = ""
+        values["benchmark"] = {"baseline": baseline, "candidates": [], "modes": every, "router": "busiest", "feed": False}
+        values |= {"name": free_benchmark_name(), "runs": 9, "profile_s": 300, "paths": False}
     return render(request, "experiment.html", nav="experiments", values=values, new=True, **builder_context())
 
 

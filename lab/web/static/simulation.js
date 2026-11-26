@@ -74,12 +74,11 @@
 
   const forwardOf = (r, i) => (r.forward !== undefined ? r.forward : r.next_hop);
 
-  // Why a case lies outside the model of the proofs, by its family.
+  // Why a case lies outside the model of the proof, by its family.
   const outside = {
-    communities: "communities stop routes on the way", tagging: "routers tag routes and filter on the tags", poison: "the origin poisons ASes",
-    "export-filter": "export filters", "as-path-filter": "filters on the AS path", prepend: "prepending", "import-filter": "import filters",
-    "local-pref": "local preferences set by policy", "ibgp-mesh": "an AS of several routers with iBGP", "ibgp-rr": "an AS of several routers behind a route reflector",
-    "med-rr": "MED behind a route reflector", confed: "a confederation", "route-server": "a route server", "route-leak": "a route leak",
+    aggregation: "aggregates with an AS_SET", prepend: "prepending towards one neighbor",
+    "ibgp-mesh": "an AS of several routers with iBGP", "ibgp-rr": "an AS of several routers behind a route reflector",
+    "med-rr": "MED behind a route reflector", confed: "a confederation",
   }[inst.family];
 
   function event(e) {
@@ -493,10 +492,10 @@
   select.onchange = () => { mark(select); load(); };
   load();
 
-  // Below the map only what the map does not show: why the case lies outside the proofs, an aggregate or poisoning,
+  // Below the map only what the map does not show: why the case lies outside the proof, an aggregate or poisoning,
   // which the paths leave out, and what changes from outside. ASes, roles, relations and rules stand on the map.
   const facts = [];
-  if (outside && root.dataset.proof === "outside its model") facts.push(["Proofs", `outside their model: ${outside}`]);
+  if (outside && root.dataset.proof === "outside its model") facts.push(["Proof", `outside its model: ${outside}`]);
   if (originSet.length) facts.push(["Aggregate", `the origin announces an aggregate with the AS_SET {${originSet.join(", ")}}, one hop in every path, left out of the routes here`]);
   if (poison.length) facts.push(["Poison", `the origin names AS ${poison.join(", ")}`]);
   // An event the simulator holds back until the network is quiet carries a huge after.

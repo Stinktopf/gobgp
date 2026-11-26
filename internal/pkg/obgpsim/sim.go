@@ -17,6 +17,7 @@ package obgpsim
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"io"
 	"log/slog"
@@ -417,6 +418,10 @@ type Result struct {
 	// Restless: the bounded events that came without rest, as a step of the
 	// lab that waited for rest in vain.
 	Restless int `json:"restless,omitempty"`
+	// Updates: per session to another AS, the updates and withdrawals
+	// delivered over the run, as from, to, count, sessions without any left
+	// out. Refreshes and End-of-RIB do not count.
+	Updates [][3]int `json:"updates,omitempty"`
 	// Cycle: the run did not rest and returned to an earlier state, an order
 	// of messages without end. Nil where it only stopped at the bound.
 	Cycle *Cycle `json:"cycle,omitempty"`
@@ -514,6 +519,7 @@ type network struct {
 	client   map[session]bool // (reflector, client)
 	queues   map[session][]message
 	sends    map[session]int                  // messages put on each session so far; not in the state of a cycle
+	updates  map[session]int                  // updates and withdrawals delivered on each session, not in the state of a cycle
 	sentAt   map[session][]int                // per queued message, the step that sent it; not in the state of a cycle
 	step     int                              // steps so far, as the replay counts them
 	cur      int                              // the step being played, 0 before the first
@@ -901,7 +907,7 @@ func play(inst *Instance, mode Mode, maxSteps int, trace io.Writer, record *[]St
 	defer table.SetOperaOptions(old)
 
 	n := &network{inst: inst, mode: mode, rng: rand.New(rand.NewSource(inst.Seed)), ticks: rand.New(rand.NewSource(inst.Seed ^ 0x5eed)),
-		up: map[session]bool{}, ibgp: map[session]bool{}, client: map[session]bool{}, queues: map[session][]message{}, sends: map[session]int{}, stale: map[session]map[uint32]bool{}, restarting: map[int]map[int]bool{}, sentAt: map[session][]int{}, asked: map[session]bool{},
+		up: map[session]bool{}, ibgp: map[session]bool{}, client: map[session]bool{}, queues: map[session][]message{}, sends: map[session]int{}, updates: map[session]int{}, stale: map[session]map[uint32]bool{}, restarting: map[int]map[int]bool{}, sentAt: map[session][]int{}, asked: map[session]bool{},
 		received: map[session]map[uint32]route{}, stamps: map[session]map[uint32]time.Time{}, policy: map[session]*Session{}, relation: map[session]Relation{},
 		byAddress: map[netip.Addr]int{}, byID: map[netip.Addr]int{}, origins: map[int]*table.Path{}}
 	if m, ok := inst.Mixed[mode]; ok {
@@ -993,6 +999,9 @@ func play(inst *Instance, mode Mode, maxSteps int, trace io.Writer, record *[]St
 		}
 		n.cur = n.step + 1
 		n.deliver(s, m)
+		if !m.refresh && !m.eor && !n.internal(s.from, s.to) {
+			n.updates[s]++
+		}
 		steps++
 		n.step = steps
 		if trace != nil {
@@ -2047,6 +2056,10 @@ func (n *network) result(converged bool, steps int) Result {
 	r := n.snapshot()
 	r.Converged, r.Steps, r.Checks, r.Transient = converged, steps, n.checks, n.transient
 	r.Looped, r.Blocked, r.Holes = n.looped, waiting(n.waits), passing(n.losses, r)
+	for s, c := range n.updates {
+		r.Updates = append(r.Updates, [3]int{s.from, s.to, c})
+	}
+	slices.SortFunc(r.Updates, func(a, b [3]int) int { return cmp.Or(a[0]-b[0], a[1]-b[1]) })
 	return r
 }
 

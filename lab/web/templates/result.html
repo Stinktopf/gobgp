@@ -22,6 +22,7 @@
   {% for key, label in tabs.items() %}
   <a href="?tab={{ key }}&topology={{ topology }}{% if scenario %}&scenario={{ scenario }}{% endif %}{% if metric %}&metric={{ metric }}{% endif %}" {% if tab == key %}aria-current="page"{% endif %}>{{ label }}</a>
   {% endfor %}
+  {% if performance_on %}<a href="/benchmark?result={{ result.name }}&topology={{ topology }}{% if scenario %}&scenario={{ scenario }}{% endif %}" class="ml-auto text-uoft-700 dark:text-uoft-300" data-tip="Where its routers spend their CPU{{ ', and whether a commit is faster' if experiment.speed }}">Benchmark →</a>{% endif %}
 </nav>
 
 <section {% if live and tab == "runs" %}hx-get="/results/{{ result.name }}/partials/{{ tab }}" hx-trigger="every 3s [document.visibilityState === 'visible']" hx-swap="morph:innerHTML"{% endif %}>

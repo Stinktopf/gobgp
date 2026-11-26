@@ -10,17 +10,18 @@ import (
 
 // A family varies one kind of policy over a topology: every placement, and
 // every assignment of its values up to PolicyLimit, a sample of PolicyDraws
-// beyond (see assignments). In the model of OBGP a
-// router sends all neighbors the same path or none, and export filters
-// depend only on the Gao-Rexford class of a neighbor.
+// beyond (see assignments). InModel: the proof (DESIGN.md) covers the family,
+// as DESIGN.md marks it "holds": one router per AS, policies that filter or
+// rank paths. iBGP, confederations, aggregates with an AS_SET and prepending
+// towards one neighbor lie outside. lab/simulation.py keeps the same list.
 type Family struct {
 	Name     string
-	InModel  bool // inside the model of OBGP: no deviation expected
+	InModel  bool // inside the proof's model: no rest or loop at rest expected of OBGP
 	Variants func(routers int, links [][2]int) []Instance
 }
 
-// Families are the policies the search varies. Those outside the model are
-// expected to find deviations, those inside are not.
+// Families are the policies the search varies. Inside the model OBGP with one
+// table comes to rest and forwards without loops at rest, outside it may not.
 var Families = []Family{
 	{"withdraw", true, func(r int, l [][2]int) []Instance {
 		return []Instance{{Events: []Event{{After: 1 << 30, Kind: "withdraw"}}}}
@@ -60,7 +61,7 @@ var Families = []Family{
 	}},
 	// The origin announces an aggregate, its AS_SET out of order on purpose,
 	// once withdrawn and once with a link failing.
-	{"aggregation", true, func(r int, links [][2]int) []Instance {
+	{"aggregation", false, func(r int, links [][2]int) []Instance {
 		out := []Instance{{OriginSet: []uint32{64601, 64600}, Events: []Event{{After: 1 << 30, Kind: "withdraw"}}}}
 		for _, x := range links {
 			out = append(out, Instance{OriginSet: []uint32{64601, 64600}, Events: []Event{{After: 1 << 30, Kind: "down", From: x[0], To: x[1]}}})
@@ -69,7 +70,7 @@ var Families = []Family{
 	}},
 	// The origin asks not to pass its route on: no-export once learned, or
 	// 0:AS not to one AS, as the lab's routers enforce them on export.
-	{"communities", false, func(r int, links [][2]int) []Instance {
+	{"communities", true, func(r int, links [][2]int) []Instance {
 		out := []Instance{{OriginCommunities: []string{"no-export"}}}
 		for x := 1; x < r; x++ {
 			out = append(out, Instance{OriginCommunities: []string{fmt.Sprintf("0:%d", AS(x))}})
@@ -79,7 +80,7 @@ var Families = []Family{
 	// An AS tags the routes from one neighbor, asking not to pass them to
 	// another AS: other routes of the same prefix it may pass on, but OBGP
 	// exports one path to all. Outside the model, as a filter per neighbor.
-	{"tagging", false, func(r int, links [][2]int) []Instance {
+	{"tagging", true, func(r int, links [][2]int) []Instance {
 		var out []Instance
 		for z := 0; z < r; z++ {
 			out = append(out, perSession(func(s Session) []Instance {
@@ -92,21 +93,21 @@ var Families = []Family{
 		return out
 	}},
 	// The origin poisons one AS, which drops the route as a loop.
-	{"poison", false, func(r int, links [][2]int) []Instance {
+	{"poison", true, func(r int, links [][2]int) []Instance {
 		var out []Instance
 		for x := 1; x < r; x++ {
 			out = append(out, Instance{OriginPoison: []uint32{AS(x)}})
 		}
 		return out
 	}},
-	{"export-filter", false, perSession(func(s Session) []Instance {
+	{"export-filter", true, perSession(func(s Session) []Instance {
 		return []Instance{
 			{Sessions: []Session{{From: s.From, To: s.To, DenyExport: true}}},
 			{Events: []Event{{After: 1 << 30, Kind: "deny-export", From: s.From, To: s.To, Value: 1}}},
 		}
 	})},
 	// An export filter by content: no path through one AS towards one neighbor.
-	{"as-path-filter", false, func(r int, links [][2]int) []Instance {
+	{"as-path-filter", true, func(r int, links [][2]int) []Instance {
 		var out []Instance
 		for _, l := range links {
 			for _, s := range []Session{{From: l[0], To: l[1]}, {From: l[1], To: l[0]}} {
@@ -125,17 +126,17 @@ var Families = []Family{
 			{Events: []Event{{After: 1 << 30, Kind: "prepend", From: s.From, To: s.To, Value: 2}}},
 		}
 	})},
-	{"import-filter", false, perSession(func(s Session) []Instance {
+	{"import-filter", true, perSession(func(s Session) []Instance {
 		return []Instance{{Events: []Event{{After: 1 << 30, Kind: "deny-import", From: s.From, To: s.To, Value: 1}}}}
 	})},
-	{"local-pref", false, localPref},
+	{"local-pref", true, localPref},
 	{"ibgp-mesh", false, func(r int, links [][2]int) []Instance { return ibgp(r, links, false, false) }},
 	{"ibgp-rr", false, func(r int, links [][2]int) []Instance { return ibgp(r, links, true, false) }},
 	{"med-rr", false, func(r int, links [][2]int) []Instance { return ibgp(r, links, true, true) }},
 	{"confed", false, confederations},
 	// A route server between its neighbors, as gobgpd's, with filters of clients on it.
-	{"route-server", false, routeServers},
-	{"route-leak", false, func(r int, links [][2]int) []Instance {
+	{"route-server", true, routeServers},
+	{"route-leak", true, func(r int, links [][2]int) []Instance {
 		var out []Instance
 		for _, inst := range gaoRexford(r, links) {
 			for leaker := 1; leaker < r; leaker++ {

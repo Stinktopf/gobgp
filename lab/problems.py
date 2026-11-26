@@ -32,8 +32,8 @@ PROPERTIES = {  # cause: title of its group
     "rest-final": "No rest before the final check",
     "loops": "Loops at rest",
     "reach": "Fewer routes than BGP",
-    "holes": "Black holes BGP has not",
-    "stale": "Withdrawn routes BGP has not",
+    "holes": "More black holes than BGP",
+    "stale": "More withdrawn routes kept than BGP",
     "reference": "No BGP run at rest to compare with",
     "holes-alone": "Black holes, no BGP at rest to compare",
     "stale-alone": "Withdrawn routes kept, no BGP at rest to compare",
@@ -41,12 +41,14 @@ PROPERTIES = {  # cause: title of its group
     "holes-way": "Black holes on the way, longer than BGP",
     "blocked": "Routers wait without a route",
     "unchecked": "No final check",
-    "rest-unforeseen": "At rest, the simulator never is",
-    "sessions": "Sessions fell without a step for it",
+    "rest-unforeseen": "At rest where the simulator never rests",
+    "sessions": "Sessions dropped without a step",
     "policy": "Paths against the relations, more than BGP",
     "policy-alone": "Paths against the relations, no BGP at rest to compare",
     "unmeasured": "Not measured",
     "calibration": "Measured other than the known values",
+    "output": "Routes at rest worse or better than the baseline's",
+    "output-unchecked": "No routes at rest to compare with the baseline",
 }
 PLANNED = ("down", "restart", "degrade")  # steps that take sessions down, or may
 
@@ -206,9 +208,9 @@ def cannot_play(dataset: Dataset, key: RunKey) -> str | None:
                 simulate.router_modes(variant, topology, e.seed * 1000 + key.index)
             _CANNOT[cache] = ""
         except simulate.Unsupported as x:
-            _CANNOT[cache] = "; ".join(x.reasons)
+            _CANNOT[cache] = ", ".join(x.reasons)
         except (ValueError, KeyError, OSError):  # the topology is gone: as stored
-            _CANNOT[cache] = "; ".join(found.get("unsupported") or found.get(mode, {}).get("unsupported") or [])
+            _CANNOT[cache] = ", ".join(found.get("unsupported") or found.get(mode, {}).get("unsupported") or [])
     return _CANNOT[cache] or None
 
 
@@ -305,6 +307,58 @@ def no_rest_predicted(dataset: Dataset, key: RunKey) -> bool:
     return p is not None and p.get("settled", p["converged"]) < p["runs"]
 
 
+def twins_of(experiment) -> dict[str, tuple[str, str | None]]:
+    """The variants that differ from another in their commit only, in every
+    mode alike: each with the baseline of its settings and the A/A variant
+    beside it, the baseline's commit a second time, whose differences are
+    timing. The baseline's commit is the speed rule's, else the primary
+    baseline's ref, else that of the first such variant: the same commit in every mode."""
+    groups: dict[str, list] = {}
+    for v in experiment.variants:
+        groups.setdefault(repr(sorted(v.model_dump(exclude={"name", "ref"}).items())), []).append(v)
+    named = {v.name: v.ref for v in experiment.variants}
+    ref = experiment.speed.baseline if experiment.speed else named.get(experiment.primary.baseline) if experiment.primary else None
+    out = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        own = ref if any(v.ref == ref for v in members) else members[0].ref
+        bases = [v for v in members if v.ref == own]
+        base = next((v for v in bases if experiment.primary and v.name == experiment.primary.baseline), bases[0])
+        aa = next((v.name for v in bases if v.name != base.name), None)
+        for v in members:
+            if v.name != base.name:
+                out[v.name] = (base.name, aa if v.name != aa else None)
+    return out
+
+
+def rest_digests(run: dict) -> dict[str, str] | None:
+    """The quality of what each router chose at rest, or in a feed of what
+    each feeder got: equal where timing only chose among equal paths. The
+    exact routes where a run kept no quality. None without a final check at rest."""
+    final = next((e for e in run.get("events", []) if e["name"] == "final"), None)
+    if not final or final.get("stable") is False:
+        return None
+    if final.get("qualities"):
+        return final["qualities"]
+    output = final.get("output") or {}
+    if output and all(o.get("quality") for o in output.values()):
+        return {r: o["quality"] for r, o in output.items()}
+    return final.get("digests") or {r: o["digest"] for r, o in output.items()} or None
+
+
+def rest_differs(run: dict, other: dict) -> list[str] | None:
+    """The routers, or feeders, whose digests at rest differ between two runs; None when either has none."""
+    mine, theirs = rest_digests(run), rest_digests(other)
+    if not mine or not theirs:
+        return None
+    return sorted(r for r in mine.keys() | theirs.keys() if mine.get(r) != theirs.get(r))
+
+
+def run_has_digests(run: dict) -> bool:
+    return any(e["name"] == "final" and "digests" in e for e in run.get("events", []))
+
+
 def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
     """The runs that broke a property. Rest: routes that still changed at the
     end, a final check or an until_stable step that found no rest. At rest:
@@ -321,6 +375,11 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
     Paths at rest against the relations between the ASes (valley-free)
     count where more than in BGP of the same seed, whose policies may leak
     on purpose, or at all without a BGP run at rest.
+    A variant that differs from another in its commit only, in any mode,
+    has to choose the same routes at rest as the baseline's run of the same
+    seed, and in a feed send each feeder the same, beyond what differs
+    between two runs of the baseline's own commit (an A/A variant); without
+    routes at rest to compare it is told as unchecked.
     A failure is predicted when a check the scenario allowed
     this mode to fail, and the simulator failed too, foretold it, for the same routers."""
     # The reference of each variant: BGP sampled alike, as lab-sampling has BGP at two rates, else the first BGP.
@@ -363,6 +422,7 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
             return None
         return final
 
+    twins = twins_of(dataset.experiment)
     for key in sorted(dataset.keys(), key=lambda k: (k.topology, k.scenario, k.variant, k.index)):
         if not dataset.is_done(key):
             continue
@@ -386,16 +446,16 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
         if dataset.experiment.bgp.mrai and p is not None:
             no_rest = no_rest or None
             no_rest_step = no_rest_step or None
-        endless = f" and repeats without end in {p['endless']}" if p is not None and p.get("endless") else ""
-        foretold = f", the simulator rests in {p['converged']} of {p['runs']} orders{endless}" if no_rest else ""
-        foretold_step = f", the simulator rests at every step in {settled} of {p['runs']} orders" if no_rest_step else ""
+        endless = f", repeats without end in {p['endless']}" if p is not None and p.get("endless") else ""
+        foretold = f". The simulator rests in {p['converged']} of {p['runs']} orders{endless}" if no_rest else ""
+        foretold_step = f". The simulator rests at every step in {settled} of {p['runs']} orders" if no_rest_step else ""
         if m.get("oscillates") == 1:
             churn = f", {m['hold_churn']:.0f} updates a second per router" if m.get("hold_churn") is not None else ""
-            found.append(("rest-end", f"{m.get('rest_s') or 0:g} s after the last step the routes still change{churn}{foretold}", no_rest))
+            found.append(("rest-end", f"{m.get('rest_s') or 0:g} s after the last step{churn}{foretold}", no_rest))
         for s in (s for s in run.get("measurements", []) if not s.get("stable", True)):
-            found.append(("rest-step", f"step {s.get('step')} waited until {s.get('t', 0):g} s and found no rest{foretold_step}", no_rest_step))
+            found.append(("rest-step", f"step {s.get('step')}: no rest by {s.get('t', 0):g} s{foretold_step}", no_rest_step))
         if final and final.get("stable") is False:
-            found.append(("rest-final", f"at {final.get('t', 0):g} s the routes did not stand still yet{foretold}", no_rest))
+            found.append(("rest-final", f"not at rest at {final.get('t', 0):g} s{foretold}", no_rest))
         at_rest = final and final.get("stable") is not False
         # Without a rest value the run is neither passed nor failed: tell why it was not measured.
         if analysis.rested(run, m) is None:
@@ -407,6 +467,29 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
         # The simulator models an MRAI's coalescing, not its timer: the timer may bring routes to rest that it never sees at rest.
         if p is not None and p["converged"] == 0 and m.get("oscillates") == 0 and at_rest and not dataset.experiment.bgp.mrai:
             found.append(("rest-unforeseen", f"the routes came to rest, the simulator never does in {p['runs']} orders{endless}", False))
+        # A variant that differs from the baseline in its commit only has to choose the same routes at rest
+        # as the baseline's run of the same seed, and in a feed send the same: a change that must not change behaviour.
+        refs = {v.name: v.ref for v in dataset.experiment.variants}
+        # The A/A variant, the baseline's own commit, is compared by the others: its differences are timing.
+        if (pair := twins.get(key.variant)) and refs[key.variant] != refs[pair[0]] \
+                and dataset.is_done(other := RunKey(key.topology, pair[0], key.scenario, key.index)):
+            twin, aa = pair
+            base_run = dataset.run(other)
+            differ = rest_differs(run, base_run)
+            what = "routers choose" if run_has_digests(run) else "feeders get"
+            if differ is None:
+                # Told, not judged: a run without rest, or a final check skipped for its size, is no fault of the commit.
+                found.append(("output-unchecked", f"no routes at rest to compare with {twin}: a run was not at rest or had no final check", None))
+            elif differ:
+                # Beyond the timing: what the baseline's own commit, in its A/A variant of this seed, chose alike.
+                noise = set(rest_differs(dataset.run(aa_key), base_run) or []) \
+                    if aa and dataset.is_done(aa_key := RunKey(key.topology, aa, key.scenario, key.index)) else set()
+                if beyond := [r for r in differ if r not in noise]:
+                    timing = f", beyond {len(noise)} that differ in {aa}, the same commit as {twin}" if aa else ", no A/A variant to tell timing"
+                    found.append(("output", f"{len(beyond)} {what} routes of another length or kind than in {twin}: {', '.join(beyond[:10])}{timing}", False))
+                elif hidden := [r for r in differ if r in noise]:
+                    found.append(("output-unchecked", f"{len(hidden)} {what} other routes than in {twin} as they do between two runs of its commit "
+                                                      f"in {aa}: timing or the change, not told apart", None))
         if at_rest and final.get("loops"):
             found.append(("loops", f"packets to {', '.join(final.get('looping', [])) or str(final['loops']) + ' prefixes'} loop",
                           _predicted(dataset, key, run, set(), "loops")))
@@ -418,7 +501,7 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
         if at_rest and theirs:
             fewer = {r: theirs["held"][r] - h for r, h in final["held"].items() if theirs["held"].get(r, 0) > h}
             if fewer:
-                found.append(("reach", ", ".join(f"{r} holds {final['held'][r]} of the {theirs['held'][r]} prefixes BGP holds" for r in sorted(fewer)),
+                found.append(("reach", ", ".join(f"{r} {final['held'][r]} of {theirs['held'][r]}" for r in sorted(fewer)),
                               _predicted(dataset, key, run, set(fewer), "reach")))
             if extra := sorted(set(final.get("holed", [])) - set(theirs.get("holed", []))):
                 found.append(("holes", f"packets to {', '.join(extra)} end at a router without a route", _predicted(dataset, key, run, set(), "holes")))
@@ -449,13 +532,13 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
         loops, holes = ("loops_beyond_s", "holes_beyond_s") if "holes_beyond_s" in m else ("loops_s", "holes_s")
         lost = lambda x: None if x.get(loops) is None or x.get(holes) is None else x[loops] + x[holes]
         most = lambda f: max((v for r in refs if (v := f(r)) is not None), default=None)
-        for metric, cause_, what in ((loops, "loops-way", "packets looped"), (holes, "holes-way", "packets ended at a router without a route")):
+        for metric, cause_ in ((loops, "loops-way"), (holes, "holes-way")):
             mine, base, base_lost = m.get(metric), most(lambda r: r.get(metric)), most(lost)
             # A packet lost on the way either loops or ends without a route: each counts only where both together exceed BGP's too.
             if mine is not None and base is not None and mine > base + resolution and not (
                     lost(m) is not None and base_lost is not None and lost(m) <= base_lost + resolution):
-                beyond = ", each time longer than the resolution" if metric.endswith("_beyond_s") else ""
-                found.append((cause_, f"{what} for {mine:g} s on the way{beyond}, BGP at most {base:g} s in {len(refs)} runs",
+                beyond = ", each beyond the resolution" if metric.endswith("_beyond_s") else ""
+                found.append((cause_, f"{mine:g} s{beyond}, BGP at most {base:g} s in {len(refs)} runs",
                               way_predicted(dataset, key, cause_)))
         if m.get("flaps_unplanned") is not None:  # per session: those no step touched
             if m["flaps_unplanned"]:
@@ -515,11 +598,11 @@ def verdict(dataset: Dataset, found: list[dict] | None = None) -> dict:
         (runs(lambda p: p.get("cause") == "calibration"), "measured other than the known values, see lab calibrate"),
         (runs(lambda p: judged("check", p) and p.get("predicted") is False), "failed a check the simulator did not predict"),
         (runs(lambda p: judged("check", p) and p.get("predicted") is None and p.get("unanswered", False)),
-         "failed a check the simulator gave no answer for"),
+         "failed a check without a simulator answer"),
         # Without a prediction a property of BGP is told where the simulator cannot play it, see unforeseen.
         (runs(lambda p: judged("property", p) and p.get("predicted") is False), "broke a property the simulator did not predict"),
         (runs(lambda p: judged("property", p) and p.get("predicted") is None and p.get("unanswered", False)),
-         "broke a property the simulator gave no answer for"),
+         "broke a property without a simulator answer"),
     ]
     reasons = [f"{n} run{'s' * (n != 1)} {what}" for n, what in counts if n]
     told = runs(lambda p: p["kind"] in ("check", "property") and p.get("predicted", False) is None and not p.get("unanswered", False))
@@ -540,14 +623,14 @@ def grouped(found: list[dict]) -> list[dict]:
                 title = what + ", no answer of the simulator"
                 hint = "The simulator failed or timed out here, or answered before it judged this: predict again. Fails the result."
             elif said is None:
-                title, hint = what + ", not predictable", "The simulator cannot play this mode or scenario, or was not asked: told, not judged."
+                title, hint = what + ", not predictable", "Not judged: the simulator cannot play this mode or scenario, or was not asked."
             else:
                 title = what + (", predicted" if said else ", not predicted" if p["kind"] != "unmeasured" else "")
                 hint = "As the simulator predicts for this mode." if said else ""
         else:
             _, title, hint = cause(p["message"])
             if p["kind"] == "retried":
-                title, hint = f"{title}, then completed", "Counted. Retries can favour runs below a limit."
+                title, hint = f"{title}, then completed", "Counted. Retries can favor runs below a limit."
         groups.setdefault((p["kind"], p["cause"], said, unanswered), {"kind": p["kind"], "cause": p["cause"], "title": title, "hint": hint,
                                                                        "runs": []})["runs"].append(p)
     for g in groups.values():

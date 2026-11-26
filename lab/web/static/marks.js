@@ -81,7 +81,7 @@
     });
   };
   drawer.addEventListener("change", (e) => {
-    if (e.target.name === "color") {  // the slip takes the colour picked, as it will be saved
+    if (e.target.name === "color") {  // the slip takes the color picked, as it will be saved
       const slip = e.target.closest(".note");
       slip.className = slip.className.replace(/\bnote-(yellow|pink|blue|violet|orange)\b/, `note-${e.target.value}`);
       return;

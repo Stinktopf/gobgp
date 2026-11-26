@@ -170,17 +170,22 @@ def test_only_private_results_that_do_not_run_are_deleted(client, lab_files, mon
     from lab import cluster, results
 
     e = Experiment.load(config.path("lab-smoke"))
-    path = results.PUBLIC / "t-delete"
+    path = results.PRIVATE / "t-delete"
     path.mkdir(parents=True)
     (path / "dataset.json").write_text(json.dumps({"experiment": e.model_dump(mode="json"), "commits": {}, "created": "2026-01-01"}))
-    d = results.Dataset(path)
     delete = lambda: client.post("/results/t-delete/delete", follow_redirects=False).headers["location"]
-    assert "private+first" in delete() and path.exists()
-    d.publish(False)
+    (path / "manifest.json").write_text("{}")
+    assert "Unarchive+it+first" in delete() and path.exists()
+    (path / "zenodo.json").write_text('{"id": 1}')
+    assert "on+Zenodo" in delete()
+    (path / "zenodo.json").unlink()
+    (path / "manifest.json").unlink()
     monkeypatch.setattr(cluster, "holder", lambda: "t-delete")
     assert "Stop+it+first" in delete()
     monkeypatch.setattr(cluster, "holder", lambda: None)
     assert delete() == "/results" and results.Dataset.find("t-delete") is None
+    legacy = results.Dataset.find("ifip-networking-2026")
+    assert legacy.state == "legacy" and "the+paper" in client.post("/results/ifip-networking-2026/delete", follow_redirects=False).headers["location"]
 
 
 def test_results_of_an_older_format_are_listed_and_deleted(client, lab_files):
@@ -277,7 +282,7 @@ def test_run_all_queues_the_checks_first_and_leaves_out_what_does_not_fit(client
     queued = []
     monkeypatch.setattr(web.jobs, "enqueue", queued.append)
     page = client.get("/experiments").text
-    assert "Run all" in page and re.search(r"2 experiments and \d+ topologies left out", page)  # internet-dfz and -scale, germany50 and more
+    assert "Run all" in page and re.search(r"3 experiments and \d+ topologies left out", page)  # internet-dfz, -scale, performance-scale, germany50 and more
     assert client.post("/experiments/run-all", follow_redirects=False).status_code == 303
     names = [q.rsplit("-", 2)[0] for q in queued]
     assert names[:2] == ["lab-smoke", "lab-calibration"]
@@ -297,7 +302,7 @@ def test_the_builder_names_the_topologies_this_host_leaves_out(monkeypatch):
     e = config.Experiment.load(config.path("internet-scale"))
     monkeypatch.setattr(cluster, "fit", lambda e: cluster.Fit(e.cluster, 128, 4096, {"core-256": ["256 routers"]}, len(e.topologies)))
     notes = experiment_pages.host_notes(e)
-    assert "core-256 needs 256 routers." in notes and "so the experiment runs without them." in notes
+    assert "core-256 needs 256 routers." in notes and "so the experiment runs without it." in notes
     monkeypatch.setattr(cluster, "fit", lambda e: cluster.Fit(e.cluster, 128, 4096, {}, len(e.topologies)))
     assert 'class="hidden"' in experiment_pages.host_notes(e)
 
@@ -476,10 +481,10 @@ def test_a_host_at_its_limit_is_one_line_with_a_link_to_the_details(client, monk
               "slow": [{**where, "variant": "bgp-1hz", "hz": 2.63}], "shifting": [], "images": {}, "noise": None, "skipped": {}, "limit": None}
     monkeypatch.setattr(analysis, "integrity", lambda dataset: limits)
     html = common.templates.env.get_template("partials/result-header.html").render(
-        integrity=limits, result=type("R", (), {"name": "r-1", "meta": {}})(), experiment=type("E", (), {"name": "e", "description": ""})(),
+        integrity=limits, result=type("R", (), {"name": "r-1", "meta": {}, "state": "private", "zenodo": {}, "kept": lambda self: None})(), experiment=type("E", (), {"name": "e", "description": ""})(),
         status={}, failed={}, source=None, problems=[])
     line = " ".join(html.split("Limits of the measurements")[1].split("</li>")[0].split())
-    assert "Host at its limit during bgp and bgp-1hz (oscillating): up to 94 % CPU, 2.6 Hz instead of 10 Hz." in line
+    assert "Host at its limit in bgp and bgp-1hz (oscillating): up to 94 % CPU, 2.6 Hz instead of 10 Hz." in line
     assert "tab=quality" in line
 
 
@@ -491,7 +496,8 @@ def test_every_experiment_saves_unchanged_through_the_builder():
         e = Experiment.load(path)
         v = experiment_pages.builder_values(e)
         form = [(k, str(v[k])) for k in ("name", "description", "runs", "seed", "cpus", "memory_mb", "memory_min_mb", "router_limit_mb", "hold_time",
-                                          "keepalive", "connect_retry", "mrai", "refresh", "procs", "interval", "stable_s", "profile_s")]
+                                          "keepalive", "connect_retry", "mrai", "refresh", "procs", "interval", "stable_s", "profile_s", "profile_routers", "record_routers")]
+        form += [("paths", "on")] if v["paths"] else []
         form += [("topologies", t) for t in v["topologies"]] + [("scenarios", s) for s in v["scenarios"]]
         form += [("paired", "on")] if v["paired"] else []
         form += [("graceful_restart", "on")] if v["graceful_restart"] else []
@@ -502,6 +508,7 @@ def test_every_experiment_saves_unchanged_through_the_builder():
         for i, w in enumerate(v["sweeps"]):
             form += [(f"s{i}_scenario", w["scenario"]), (f"s{i}_param", w["param"]), (f"s{i}_values", w["values"])]
         form += [(f"primary_{k}", ", ".join(x) if isinstance(x, list) else x) for k, x in (v["primary"] or {}).items()]
+        form += [(f"speed_{k}", ", ".join(x) if isinstance(x, list) else str(x)) for k, x in (v["speed"] or {}).items()]
         assert experiment_pages.parse_builder(FormData(form)).model_dump() == e.model_dump(), path.name
 
 
@@ -937,3 +944,230 @@ def test_the_previews_know_each_router_s_as_as_the_editor_does():
     t = {"roles": {"origins": ["a"]}, "routers": {"a": {"asn": 1, "neighbors": [{"name": "b"}]}, "b": {"asn": 2, "confederation": 7, "neighbors": [{"name": "a"}]}}}
     thumb = thumbnails({"t": t})["t"]
     assert thumb["routers"]["a"] == {"asn": 1, "neighbors": [{"name": "b"}]} and thumb["routers"]["b"]["confederation"] == 7
+
+
+def test_a_speed_rule_saves_unchanged_through_the_builder():
+    from starlette.datastructures import FormData
+
+    e = Experiment.model_validate({"name": "speedy", "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "variants": [{"name": "base", "mode": "obgp-rp", "ref": "abc"}, {"name": "new", "mode": "obgp-rp", "ref": "def"},
+                                                {"name": "aa", "mode": "obgp-rp", "ref": "abc"}],
+                                   "speed": {"baseline": "abc", "metric": "cpu_s_mean", "margin_pct": 4.5, "guards": ["settle_s", "flaps"], "guard_pct": 8}})
+    v = experiment_pages.builder_values(e)
+    form = [(k, str(v[k])) for k in ("name", "description", "runs", "seed", "cpus", "memory_mb", "memory_min_mb", "router_limit_mb", "hold_time",
+                                      "keepalive", "connect_retry", "mrai", "refresh", "procs", "interval", "stable_s", "profile_s", "profile_routers", "record_routers")]
+    form += [("topologies", t) for t in v["topologies"]] + [("scenarios", s) for s in v["scenarios"]] + [("paths", "on")]
+    for i, x in enumerate(v["variants"]):
+        form += [(f"v{i}_name", x["name"]), (f"v{i}_ref", x["ref"]), (f"v{i}_mode", x["mode"]), (f"v{i}_share", "50"), (f"v{i}_interval", ""), (f"v{i}_refresh_delay", "")]
+    form += [(f"speed_{k}", ", ".join(x) if isinstance(x, list) else str(x)) for k, x in v["speed"].items()]
+    assert experiment_pages.parse_builder(FormData(form)).speed == e.speed
+
+
+def test_a_result_leads_to_the_benchmark_area_only_where_it_measured_performance(client):
+    page = client.get("/results/ifip-networking-2026?tab=runs").text
+    assert ">Performance</a>" not in page and "Benchmark →" not in page  # no profiles, no speed rule
+    old = client.get("/results/ifip-networking-2026?tab=performance").text  # links from before land on the runs
+    assert 'aria-current="page">Runs</a>' in old
+
+
+def test_the_benchmark_area_shows_the_hotspots_of_a_variant_against_the_baseline_commit_of_its_mode(monkeypatch):
+    from lab.web.routes import results as pages
+    e = Experiment.model_validate({"name": "x", "runs": 10, "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "variants": [{"name": "base", "mode": "obgp-rp", "ref": "a"}, {"name": "new", "mode": "obgp-rp", "ref": "b"},
+                                                {"name": "aa", "mode": "obgp-rp", "ref": "a"}],
+                                   "speed": {"baseline": "a", "margin_pct": 5}})
+    cell = lambda cum: {"runs": 2, "left_out": 0, "windows": [], "seconds": sum(cum.values()), "buckets": {}, "allocated": {"f": 3.0},  # noqa: E731
+                        "flat": dict(cum), "cum": dict(cum)}
+    cells = {"base": cell({"github.com/osrg/gobgp/v4/pkg/server.filterpath": 2.0, "g": 1.0}),
+             "new": cell({"github.com/osrg/gobgp/v4/pkg/server.filterpath": 1.0, "g": 0.5}), "aa": cell({"g": 1.0})}
+    monkeypatch.setattr(analysis, "profile_cell", lambda d, t, s, v, run=0: cells[v])
+    monkeypatch.setattr(analysis, "speed", lambda d: {"rule": {}, "level": 0.975, "cells": []})
+    out = pages.performance(type("D", (), {"experiment": e, "keys": lambda self: []})(), "noble-eu", "fill-60", "")
+    # The candidate first, against its baseline commit, the module path off the names.
+    assert out["variant"] == "new" and out["against"] == "base"
+    assert pages.performance(type("D", (), {"experiment": e, "keys": lambda self: []})(), "noble-eu", "fill-60", "aa")["against"] == "base"  # the A/A twin too
+    assert out["hotspots"][0] == {"name": "github.com/osrg/gobgp/v4/pkg/server.filterpath", "short": "pkg/server.filterpath",
+                                  "flat": 1.0, "cum": 1.0, "change": -1.0}
+    assert out["changes"][0] == {"name": "github.com/osrg/gobgp/v4/pkg/server.filterpath", "short": "pkg/server.filterpath", "change": -1.0, "before": 2.0}
+    assert pages.performance(type("D", (), {"experiment": e, "keys": lambda self: []})(), "noble-eu", "fill-60", "base")["against"] is None  # the baseline has none
+
+
+def test_a_benchmark_is_set_up_in_one_form_and_saved_with_its_variants(client, lab_files):
+    page = client.get("/experiments/new?benchmark=1").text
+    assert 'name="bench_baseline"' in page and 'value="obgp-rp-pn"' in page
+    from starlette.datastructures import FormData
+    form = FormData([("name", "bench-x"), ("runs", "6"), ("seed", "1"), ("cpus", "8"), ("memory_mb", "16384"), ("hold_time", "9"), ("keepalive", "3"),
+                     ("connect_retry", "5"), ("interval", "1"), ("stable_s", "5"), ("topologies", "noble-eu"), ("scenarios", "fill-60"),
+                     ("v0_name", "ignored"), ("v0_ref", "HEAD"), ("v0_mode", "bgp"),
+                     ("bench_baseline", "master"), ("bench_candidates", "fast"), ("bench_modes", "obgp-rp-pn"), ("bench_router", "busiest")])
+    e = experiment_pages.parse_builder(form)
+    assert [v.name for v in e.variants] == ["obgp-rp-pn", "obgp-rp-pn-aa", "obgp-rp-pn-new"]  # on the whole network, no feed
+    assert e.benchmark.candidates == ["fast"] and e.speed.baseline == "master"
+
+
+def test_a_new_benchmark_starts_with_every_mode_ticked(client):
+    page = client.get("/experiments/new?benchmark=1").text
+    for mode in ("bgp", "bgp-pn", "obgp-rp-pn", "obgp-np", "obgp-paper"):
+        assert f'name="bench_modes" value="{mode}" checked' in page
+    assert 'value="obgp-paper-pn"' not in page and 'name="bench_feed"' in page
+
+
+def test_benchmarks_have_a_category_of_their_own(lab_files, monkeypatch):
+    from lab.web import groups
+    assert groups.of_experiment("benchmark-x") == "Benchmark"
+    assert groups.of_experiment("performance-scale") == "Benchmark"
+    monkeypatch.setattr(groups, "benchmark", lambda name: name == "my-speedup")
+    assert groups.of_experiment("my-speedup") == "Benchmark" and groups.of_experiment("behaviour-mrai") == "Behaviour"
+
+
+def test_the_performance_area_lists_benchmarks_and_profiled_results_and_says_when_there_are_none(client):
+    page = client.get("/benchmark").text
+    assert 'href="/benchmark"' in page and "New benchmark" in page
+    assert client.get("/performance", follow_redirects=False).headers["location"] == "/benchmark"
+    assert "No benchmarks yet." in page or "Reading the profiles" in page
+
+
+def test_a_forest_plot_puts_every_mode_on_one_axis_with_its_margin():
+    from lab.web.routes import performance as area
+    cells = [{"baseline": "bgp", "variant": "bgp-new", "verdict": "faster", "baseline_median": 10.0, "shift": -1.0, "low": -1.5, "high": -0.5,
+              "margin": 0.5, "aa": {"shift": 0.1}, "n": 9},
+             {"baseline": "obgp-rp", "variant": "obgp-rp-new", "verdict": "too few runs", "n": 1}]
+    plot = area.forest(cells)
+    first, second = plot["rows"]
+    assert (round(first["s"], 6), round(first["lo"], 6), round(first["hi"], 6), round(first["m"], 6), round(first["aa_s"], 6)) == (-10, -15, -5, 5, 1)
+    assert second["drawn"] is False and plot["edge"] >= 15 and 0 in plot["ticks"]
+
+
+def test_the_cores_a_profiled_router_used_come_from_its_samples_with_the_limit_of_its_threads(tmp_path):
+    from lab.results import RunKey
+    from lab.web.routes import performance as area
+    e = Experiment.model_validate({"name": "x", "runs": 6, "topologies": ["noble-eu"], "scenarios": ["fill-60"], "bgp": {"procs": 2},
+                                   "sampling": {"interval": 1.0}, "variants": [{"name": "a", "mode": "bgp"}]})
+    key = RunKey("noble-eu", "a", "fill-60", 1)
+    rows = [{"t": float(t), "router": "r1", "cpu_s": 1.5 * t, "metrics_age_s": 0} for t in range(10)] + [{"t": 1.0, "router": "r2", "cpu_s": 9.0}]
+    run = {"events": [{"name": "announce", "t": 0.5}, {"name": "announced", "t": 5.0}], "profiles": [{"router": "r1", "end": 9.0}]}
+    (tmp_path / key.path).mkdir(parents=True)
+    (tmp_path / key.path / "run.json").write_text("{}")
+    d = type("D", (), {"experiment": e, "path": tmp_path, "is_done": lambda self, k: k == key, "run": lambda self, k: run, "samples": lambda self, k: rows})()
+    out = area.bottleneck(d, "noble-eu", "fill-60", ["a"])
+    assert out["router"] == "r1" and out["limit"] == 2 and {round(c, 6) for _, c in out["lines"]["a"]} == {1.5}
+    assert out["events"] == {"announce": 0.5, "announced": 5.0, "rest": 9.0}
+    rows.clear()  # kept beside the result: read once
+    assert area.bottleneck(d, "noble-eu", "fill-60", ["a"])["lines"] == out["lines"]
+
+
+def test_the_call_tree_colours_a_change_only_beyond_what_the_aa_twin_shows():
+    from lab.web.routes import performance as area
+    node = lambda s, **c: {"s": s, "c": c}  # noqa: E731
+    mine = {"tree_runs": 1, "tree": node(10.0, a=node(6.0, b=node(4.0)), g=node(4.0))}
+    base = {"tree_runs": 1, "tree": node(10.0, a=node(5.0, b=node(3.0)), g=node(4.0))}
+    aa = {"tree_runs": 1, "tree": node(10.0, a=node(6.0, b=node(3.1)), g=node(4.0))}
+    boxes = {x["name"]: x for x in area.flame(mine, base, [], aa)["boxes"]}
+    assert boxes["a"]["change"] == 0.0  # +1 s, as much as the A/A twin shows there: timing
+    assert round(boxes["b"]["change"], 3) == 0.333 and boxes["g"]["change"] == 0.0  # +1 s beyond the A/A's +0.1 s
+    zoomed = area.flame(mine, base, ["a"], aa)
+    assert zoomed["boxes"][0]["root"] and zoomed["boxes"][0]["short"] == "a"  # the zoomed function as the bar across
+    assert [x["name"] for x in zoomed["boxes"][1:]] == ["b"] and zoomed["total"] == 6.0
+
+
+def test_a_new_benchmark_gets_a_name_no_experiment_has(lab_files, monkeypatch):
+    from lab import config
+    taken = set()
+    monkeypatch.setattr(config, "path", lambda name: type("P", (), {"exists": lambda self: name in taken})())
+    first = experiment_pages.free_benchmark_name()
+    taken.add(first)
+    assert first.startswith("benchmark-") and experiment_pages.free_benchmark_name() == f"{first}-2"
+
+
+def test_the_overview_gives_every_mode_its_cpu_in_five_shares_and_what_a_candidate_changed(monkeypatch):
+    from lab.web.routes import performance as area
+    e = Experiment.model_validate({"name": "x", "runs": 6, "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "variants": [{"name": "a", "mode": "bgp"}, {"name": "b", "mode": "obgp-rp"}]})
+    med = lambda v: {"median": v}  # noqa: E731
+    summary = [{"topology": "noble-eu", "scenario": "fill-60", "variant": "a",
+                "metrics": {"prof_s": med(10.0), "prof_gc_s": med(3.0), "prof_export_s": med(4.0), "prof_policy_s": med(1.0), "prof_send_s": med(2.0)}},
+               {"topology": "noble-eu", "scenario": "fill-60", "variant": "b", "metrics": {"prof_s": None}}]
+    monkeypatch.setattr(analysis, "summary", lambda d: summary)
+    out = area.overview(type("D", (), {"experiment": e, "keys": lambda self: []})(), "noble-eu", "fill-60", [])
+    shares = {x["key"]: round(x["pct"]) for x in out["bars"][0]["shares"]}
+    assert [b["variant"] for b in out["bars"]] == ["a"] and shares == {"routing": 50, "io": 20, "gc": 30, "api": 0, "other": 0}
+    monkeypatch.setattr(analysis, "paired", lambda d, t, s, metric, v, b: {"n": 6, "change": -12.0, "shift_low": -2.0, "shift_high": -1.0}
+                        if metric == "cpu_s_mean" else {"n": 6, "change": 1.0, "shift_low": -1.0, "shift_high": 2.0})
+    rows = area.overview(type("D", (), {"experiment": e, "keys": lambda self: []})(), "noble-eu", "fill-60", [{"baseline": "a", "variant": "b"}])["changes"]
+    # Without a rule nothing but the interval and the A/A twin decide. With one, a change within its margin stays plain.
+    assert [(x["label"], x["change"], x["clear"]) for x in rows[0]["cells"][:2]] == [("CPU", -12.0, True), ("Settle", 1.0, False)]
+
+
+def test_a_change_over_the_workload_counts_only_beyond_the_rules_margin(monkeypatch):
+    from lab.web.routes import performance as area
+    e = Experiment.model_validate({"name": "x", "runs": 6, "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "benchmark": {"baseline": "m", "candidates": ["c"], "modes": ["bgp"]}, "speed": {"baseline": "m", "margin_pct": 15}})
+    monkeypatch.setattr(analysis, "summary", lambda d: [])
+    monkeypatch.setattr(analysis, "paired", lambda d, t, s, metric, v, b: {"n": 6, "change": -12.0, "shift_low": -2.0, "shift_high": -1.0})
+    rows = area.overview(type("D", (), {"experiment": e, "keys": lambda self: []})(), "noble-eu", "fill-60", [{"baseline": "bgp", "variant": "bgp-new"}])["changes"]
+    assert rows[0]["cells"][0]["clear"] is False  # −12 % with a margin of 15 %
+
+
+def test_an_upload_to_zenodo_needs_its_target_typed(client, lab_files, monkeypatch):
+    import json
+
+    from lab import results, zenodo
+
+    e = Experiment.load(config.path("lab-smoke"))
+    path = results.PRIVATE / "t-up"
+    path.mkdir(parents=True)
+    (path / "dataset.json").write_text(json.dumps({"experiment": e.model_dump(mode="json"), "commits": {}, "created": "2026-01-01"}))
+    (path / "manifest.json").write_text("{}")
+    sent = []
+    monkeypatch.setattr(zenodo, "draft", lambda tar, title, text, words, use: sent.append(use) or {"id": 1, "use": use, "url": "u"})
+    post = lambda use, confirm: client.post("/results/t-up/zenodo", data={"use": use, "confirm": confirm}, follow_redirects=False).headers["location"]
+    assert "did+not+match" in post("real", "upload to sandbox") and sent == []
+    assert post("real", " Upload to Zenodo ") == "/results/t-up" and sent == ["real"]
+    assert results.Dataset.find("t-up").zenodo["use"] == "real"
+    answers = [{"submitted": False, "doi": None, "url": "u"}, {"submitted": True, "doi": "10.5072/zenodo.1", "url": "r"}]
+    monkeypatch.setattr(zenodo, "status", lambda id, use: answers.pop(0))
+    assert "not+published+it+yet" in client.post("/results/t-up/zenodo", follow_redirects=False).headers["location"]
+    assert client.post("/results/t-up/zenodo", follow_redirects=False).headers["location"] == "/results/t-up"
+    assert results.Dataset.find("t-up").zenodo["doi"] == "10.5072/zenodo.1"
+
+
+def test_the_radar_puts_the_reference_on_its_circle_and_one_scale_on_every_axis():
+    from lab.web.routes.performance import radar_radius, ring_label
+
+    assert radar_radius(1.0, 0.5) == 0.5 and radar_radius(2 ** 0.5, 0.5) == 1.0 and radar_radius(2 ** -0.5, 0.5) == pytest.approx(0.0)
+    assert radar_radius(8.0, 0.5) == 1.0  # beyond the rim it stays at the rim, marked hollow
+    assert radar_radius(1.1, 1.0) - 0.5 == pytest.approx(0.5 - radar_radius(1 / 1.1, 1.0))  # less and more alike
+    assert [ring_label(x) for x in (2 ** -0.25, 2 ** 0.25, 0.5, 2.0, 4.0)] == ["−16 %", "+19 %", "½×", "2×", "4×"]
+
+
+def test_the_pair_is_any_two_variants_by_default_the_baseline_and_candidate_of_a_mode(monkeypatch):
+    from lab import analysis
+    from lab.web.routes import performance as P
+
+    variants = [type("V", (), {"name": n, "records": False})() for n in ("bgp", "obgp-rp", "obgp-rp-aa", "obgp-rp-new")]
+    e = type("E", (), {"topologies": ["t"], "cases_of": lambda self, t: ["s"], "speed": None, "variants": variants})()
+    d = type("D", (), {"experiment": e, "keys": lambda self: []})()
+    monkeypatch.setattr(analysis, "summary", lambda d: [{"topology": "t", "scenario": "s", "variant": "obgp-rp", "metrics": {"prof_s": {"median": 9.0}}}])
+    monkeypatch.setattr(P, "twins_of", lambda e: {"obgp-rp-new": ("obgp-rp", "obgp-rp-aa"), "obgp-rp-aa": ("obgp-rp", None)})
+    c = P.chosen(d, "", "", "", "", "")
+    assert (c["reference"], c["compare"], c["aa"]) == ("bgp", "obgp-rp", None)  # without a rule: bgp and the busiest
+    c = P.chosen(d, "t", "s", "", "obgp-rp", "obgp-rp-new")
+    assert (c["reference"], c["compare"], c["aa"]) == ("obgp-rp", "obgp-rp-new", "obgp-rp-aa")  # the band only against its baseline
+    assert P.chosen(d, "t", "s", "", "obgp-rp", "obgp-rp")["compare"] != "obgp-rp"
+    e.speed = True
+    monkeypatch.setattr(analysis, "speed", lambda d: {"cells": [{"topology": "t", "scenario": "s", "baseline": "obgp-rp", "variant": "obgp-rp-new"}]})
+    c = P.chosen(d, "t", "s", "obgp-rp", "", "")  # a former link with mode
+    assert (c["reference"], c["compare"]) == ("obgp-rp", "obgp-rp-new")
+
+
+def test_a_new_benchmark_starts_from_the_workload_of_performance_scale_against_the_lab_commit(client, lab_files, monkeypatch):
+    from lab import update
+    monkeypatch.setattr(update, "git", lambda *a, **k: "abcd1234")
+    page = client.get("/experiments/new?benchmark=1").text
+    assert 'name="bench_baseline" list="refs" value="abcd1234"' in page and 'placeholder="branch or commit"' in page
+    assert 'name="topologies" value="core-128" checked' in page and 'value="real-fill-20" checked' in page
+    from starlette.datastructures import FormData
+    form = FormData([("name", "bench-y"), ("runs", "9"), ("seed", "1"), ("cpus", "8"), ("memory_mb", "16384"), ("hold_time", "9"), ("keepalive", "3"),
+                     ("connect_retry", "5"), ("interval", "1"), ("stable_s", "5"), ("topologies", "noble-eu"), ("scenarios", "fill-60"),
+                     ("bench_baseline", "abcd1234"), ("bench_candidates", "fast"), ("bench_modes", "bgp"), ("bench_router", "busiest")])
+    assert experiment_pages.parse_builder(form).description == "fast against abcd1234 on noble-eu, every mode."

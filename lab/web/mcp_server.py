@@ -18,7 +18,8 @@ An experiment file runs as a result: topologies x scenarios x variants x runs.
 Start with status and results, then result for the setup and the verdict, metrics for what
 the metrics mean, summary for medians with their interval, runs for every run,
 primary for the comparison an experiment is about, paired for any other, problems for what went wrong, log for
-the details. Never pool variants: compare them, and state n and the resolution
+the details, profile for where the profiled routers spent their CPU, by part and by function, speed for
+whether a commit is faster than the baseline commit of its mode, by the rule its experiment set. Never pool variants: compare them, and state n and the resolution
 (two sampling intervals) with every claim about times.
 To build an experiment, read topologies, scenarios, vocabulary and an example
 with experiment or scenario, then save_experiment or save_scenario and
@@ -31,6 +32,8 @@ stop_simulation stops it and simulation_to_lab makes a finding an experiment to 
 marks reads the stars and notes people and agents left on results, searches and cases, star and add_note set them.
 predict_again judges a result that does not run against a new answer of the simulator,
 agreement sets simulator and lab side by side per cell, on rest and on deviations at rest: only never, sometimes and always compare.
+A result is private, archived (frozen for Zenodo) or legacy (the paper's), see result. results also lists the
+archived results on Zenodo this lab does not hold, fetch_result fetches one.
 The paper's experiment and its scenarios stay as they are, results are never deleted."""
 
 READ = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -53,7 +56,7 @@ def with_reasons(fn):
 def server(control: bool) -> MCPServer:
     s = MCPServer("obgp-lab", instructions=INSTRUCTIONS)
     for fn in (agent.status, agent.version, agent.experiments, agent.results, agent.result, agent.metrics, agent.summary,
-               agent.runs, agent.run_events, agent.run_samples, agent.run_forwarding, agent.paired, agent.primary, agent.agreement, agent.problems,
+               agent.runs, agent.profile, agent.speed, agent.run_events, agent.run_samples, agent.run_forwarding, agent.paired, agent.primary, agent.agreement, agent.problems,
                agent.log, agent.topologies, agent.scenarios, agent.vocabulary,
                agent.simulation_searches, agent.simulation_search, agent.simulation_case, agent.download):
         s.tool(annotations=READ)(with_reasons(fn))
@@ -67,6 +70,7 @@ def server(control: bool) -> MCPServer:
                          ("save_experiment", agent.save_experiment), ("save_scenario", agent.save_scenario),
                          ("start_simulation", agent.start_simulation), ("stop_simulation", agent.stop_simulation),
                          ("simulation_to_lab", agent.simulation_to_lab), ("predict_again", agent.predict_again),
+                         ("fetch_result", agent.fetch_result),
                          ("star", agent.star), ("add_note", agent.add_note), ("edit_note", agent.edit_note)):
             s.tool(name=name, annotations=CONTROL)(with_reasons(fn))
         s.tool(annotations=CONTROL)(with_reasons(agent.predict))  # changes nothing, but takes CPU: no approval, refused beside a result

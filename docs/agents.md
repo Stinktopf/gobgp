@@ -11,7 +11,7 @@ The MCP server describes its tools itself. The simulator's are `simulation_*`, `
 are also over HTTP, under `/api/v1/simulation/searches`.
 
 Stars and notes are the lab's own, for everyone and without an author, the same whether a person or an agent
-set them: `marks`, `star`, `add_note`, `edit_note`, `delete_note`. They stay out of downloads and public results.
+set them: `marks`, `star`, `add_note`, `edit_note`, `delete_note`. They stay out of downloads and archived results.
 
 ## Approval
 

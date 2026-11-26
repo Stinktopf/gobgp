@@ -1009,7 +1009,7 @@ func TestOperaTablesFollowTheSessionNotTheFSMState(t *testing.T) {
 func TestOperaForwardingChangedBySyncReachesTheWatchers(t *testing.T) {
 	r := newOperaRouter(t, table.OperaOptions{Enabled: true, PerNeighbor: true})
 	a := r.peer("10.0.1.1", 1)
-	delete(r.s.operaUp, a.ID()) // no table per neighbor yet: no forwarding path either
+	r.s.operaSessionGone(a) // no table per neighbor yet: no forwarding path either
 	r.receive(a, []uint32{1, 9})
 	require.Nil(t, operaForward(r))
 

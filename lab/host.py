@@ -271,7 +271,7 @@ def low_inotify() -> str | None:
 
 
 def low_neigh() -> str | None:
-    """The limit of the kernel's neighbour table, when below what the large topologies need."""
+    """The limit of the kernel's neighbor table, when below what the large topologies need."""
     from .cluster import NEIGH_LOW, neigh_table
 
     table = neigh_table()

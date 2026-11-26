@@ -75,7 +75,7 @@ def test_a_run_that_reaches_less_than_bgp_or_loops_or_never_rests_broke_a_proper
     monkeypatch.setattr(analysis, "run_summary", lambda d: {})
     found = {(x["variant"], x["cause"]): x for x in rested(problems.broken(dataset))}
     assert set(found) == {("obgp-rp", "loops"), ("obgp-rp", "reach")}
-    assert found["obgp-rp", "reach"]["message"] == "r3 holds 0 of the 1 prefixes BGP holds" and found["obgp-rp", "reach"]["predicted"]
+    assert found["obgp-rp", "reach"]["message"] == "r3 0 of 1" and found["obgp-rp", "reach"]["predicted"]
     assert not found["obgp-rp", "loops"]["predicted"]  # no check of forwarding was allowed to fail
 
     # BGP never at rest: no reference, said as such, never a comparison with a moment of an oscillation.
@@ -138,7 +138,7 @@ def test_black_holes_and_stale_routes_count_without_bgp_and_the_way_to_rest_is_c
         str(bgp): {"oscillates": 1, "loops_s": 0.0, "holes_s": 1.0, "loops_beyond_s": 0.0, "holes_beyond_s": 0.3},
         str(obgp): {"loops_s": 0.0, "holes_s": 1.0, "loops_beyond_s": 0.0, "holes_beyond_s": 0.3 + resolution + 0.5}})
     found = {(x["variant"], x["cause"]): x["message"] for x in rested(problems.broken(dataset))}
-    assert "each time longer than the resolution" in found["obgp-rp", "holes-way"]
+    assert "each beyond the resolution" in found["obgp-rp", "holes-way"]
     # A final check skipped for a large table is told.
     runs[obgp] = {"status": "completed", "events": [{"name": "final", "t": 9, "stable": True, "prefixes": 3000, "skipped": "more than 2000 prefixes"}]}
     assert ("obgp-rp", "unchecked") in {(x["variant"], x["cause"]) for x in rested(problems.broken(dataset))}
@@ -196,7 +196,7 @@ def test_a_check_foretells_only_its_own_kind_and_the_simulator_foretells_unrest(
     found = {(x["variant"], x["cause"]): x for x in rested(problems.broken(dataset))}
     assert not found["obgp-rp", "loops"]["predicted"]
     # BGP without rest where the simulator rests in 4 of 20 orders: the hypothesis.
-    assert found["bgp", "rest-end"]["predicted"] and "rests in 4 of 20 orders and repeats without end in 16" in found["bgp", "rest-end"]["message"]
+    assert found["bgp", "rest-end"]["predicted"] and "rests in 4 of 20 orders, repeats without end in 16" in found["bgp", "rest-end"]["message"]
     # OBGP at rest where the simulator never rests: a deviation between the two.
     assert "never does in 20 orders" in found["obgp-rp", "rest-unforeseen"]["message"]
     # The simulator has no timers: with an MRAI that rest is no deviation.
@@ -273,7 +273,7 @@ def test_a_completed_run_without_a_rest_value_is_not_measured_and_says_why(monke
     assert set(found) == {2, 3, 4}
     assert found[2]["kind"] == "unmeasured" and found[2]["message"] == f"no rest value: its samples after the last step span less than {quiet:g} s at rest, {3 * quiet:g} s still changing"
     assert found[3]["kind"] == "unmeasured" and found[3]["message"] == f"no rest value: the routes never stayed unchanged for {quiet:g} s"
-    assert found[4]["kind"] == "property" and found[4]["message"] == "30 s after the last step the routes still change"
+    assert found[4]["kind"] == "property" and found[4]["message"] == "30 s after the last step"
 
 
 def test_a_finished_result_passes_only_without_errors_unmeasured_runs_and_unforeseen_problems():
@@ -294,7 +294,7 @@ def test_a_finished_result_passes_only_without_errors_unmeasured_runs_and_unfore
     # Without an answer, after an error or a timeout, a failed check fails it. Where the simulator cannot play it, it is told.
     unanswered = {**where, "run": 8, "kind": "check", "predicted": None, "unanswered": True}
     cannot = {**where, "run": 9, "kind": "property", "predicted": None, "unanswered": False, "why": "mixed mode"}
-    assert problems.verdict(d("finished"), ok + [unanswered, cannot]) == {"passed": False, "reasons": ["1 run failed a check the simulator gave no answer for"],
+    assert problems.verdict(d("finished"), ok + [unanswered, cannot]) == {"passed": False, "reasons": ["1 run failed a check without a simulator answer"],
                                                                            "told": ["1 run failed a check or broke a property the simulator cannot play, not predictable"]}
     assert problems.verdict(d("finished"), ok + [cannot])["passed"] is True
     assert problems.look({"status": "failed"}, [unanswered]) == "failed" and problems.look({"status": "failed"}, [cannot]) == "unjudged"
@@ -333,10 +333,10 @@ def test_without_a_prediction_only_bgp_and_mixed_modes_go_unjudged(monkeypatch):
     problems._CANNOT.clear()
     told = rested(problems.broken(dataset))
     assert {x["variant"]: x.get("unanswered") for x in told if x["cause"] == "rest-end"} == {"bgp": True, "obgp-rp": None, "random-rp": False}
-    assert "1 run broke a property the simulator gave no answer for" in problems.verdict(dataset, told)["reasons"]
+    assert "1 run broke a property without a simulator answer" in problems.verdict(dataset, told)["reasons"]
 
     def cannot(*a):
-        raise simulate.Unsupported(["step 3 (replay): no counterpart in the simulator"])
+        raise simulate.Unsupported(["step 3 (replay): has no counterpart"])
     monkeypatch.setattr(simulate, "to_instances", cannot)
     problems._CANNOT.clear()
     told = rested(problems.broken(dataset))
@@ -347,3 +347,46 @@ def test_without_a_prediction_only_bgp_and_mixed_modes_go_unjudged(monkeypatch):
     monkeypatch.setattr(analysis, "run_summary", lambda d: {})
     reach = [x for x in problems.broken(dataset) if x["cause"] == "reach"]
     assert [(x["variant"], x["predicted"], x.get("unanswered")) for x in reach] == [("obgp-rp", None, False)]
+
+
+def test_a_commit_has_to_choose_and_send_what_the_baseline_of_its_mode_did_beyond_timing():
+    from lab.results import RunKey
+
+    e = Experiment.model_validate({"name": "x", "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "variants": [{"name": "base", "mode": "obgp-rp", "ref": "abc"}, {"name": "new", "mode": "obgp-rp", "ref": "def"},
+                                                {"name": "aa", "mode": "obgp-rp", "ref": "abc"},
+                                                {"name": "bgp", "mode": "bgp", "ref": "abc"}, {"name": "bgp-new", "mode": "bgp", "ref": "def"},
+                                                {"name": "alone", "mode": "obgp-sp"}],
+                                   "primary": {"metric": "cpu_s_mean", "baseline": "base"}})
+    # Every mode alike: bgp-new against the first bgp, not only the primary baseline's mode.
+    assert problems.twins_of(e) == {"new": ("base", "aa"), "aa": ("base", None), "bgp-new": ("bgp", None)}
+    net = lambda d: {"status": "completed", "events": [{"name": "final", "t": 9, "stable": True, "digests": d}]}
+    feed = lambda d: {"status": "completed", "events": [{"name": "final", "t": 9, "stable": True, "feed": True,
+                                                         "output": {f: {"digest": x} for f, x in d.items()}}]}
+    assert problems.rest_differs(net({"r1": "a", "r2": "b"}), net({"r1": "a", "r2": "c"})) == ["r2"]
+    assert problems.rest_differs(feed({"f1": "a"}), feed({"f1": "a"})) == []
+    unstable = net({"r1": "x"})
+    unstable["events"][0]["stable"] = False
+    assert problems.rest_differs(unstable, net({"r1": "a"})) is None  # not at rest: nothing to compare
+    # f2 differs in the A/A pair too, timing. f3 differs only with the new commit.
+    runs = {RunKey("t", "base", "s", 1): feed({"f1": "a", "f2": "b", "f3": "c"}), RunKey("t", "new", "s", 1): feed({"f1": "a", "f2": "z", "f3": "z"}),
+            RunKey("t", "aa", "s", 1): feed({"f1": "a", "f2": "y", "f3": "c"}),
+            RunKey("t", "bgp", "s", 1): net({"r1": "a"}), RunKey("t", "bgp-new", "s", 1): unstable}
+    dataset = type("D", (), {"experiment": e, "meta": {}, "keys": lambda self: list(runs), "is_done": lambda self, k: k in runs,
+                             "run": lambda self, k: runs[k]})()
+    found = [(x["variant"], x["cause"], x["message"]) for x in problems.broken(dataset, known={}) if x["cause"].startswith("output")]
+    assert ("new", "output", "1 feeders get routes of another length or kind than in base: f3, beyond 1 that differ in aa, the same commit as base") in found
+    assert ("bgp-new", "output-unchecked", "no routes at rest to compare with bgp: a run was not at rest or had no final check") in found
+    assert not [f for f in found if f[0] == "aa"]  # its own differences are timing, told in the others
+
+
+def test_the_oracle_judges_the_quality_of_the_routes_where_a_run_kept_it_not_the_paths_timing_chose():
+    final = lambda **x: {"status": "completed", "events": [{"name": "final", "t": 9, "stable": True, **x}]}  # noqa: E731
+    # Other exact routes, as timing chooses among equal paths, but the same quality: no difference.
+    a = final(digests={"r1": "x"}, qualities={"r1": "q"})
+    b = final(digests={"r1": "y"}, qualities={"r1": "q"})
+    assert problems.rest_differs(a, b) == []
+    assert problems.rest_differs(a, final(digests={"r1": "x"}, qualities={"r1": "worse"})) == ["r1"]
+    fed = lambda d, q: final(feed=True, output={"f1": {"digest": d, "quality": q}})  # noqa: E731
+    assert problems.rest_differs(fed("x", "q"), fed("y", "q")) == [] and problems.rest_differs(fed("x", "q"), fed("x", "p")) == ["f1"]
+    assert problems.rest_differs(final(digests={"r1": "x"}), final(digests={"r1": "y"})) == ["r1"]  # older runs: the exact routes

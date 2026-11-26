@@ -46,21 +46,22 @@ def quiet_host(monkeypatch):
 
 
 @pytest.fixture(scope="session")
-def public(tmp_path_factory):
-    """A copy of the public results, which analysis writes caches into."""
-    path = tmp_path_factory.mktemp("public")
-    shutil.copytree(results.PUBLIC, path, dirs_exist_ok=True)
+def legacy(tmp_path_factory):
+    """A copy of the legacy result, which analysis writes caches into."""
+    path = tmp_path_factory.mktemp("legacy")
+    shutil.copytree(results.LEGACY, path, dirs_exist_ok=True)
     return path
 
 
 @pytest.fixture
-def lab_files(tmp_path, monkeypatch, public):
-    """Copies of the topologies, scenarios and experiments, the public
-    results, empty private results, and settings of their own."""
+def lab_files(tmp_path, monkeypatch, legacy):
+    """Copies of the topologies, scenarios and experiments, the legacy
+    result, empty private results, no index, and settings of their own."""
     for name, module, source in SOURCES:
         shutil.copytree(source, tmp_path / name)
         monkeypatch.setattr(module, "DIRECTORY", tmp_path / name)
-    monkeypatch.setattr(results, "PUBLIC", public)
+    monkeypatch.setattr(results, "LEGACY", legacy)
+    monkeypatch.setattr(results, "INDEX", tmp_path / "results" / "archived.json")
     monkeypatch.setattr(results, "PRIVATE", tmp_path / "results" / "private")
     monkeypatch.setattr(config, "SETTINGS", tmp_path / "settings")
     monkeypatch.setattr(cluster, "lock_file", lambda: tmp_path / "cluster.lock")

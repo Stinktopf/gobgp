@@ -11,11 +11,11 @@ downloaded once, and turned into paths, so every SVG and PNG looks the same
 on every system. Then the PNGs are rendered from the SVGs.
 
 The files: mark.svg (app icon, favicon), mark-dark.svg (on dark backgrounds),
-mark-mono.svg (one colour), logo-{obgp,router,lab}-{light,dark} (wordmarks),
+mark-mono.svg (one color), logo-{obgp,router,lab}-{light,dark} (wordmarks),
 avatar-{router,lab} (profile pictures, cut to a circle), favicon-32.png,
 apple-touch-icon.png, icon-512.png, social-preview.png (GitHub → Settings →
 Social preview) and readme/ (the process of the README, beside a screenshot of a
-replay). The colour is U of T
+replay). The color is U of T
 Blue, #1e3765, the accent of the interface (--color-uoft-* in lab/web/styles.css).
 """
 

@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 from . import cluster, config
 from .config import Experiment, Sampling, write_atomic
-from .results import PUBLIC, Dataset, RunKey, copy_files
+from .results import LEGACY, Dataset, RunKey, copy_files
 
 NAME = "ifip-networking-2026"
 RELEASE = "718d9499"  # the commit of the release ifip-networking-2026
@@ -33,7 +33,7 @@ EVENTS = {
 
 
 def main() -> None:
-    path = PUBLIC / NAME
+    path = LEGACY / NAME
     originals = path / "original"
     if not originals.is_dir():
         sys.exit(f"move the experiments-* directories of the release to {originals} first")

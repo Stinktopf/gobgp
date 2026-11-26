@@ -522,7 +522,7 @@ def test_preflight_only_warns_about_load_and_a_busy_gpu(roomy, monkeypatch, caps
     lifecycle.preflight({}, roomy)
     out = capsys.readouterr()
     text = out.out + out.err
-    assert "Consider --cpus" in text and "smaller --memory-gb" in text and "Others use a GPU" in text and "128 instances" in text and "neighbour table holds 1,024" in text
+    assert "Consider --cpus" in text and "smaller --memory-gb" in text and "Others use a GPU" in text and "128 instances" in text and "neighbor table holds 1,024" in text
     assert lifecycle.parser().parse_args(["setup", "--no-sudo"]).no_sudo
 
 

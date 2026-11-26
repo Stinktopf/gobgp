@@ -11,6 +11,7 @@ keep their state.
 """
 
 import gzip
+import ipaddress
 import json
 import os
 import re
@@ -65,6 +66,27 @@ def records(path: Path):
         size = 4 if afi == 1 else 16
         peer = bytes(body[12:12 + size])
         yield ts, subtype, peer, body[12 + 2 * size:]
+
+
+def raw_records(path: Path):
+    """The BGP4MP messages with four-byte ASNs of a gzipped MRT file, each as
+    its peer's address, its second and the record as it is. A record cut off
+    at the end, as by a writer that still runs, is left out. Messages with
+    Add-Path or two-byte ASNs raise ValueError: a feed could not send them as
+    they came."""
+    data = gzip.open(path).read()
+    i = 0
+    while i + 12 <= len(data):
+        kind, subtype, length = struct.unpack_from("!HHI", data, i + 4)
+        end = i + 12 + length
+        if end > len(data):
+            return
+        body = data[i + 12:end]
+        if kind == BGP4MP and subtype in (1, 8, 9, 10, 11):
+            raise ValueError(f"{path.name} has BGP4MP messages of subtype {subtype}, with Add-Path or two-byte ASNs")
+        if kind == BGP4MP and subtype == MESSAGE_AS4 and len(body) >= 12 and struct.unpack_from("!H", body, 10)[0] == 1:
+            yield str(ipaddress.IPv4Address(body[12:16])), struct.unpack_from("!I", data, i)[0], data[i:end]
+        i = end
 
 
 def prefixes(data: bytes, i: int, end: int) -> list[str]:

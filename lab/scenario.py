@@ -120,6 +120,15 @@ class Replay(Model):
     per_router: int = Field(20, ge=1, le=1000, description="Prefixes per router at most, those that changed first")
 
 
+class Feed(Model):
+    source: str = Field(pattern=r"^[^/]+/[^/]+/[^/]+/\d+$", description="The run that recorded the router: result/variant/scenario/run, "
+                                                                     "on the same topology, with sampling.record_routers")
+    router: str = Field("busiest", description="The router fed, busiest for the one with the most neighbors; it has to be among those recorded")
+    schedule: Literal["flood", "paced"] = Field("flood", description="flood sends as fast as the router takes the messages, "
+                                                                     "paced at the seconds they were recorded")
+    timeout: float = Field(3600, gt=0, description="Seconds until every neighbor sent all")
+
+
 class AnnounceRib(Model):
     at: str = Field(description="Time of the table on the Internet, UTC, e.g. 2026-09-01 08:00; RIS keeps one every eight hours")
     collector: str = Field("rrc00", pattern=r"^rrc\d\d$", description="The RIS collector whose peers' tables are injected")
@@ -251,7 +260,7 @@ class Repeat(Model):
 
 
 ARGS = {
-    "announce": Announce, "announce_real": AnnounceReal, "replay": Replay, "announce_rib": AnnounceRib,
+    "announce": Announce, "announce_real": AnnounceReal, "replay": Replay, "feed": Feed, "announce_rib": AnnounceRib,
     "withdraw_rib": WithdrawRib, "withdraw": Withdraw, "originate": Originate, "down": Down, "up": Up,
     "degrade": Degrade, "restart": Restart, "set_preference": SetPreference, "prepend": Prepend,
     "set_export": SetExport, "set_import": SetImport, "igp": Igp, "soft_reset": SoftReset, "expect": Expect, "until_stable": UntilStable, "repeat": Repeat,
@@ -261,7 +270,7 @@ KINDS = [*ARGS, "wait", "parallel"]
 
 class Step(Model):
     kind: str
-    args: (Announce | AnnounceReal | Replay | AnnounceRib | WithdrawRib | Withdraw | Originate | Down | Up | Degrade | Restart | SetPreference | Prepend | SetExport | SetImport | Igp | SoftReset
+    args: (Announce | AnnounceReal | Replay | Feed | AnnounceRib | WithdrawRib | Withdraw | Originate | Down | Up | Degrade | Restart | SetPreference | Prepend | SetExport | SetImport | Igp | SoftReset
            | Expect | UntilStable | Repeat | float | list["Step"] | None) = None
 
     @model_validator(mode="before")
@@ -496,6 +505,10 @@ class Network:
         self.roles = roles
         self.links = sorted({tuple(sorted((a, n["name"]))) for a, r in routers.items() for n in r.get("neighbors", [])})
 
+    def busiest(self, k: int = 1) -> list[str]:
+        """The k routers with the most neighbors, by name among equals."""
+        return sorted(self.routers, key=lambda r: (-len(self.routers[r].get("neighbors", [])), r))[:k]
+
     def routers_of(self, name: str, random_: random.Random, count: int = 1, exclude: tuple = ()) -> list[str]:
         if name == "all" and name not in self.routers:
             return sorted(self.routers)
@@ -537,6 +550,8 @@ class Network:
             return self.routers_of(args.router, random_), []
         if kind == "replay":
             return sorted(self.routers), []
+        if kind == "feed":
+            return self.busiest() if args.router == "busiest" else self.routers_of(args.router, random_)[:1], []
         if kind in ("originate", "restart"):
             return self.routers_of(args.router, random_, exclude=origins), []
         if kind in ("set_preference", "set_export", "set_import", "prepend"):
@@ -617,7 +632,7 @@ def timeline(steps: list[Step]) -> list[dict]:
             t += step.args.for_
         elif step.kind == "replay":
             t += step.args.minutes * 60 / step.args.speed
-        elif step.kind == "announce_rib":
+        elif step.kind in ("announce_rib", "feed"):
             row["estimate"] = t + step.args.timeout
             t += step.args.timeout / 6
         elif step.kind == "until_stable":

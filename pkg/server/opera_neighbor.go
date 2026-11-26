@@ -1,6 +1,7 @@
 package server
 
 import (
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -16,11 +17,23 @@ import (
 // gives the FIB and the API the forwarding path within the bound. With OBGP
 // off the tables give NS-BGP and the FIB the best path of the main table.
 
-// operaUpdate is what one path changed in the tables per neighbor.
+// operaUpdate is what one path changed in the tables per neighbor. Its
+// lists hold one entry per neighbor with a table, sorted by ID.
 type operaUpdate struct {
-	peers          map[*peer]bool // those with a table
-	changes        map[*peer][2]*table.Path
+	peers          []*peer
+	ids            []string
+	changes        [][2]*table.Path // the export before and after
+	ready          []*table.Path    // the new path as sent, where it is the export
 	fwdOld, fwdNew *table.Path
+}
+
+// slot is the entry of neighbor nb, if it has a table.
+func (u *operaUpdate) slot(nb *peer) (int, bool) {
+	if u == nil {
+		return 0, false
+	}
+	i := nb.operaSlot
+	return i, i < len(u.peers) && u.peers[i] == nb
 }
 
 // operaHasView tells whether the router keeps a table for this neighbor in a
@@ -34,25 +47,33 @@ func operaHasView(p *peer, f bgp.Family) bool {
 // so the session decides, not the state.
 func (s *BgpServer) operaSessionUp(nb *peer) {
 	if s.operaUp == nil {
-		s.operaUp = map[string]bool{}
+		s.operaUp = map[*peer]string{}
 	}
-	s.operaUp[nb.ID()] = true
+	s.operaUp[nb] = nb.ID()
+	s.operaOrder = nil
+}
+
+// operaSessionGone stops feeding the tables of a neighbor.
+func (s *BgpServer) operaSessionGone(nb *peer) {
+	delete(s.operaUp, nb)
+	s.operaOrder = nil
 }
 
 // operaViewPeers are the neighbors with a table in a family, from their
-// session coming up until operaDropViews.
-func (s *BgpServer) operaViewPeers(f bgp.Family) []*peer {
+// session coming up until operaDropViews, sorted by ID, with their IDs.
+func (s *BgpServer) operaViewPeers(f bgp.Family) (peers []*peer, ids []string) {
 	if !table.OperaPerNeighbor(f) {
-		return nil
+		return nil, nil
 	}
-	var out []*peer
-	for _, p := range s.neighborMap {
-		if s.operaUp[p.ID()] && operaHasView(p, f) && p.IsFamilyEnabled(f) {
-			out = append(out, p)
+	if s.operaOrder == nil {
+		s.operaOrder = slices.SortedFunc(maps.Keys(s.operaUp), func(a, b *peer) int { return strings.Compare(s.operaUp[a], s.operaUp[b]) })
+	}
+	for _, p := range s.operaOrder {
+		if id, up := s.operaUp[p]; up && operaHasView(p, f) && p.IsFamilyEnabled(f) {
+			peers, ids = append(peers, p), append(ids, id)
 		}
 	}
-	slices.SortFunc(out, func(a, b *peer) int { return strings.Compare(a.ID(), b.ID()) })
-	return out
+	return peers, ids
 }
 
 // operaAllows tells whether path p goes into the table of a neighbor: if
@@ -63,65 +84,79 @@ func (s *BgpServer) operaViewPeers(f bgp.Family) []*peer {
 // its table holds only what the neighbor may get, so that it gets the best
 // of those.
 func (s *BgpServer) operaAllows(nb *peer, p *table.Path) bool {
+	allows, _ := s.operaFilter(nb, p)
+	return allows
+}
+
+// operaFilter is operaAllows, with the path as sent to the neighbor where
+// the policy judged it as sent: it is what filterpath returns for it.
+func (s *BgpServer) operaFilter(nb *peer, p *table.Path) (bool, *table.Path) {
 	if p.IsWithdraw {
-		return false
+		return false, nil
 	}
 	src := p.GetSource()
 	if !p.IsLocal() && src != nil && src.Address.String() == nb.ID() || slices.Contains(p.GetAsList(), nb.AS()) {
 		if !table.IsOperaEnabled() {
-			return false
+			return false, nil
 		}
 		nb.fsm.lock.Lock()
 		q := table.UpdatePathAttrs(nb.fsm.logger, nb.fsm.gConf, nb.fsm.pConf, nb.peerInfo, p)
 		nb.fsm.lock.Unlock()
 		options := &table.PolicyOptions{Info: nb.peerInfo, OldNextHop: p.GetNexthop()}
-		return nb.policy.ApplyPolicy(nb.TableID(), table.POLICY_DIRECTION_EXPORT, q, options) != nil
+		return nb.policy.ApplyPolicy(nb.TableID(), table.POLICY_DIRECTION_EXPORT, q, options) != nil, nil
 	}
-	return s.filterpath(nb, p, nil) != nil
+	q := s.filterpath(nb, p, nil)
+	return q != nil, q
 }
 
-// operaBefore are the exports to the neighbors before path p changes the table.
-func (s *BgpServer) operaBefore(rib *table.TableManager, p *table.Path) (*operaUpdate, map[*peer]*table.Path) {
+// operaBefore notes the exports to the neighbors before path p changes the
+// table, as unchanged until operaFeed.
+func (s *BgpServer) operaBefore(rib *table.TableManager, p *table.Path) *operaUpdate {
 	if rib != s.globalRib {
-		return nil, nil
+		return nil
 	}
-	peers := s.operaViewPeers(p.GetFamily())
+	peers, ids := s.operaViewPeers(p.GetFamily())
 	if len(peers) == 0 {
-		return nil, nil
+		return nil
 	}
-	u := &operaUpdate{peers: map[*peer]bool{}, changes: map[*peer][2]*table.Path{}}
-	before := map[*peer]*table.Path{}
+	u := &operaUpdate{peers: peers, ids: ids, changes: make([][2]*table.Path, len(peers)), ready: make([]*table.Path, len(peers))}
 	d := rib.GetDestination(p)
+	var exports []*table.Path
 	if d != nil {
 		u.fwdOld = d.OperaForwarding() // kept, as the update may delete the destination
+		exports = d.OperaExports(ids)
 	}
-	for _, nb := range peers {
-		u.peers[nb] = true
-		if d != nil {
-			before[nb] = d.OperaExport(nb.ID())
+	for i, nb := range peers {
+		nb.operaSlot = i
+		if exports != nil {
+			u.changes[i] = [2]*table.Path{exports[i], exports[i]}
 		}
 	}
-	return u, before
+	return u
 }
 
 // operaFeed feeds path p, already in the main table, into the tables of the
 // neighbors, and notes what each is to be sent and the forwarding path.
-func (s *BgpServer) operaFeed(rib *table.TableManager, p *table.Path, u *operaUpdate, before map[*peer]*table.Path) {
+func (s *BgpServer) operaFeed(rib *table.TableManager, p *table.Path, u *operaUpdate) {
 	d := rib.GetDestination(p)
+	var sent, after []*table.Path
 	if d != nil {
-		allows := map[string]bool{}
-		for nb := range u.peers {
-			allows[nb.ID()] = s.operaAllows(nb, p)
+		allows := make([]bool, len(u.peers))
+		sent = make([]*table.Path, len(u.peers))
+		for i, nb := range u.peers {
+			allows[i], sent[i] = s.operaFilter(nb, p)
 		}
-		d.OperaFeedAll(s.logger, p, allows, true)
+		d.OperaFeedSorted(s.logger, p, u.ids, allows, true)
+		after = d.OperaExports(u.ids)
 	}
-	for nb := range u.peers {
-		var after *table.Path
-		if d != nil {
-			after = d.OperaExport(nb.ID())
+	for i := range u.peers {
+		var a *table.Path
+		if after != nil {
+			a = after[i]
 		}
-		if after != before[nb] {
-			u.changes[nb] = [2]*table.Path{before[nb], after}
+		u.changes[i][1] = a
+		if a != u.changes[i][0] && a == p && sent[i] != nil {
+			u.ready[i] = sent[i]
 		}
 	}
 	if d != nil {
@@ -132,8 +167,15 @@ func (s *BgpServer) operaFeed(rib *table.TableManager, p *table.Path, u *operaUp
 	rib.OperaRelease(p)
 }
 
-// operaSend sends a neighbor with a table what changed in it.
-func (s *BgpServer) operaSend(nb *peer, change [2]*table.Path) {
+// operaSend sends a neighbor with a table what changed in it, ready if the
+// new path is the export and was already filtered for it.
+func (s *BgpServer) operaSend(nb *peer, change [2]*table.Path, ready *table.Path) {
+	if ready != nil {
+		if needToAdvertise(nb) {
+			sendfsmOutgoingMsg(nb, []*table.Path{ready})
+		}
+		return
+	}
 	old, path := change[0], change[1]
 	if path == nil {
 		if old == nil {
@@ -251,7 +293,7 @@ func (s *BgpServer) operaNotifyForward(old, best *table.Path) {
 
 // operaDropViews forgets the tables of a neighbor that went down.
 func (s *BgpServer) operaDropViews(nb *peer) {
-	delete(s.operaUp, nb.ID())
+	s.operaSessionGone(nb)
 	for f, t := range s.globalRib.Tables {
 		if !operaHasView(nb, f) {
 			continue

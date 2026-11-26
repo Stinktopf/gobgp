@@ -12,12 +12,13 @@ One experiment per question.
 | Does OBGP converge where BGP oscillates, in every mode? | [`behaviour-oscillation`](../experiments/behaviour-oscillation.yaml) |
 | Does OBGP on a share of the routers stop oscillation, in every mode? | [`behaviour-deployment`](../experiments/behaviour-deployment.yaml) |
 | Does it still converge, and how fast, with an MRAI of 30 s? | [`behaviour-mrai`](../experiments/behaviour-mrai.yaml) |
-| Does it stay stable under failures? | [`behaviour-failures`](../experiments/behaviour-failures.yaml) |
+| Does it come to rest after failures? | [`behaviour-failures`](../experiments/behaviour-failures.yaml) |
 | Do Gao-Rexford policies hold, also in partial deployment, and does every router keep what BGP reaches? | [`semantics-gao-rexford`](../experiments/semantics-gao-rexford.yaml) |
 | Does it keep BGP's semantics in the cases of the Go tests? | [`semantics-adversarial`](../experiments/semantics-adversarial.yaml) |
 | Where does it fail outside its model or inside an AS? | [`semantics-limits`](../experiments/semantics-limits.yaml) |
 | Does it scale to 128 networks of the Internet's core? | [`internet-scale`](../experiments/internet-scale.yaml) |
 | Does it hold full tables? | [`internet-dfz`](../experiments/internet-dfz.yaml) |
+| Where does a router spend its CPU in each mode, and what limits the busiest one? | [`performance-scale`](../experiments/performance-scale.yaml) |
 | Does the lab work? | [`lab-smoke`](../experiments/lab-smoke.yaml) |
 | Does it run every feature? | [`lab-features`](../experiments/lab-features.yaml) |
 | Does it measure right? | [`lab-calibration`](../experiments/lab-calibration.yaml) |
@@ -32,8 +33,28 @@ The paper's experiment `ifip-networking-2026` stays as it was published.
   with its settings. One topology and scenario is a cell.
 - **Router:** one Kubernetes pod per router, gobgpd and a controller beside it. The controller runs
   the scenario's steps and samples each router at 10 Hz, the Internet runs at 1 Hz. With
-  `sampling: {profile_s: 30}` the router with the most neighbors takes a CPU profile from the first
-  announcement on, kept beside the run as `cpu-<router>.pb.gz` for `go tool pprof`.
+  `sampling: {profile_s: 120, profile_routers: 3}` the three routers with the most neighbors take CPU
+  profiles in chunks of 5 s from the start of the first announcing step until rest and its quiet time,
+  alike in every mode, at most 120 s. A profile cut before rest, or of a run without rest, is kept but
+  gives no profile metrics, so that no mode gains by a shorter window. Each chunk is kept beside the run as `cpu-<router>-<t>.pb.gz`, t its start in the run's
+  seconds, the allocations at start and end as `allocs-<router>-start.pb.gz` and `-end`, for `go tool pprof`.
+- **Recording:** with `sampling: {record_routers: 3}` the three routers with the most neighbors record
+  every UPDATE they receive from the first announcing step on, kept beside the run as
+  `updates-<router>.mrt.gz` (MRT, whole seconds).
+- **Feed:** a scenario of one `feed` step runs one router of a recorded run alone. Each of its neighbors
+  is a feeder (`cmd/obgp-replay`) that sends it the UPDATEs that neighbor sent it in the recording, as
+  fast as it takes them (`flood`) or at the recorded seconds (`paced`), and answers a route refresh with
+  what it sent so far. The variants are the modes or commits compared, on the same input. The final
+  check keeps what the router sent each feeder and a digest of it, equal when two runs sent the same.
+  A feed names a recorded result, so its scenario and experiment are saved in the lab for each comparison.
+- **Benchmark:** `benchmark: {baseline: <ref>, candidates: [<ref>], modes: [obgp-rp-pn]}` (Experiments, New benchmark)
+  makes one result: per mode the baseline, its A/A twin and each candidate run the workload on the whole network,
+  the busiest router profiled. With `feed: true` the baseline first records what that router receives, once per
+  mode, and the others get it fed to that router alone. The variants, the speed rule and the profiles follow. The
+  Benchmark area shows the verdict per mode and compares a chosen pair, Reference and Compared with, on one radar.
+- **Changes for speed:** see Benchmark, and the speed rule under Statistics, which the lab judges (MCP `speed`).
+  With `sampling: {paths: false}` the routers read no paths while they sample, so their CPU is their own:
+  loops and black holes on the way and path lengths are then not measured.
 - **Scenario:** steps that announce, withdraw, fail links, restart routers and change policies.
 - **Seed:** fixes a scenario's random choices and the order of the variants in a round. Variants of
   one run share it, so they are paired.
@@ -63,6 +84,7 @@ A *path* is one AS path to a prefix from one neighbor. A *route* is the path a r
 | Loops, black holes | prefixes | prefixes whose packets loop, or end at a router without a route |
 | Withdrawn kept | routes | router and prefix pairs still held after their withdrawal |
 | Updates at rest | updates/s | per router in the longest pause between steps, from settle on, zero when routes stand still |
+| Updates per neighbor | per prefix | the most a router received from one neighbor from the first announcement to the next step, per announced prefix |
 
 **On the way**
 
@@ -101,17 +123,22 @@ Every run is checked at its end against its reference, whatever its scenario che
 | Problem | When |
 |---|---|
 | Routes still change at the end | updates go on after the rest |
-| No rest in time | a step or the final check waited for rest in vain |
+| A step found no rest in time | a step waited for rest in vain |
+| No rest before the final check | the final check waited for rest in vain |
 | Loops at rest | packets to a prefix loop at the end |
 | Fewer routes than BGP | a router holds fewer prefixes than in the reference |
 | No BGP run at rest to compare with | a run misses prefixes and the reference never came to rest |
-| Black holes, withdrawn routes BGP has not | more than in the reference |
-| Paths against the relations | more than in the reference. Paths with an `AS_SET` are not judged |
-| Loops or black holes on the way, longer than BGP | longer than in every BGP run of the cell by more than two sampling intervals |
+| More black holes than BGP | more than in the reference, or any where it never came to rest |
+| More withdrawn routes kept than BGP | more than in the reference, or any where it never came to rest |
+| Paths against the relations, more than BGP | more than in the reference. Paths with an `AS_SET` are not judged |
+| Loops on the way, longer than BGP | longer than in every BGP run of the cell by more than two sampling intervals |
+| Black holes on the way, longer than BGP | the same for black holes |
 | Routers wait without a route | blocked longer than two sampling intervals, under refresh pruning longer than the wait for a route refresh plus two sampling intervals |
-| Sessions fell without a step for it | drops no step explains |
-| At rest, the simulator never is | a run comes to rest where the simulator never did |
+| Sessions dropped without a step | drops no step explains |
+| At rest where the simulator never rests | a run comes to rest where the simulator never did |
 | No final check | skipped, for tables above 2000 prefixes or a router that does not answer twice within 120 s |
+| Routes at rest worse or better than the baseline's | a commit-only variant chooses routes of another quality at rest than the baseline of the same seed (AS path length and neighbor relation, in a feed the path length a feeder gets). Routers that also differ in the A/A variant do not count |
+| No routes at rest to compare with the baseline | such a variant or its baseline was not at rest or had no final check, so the comparison above could not be made |
 
 As a result begins, the [simulator](simulator.md) plays every cell it can, 20 message orders per mode,
 and every run of a cell whose scenario chooses targets or whose variant chooses its OBGP routers at random.
@@ -153,6 +180,16 @@ not a problem. Checks, lost routes and loops stay judged.
   Every other variant is tested against the baseline, Holm-corrected across its cells. An experiment
   whose runs cannot reach 5 % after Holm is refused.
 - **Never pooled:** modes are compared, never combined.
+- **Speed rule:** `speed: {baseline: <ref>, metric: cpu_s_mean, margin_pct: 5, guards: [settle_s, rss_mean, flaps], guard_pct: 10}`.
+  The baseline ref is the same commit in every mode and stands twice in each mode it compares, the second time as its
+  A/A variant. Every other ref of that mode and settings is a candidate. The experiment is refused when its runs
+  cannot reach the corrected level for all its comparisons, e.g. 7 runs for two. A candidate is *faster* in a cell where its Hodges-Lehmann interval, at a level Bonferroni-corrected
+  for all candidate cells, lies below minus the margin of the baseline's median, Holm's p is below 5 %, it chooses
+  and sends what the baseline does at rest, and no guard gets worse beyond its percent, times also by their
+  resolution. The margin comes from earlier A/A pairs. Where the A/A variant shifts beyond the margin itself,
+  the lab moved and no verdict is given. Other verdicts: slower, slower within the margin, no change shown, faster but
+  worse elsewhere, faster with a guard unmeasured, behaves differently, unchecked, too few runs. With few runs, faster
+  needs every paired difference beyond the margin: the exact interval then spans the smallest and largest difference.
 
 ## Threats to validity
 
@@ -173,7 +210,11 @@ not a problem. Checks, lost routes and loops stay judged.
 - **Exploratory tests:** all but the primary comparison are uncorrected.
 - **CAIDA:** its relations are inferred, and some are wrong.
 - **Simulator:** one prefix, no timers, an MRAI only as coalescing, small networks enumerated rather than the Internet sampled.
-  Coalescing brings rest in more orders, while the timer, which the simulator lacks, can keep a network without rest.
+- **Feed:** the feeders send what the neighbors sent in the recorded run, not what they would send in
+  answer to the router's own updates, so a feed measures a router on a fixed input, not a network.
+  Recording costs the recording router time, so a run that records measures it less exactly. A recording
+  holds what the neighbors sent in answer to the recorded mode's own updates and refreshes, so it feeds
+  only variants of that mode and settings.
 - **Simulator and lab:** the lab cannot replay the simulator's message orders, so a case found in few orders may not show in the lab.
   Its orders are drawn without timing, the lab's come from real timing: only whether a deviation never, sometimes or always shows
   compares, not how often. Both run gobgpd's route selection, so a fault in it shows on both sides alike.

@@ -1,6 +1,7 @@
 {% macro state_badge(state) -%}
 {% set styles = {
   "running": "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300",
+  "analysing": "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300",
   "queued": "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-200",
   "passed": "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   "finished": "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
@@ -8,15 +9,21 @@
   "stopped": "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
   "failed": "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
   "did not pass": "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
+  "faster": "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
+  "slower": "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
+  "behaves differently": "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
+  "faster, worse elsewhere": "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
 } %}
 <span class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap {{ styles.get(state, styles['stopped']) }}">
-  {%- if state == "running" %}<span class="size-1.5 animate-pulse rounded-full bg-sky-500"></span>{% endif %}{{ state }}
+  {%- if state in ("running", "analysing") %}<span class="size-1.5 animate-pulse rounded-full bg-sky-500"></span>{% endif %}{{ state }}
 </span>
 {%- endmacro %}
 
 {% macro visibility_tag(dataset) -%}
-{% if dataset.public %}<span class="tag tag-accent" data-tip="Published with the repository, in results/public">public</span>
-{% else %}<span class="tag" data-tip="Only on this lab, not in the repository">private</span>{% endif %}
+{% set z = dataset.zenodo if dataset.state == "archived" else {} %}
+{% if dataset.state == "legacy" %}<span class="tag" data-tip="The paper's result, in the repository under results/public">legacy</span>
+{% elif dataset.state == "archived" %}<span class="tag tag-accent" data-tip="Frozen with a manifest of every file{{ ', on Zenodo' if z.doi else ', a draft on Zenodo' if z else '' }}{{ ' sandbox' if z.use == 'sandbox' }}">archived</span>
+{% else %}<span class="tag" data-tip="Only on this lab, the lab may still change it">private</span>{% endif %}
 {%- endmacro %}
 
 {% macro progress(done, total) -%}
@@ -178,7 +185,7 @@
 {% macro metric_picker(metrics, metric, base) -%}
 <label class="flex min-w-0 items-center gap-2 text-sm max-sm:w-full"><span class="label">Metric</span>
   <select class="input w-auto min-w-0 py-1 max-sm:flex-1" aria-label="Metric" onchange="UI.go(this.value)">
-    {% for name in ["Outcome", "On the way", "Sessions", "Resources"] %}<optgroup label="{{ name }}">{% for key, m in metrics.items() if m[3] == name %}<option value="{{ base }}&metric={{ key }}" {% if metric == key %}selected{% endif %}>{{ m[0] }}{% if m[1] not in ("runs",) %}, {{ m[1] }}{% endif %}</option>{% endfor %}</optgroup>{% endfor %}
+    {% for name in ["Outcome", "On the way", "Sessions", "Resources", "Profile"] %}<optgroup label="{{ name }}">{% for key, m in metrics.items() if m[3] == name %}<option value="{{ base }}&metric={{ key }}" {% if metric == key %}selected{% endif %}>{{ m[0] }}{% if m[1] not in ("runs",) %}, {{ m[1] }}{% endif %}</option>{% endfor %}</optgroup>{% endfor %}
   </select>
 </label>
 {%- endmacro %}

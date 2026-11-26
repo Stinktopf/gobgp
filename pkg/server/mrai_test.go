@@ -89,3 +89,35 @@ func TestMRAIWithAddPathKeepsPathsApart(t *testing.T) {
 	assert.Empty(t, m.add([]*table.Path{first, second}, start.Add(time.Second)))
 	assert.Len(t, m.flush(start.Add(30*time.Second)), 2)
 }
+
+// An End-of-RIB marker has no prefix: a route refresh answer under graceful
+// restart ends with one, and it goes out after the routes, never held apart.
+func TestMRAIPassesEndOfRIB(t *testing.T) {
+	m := newMRAI(0, func(bgp.Family) bool { return false })
+	eor := table.NewEOR(bgp.RF_IPv4_UC)
+	answer := []*table.Path{mraiPath("10.0.0.0/24", false, 1), eor}
+	assert.Equal(t, answer, m.answer(answer))
+
+	now := time.Now()
+	m = newMRAI(30*time.Second, func(bgp.Family) bool { return false })
+	assert.Len(t, m.add([]*table.Path{mraiPath("10.0.0.0/24", false, 1)}, now), 1) // the first batch goes at once
+	assert.Empty(t, m.add([]*table.Path{mraiPath("10.0.1.0/24", false, 1), eor}, now.Add(time.Second)), "it waits behind the route")
+	out := m.flush(now.Add(31 * time.Second))
+	assert.Equal(t, []string{"10.0.1.0/24"}, mraiPrefixes(out[:1]))
+	assert.Equal(t, []*table.Path{out[0], eor}, out)
+	assert.Equal(t, []*table.Path{eor}, m.add([]*table.Path{eor}, now.Add(32*time.Second)), "with nothing waiting it goes at once")
+}
+
+// An End-of-RIB marker that waits behind a route goes out once that route is withdrawn.
+func TestMRAIEndOfRIBDoesNotOutliveWhatItWaitedFor(t *testing.T) {
+	now := time.Now()
+	m := newMRAI(30*time.Second, func(bgp.Family) bool { return false })
+	eor := table.NewEOR(bgp.RF_IPv4_UC)
+	m.add([]*table.Path{mraiPath("10.0.0.0/24", false, 1)}, now)
+	assert.Empty(t, m.add([]*table.Path{mraiPath("10.0.1.0/24", false, 1), eor}, now.Add(time.Second)))
+	out := m.add([]*table.Path{mraiPath("10.0.1.0/24", true, 1)}, now.Add(2*time.Second))
+	assert.Len(t, out, 2)
+	assert.True(t, out[0].IsWithdraw)
+	assert.Same(t, eor, out[1])
+	assert.True(t, m.due().IsZero())
+}

@@ -39,6 +39,8 @@ All in `scripts/`.
   deletes its own minikube profile and creates it anew. Results and other containers stay.
 - **Pause:** the running result ends its current run, then waits. A host can be restarted then without
   losing a run.
+- **Idle and GPU:** the cluster stops after 30 idle minutes by default, and new jobs wake it. Queued
+  experiments wait until others have left the GPUs idle for the time set in the cluster card, 0 turns it off.
 
 ## Host size
 
@@ -56,7 +58,7 @@ All in `scripts/`.
   tracking passes 60 %, since a full one makes the host drop packets. Its result ends as failed. During a deploy
   the lab writes the node's load every 30 s to `diagnosis/` in the result, and on an API loss, also during a run,
   the logs of the API server, etcd and kubelet.
-- **Neighbour table:** the kernel keeps one ARP table for all containers of the host, 1,024 entries by default.
+- **Neighbor table:** the kernel keeps one ARP table for all containers of the host, 1,024 entries by default.
   Each router holds an entry per BGP neighbor: `core-64` needs about 2,000, `core-128` about 4,600. A full table
   drops packets, also those of the Kubernetes API. Setup raises the limits to 8,192, 32,768 and 65,536 in
   `/etc/sysctl.d/90-obgp-lab-neigh.conf` and never lowers one. With `--no-sudo` it prints the commands for an
@@ -91,3 +93,23 @@ PowerShell once, then restart Docker Desktop.
 Set-Content -Path "$env:USERPROFILE\.wslconfig" -Value "[experimental]`r`nautoMemoryReclaim=gradual"
 wsl --shutdown
 ```
+
+## Archiving results
+
+A result is in one of three states. **Private** results are only in this lab, which may still change them.
+**Archived** results are frozen for Zenodo. **Legacy** is the paper's result `ifip-networking-2026`, in git
+under `results/public`, and no other result gets that state.
+
+**Archive** on a finished private result freezes it. Its samples are packed as xz, about 40 % smaller than
+gzip, and the caches go. `manifest.json` lists its experiment, commits, metric version, summary, verdict and
+the SHA-256 of every file. Nothing measured is lost. An archived result neither runs on nor can be deleted.
+**Unarchive** makes it private again, until it is on Zenodo.
+
+**Upload to Zenodo** asks where to, the sandbox or Zenodo, and for that choice typed out, then makes a
+draft with the result as one archive, which you complete and publish there: a DOI cannot be taken back.
+The tokens, one of sandbox.zenodo.org to try and one of zenodo.org, each with the scopes `deposit:write` and `deposit:actions`, go into the settings under Zenodo, readable by
+the lab's user only, and are never shown again. **Fetch DOI** keeps the DOI once the record is published.
+
+`results/archived.json` in the repository is the index of archived results on Zenodo, one entry each from
+**Copy index entry** on its page. Every lab lists those it does not hold, and **Fetch** downloads one,
+checks it against the index and every file against its manifest, and adds it as archived. No token is needed.

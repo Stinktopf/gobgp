@@ -12,6 +12,7 @@
   "transient-loop": "Packets circle on the way to rest",
   "transient-blocked": "Routers wait without a route",
   "transient-hole": "Routers lose their route for a while",
+  "repeat-update": "A router sends a neighbor more than one update",
 } %}
 {# How far a queued or running search is: polled, the page reloads once it ends. #}
 {% macro search_progress(s) -%}
@@ -22,7 +23,7 @@
 {% call list_header("Simulation", "#findings" if groups else "") %}
   {% if groups %}<button type="button" class="btn btn-icon" data-groups-all data-tip="Collapse all" aria-label="Collapse all">{{ icon("chevron-down", "group-chevron") }}</button>{% endif %}
   <form method="post" hidden data-picked><button class="btn btn-danger" data-confirm="Delete?" aria-label="Delete">{{ icon("delete") }}Delete <span data-count></span></button></form>
-  <form method="post" action="/simulation/searches"><button class="btn btn-primary" data-tip="Every network up to five routers, every policy, the way to rest, one table and tables per neighbor. Waits in the lab's queue.">{{ icon("add") }}New search</button></form>
+  <form method="post" action="/simulation/searches"><button class="btn btn-primary" data-tip="Networks up to five routers, the policy families of the simulator, the way to rest, one table and tables per neighbor. Waits in the lab's queue.">{{ icon("add") }}New search</button></form>
 {% endcall %}
 {{ problem(error) }}
 
@@ -38,7 +39,7 @@
         <td class="w-full max-w-0 sm:min-w-72 sm:max-w-none">
           <div class="flex items-center gap-2">{{ star_button("search", s.id, s.starred, "/simulation?search=" ~ (current.id if current else s.id), "the searches") }}<div class="min-w-0 flex-1">
           <a href="/simulation?search={{ s.id }}" class="block truncate font-medium">Up to {{ s.routers }} routers{% if s.family %}, {{ s.family }}{% endif %}{% if search_notes.get(s.id) %} <span class="note-count font-normal" data-tip="Open notes">{{ icon("note") }}{{ search_notes[s.id] }}</span>{% endif %}<span class="muted font-normal sm:hidden">, {{ s.started | created }}</span></a>
-          <span class="item-note block truncate">{% if s.tables == "both" %}one table and per neighbor{% elif s.tables %}tables per neighbor{% else %}one table{% endif %}, {{ s.seeds }} message orders{% if s.transient %}, the way to rest{% endif %}{% if s.by %}, {{ s.by }}{% endif %}</span>
+          <span class="item-note block truncate">{% if s.tables == "both" %}one table and per neighbor{% elif s.tables %}tables per neighbor{% else %}one table{% endif %}, {{ s.seeds }} message orders{% if s.transient %}, the way to rest{% endif %}{% if s.by %}, started by {{ s.by }}{% endif %}</span>
           </div></div>
         </td>
         <td class="num muted">{{ s.problems if s.state == "done" else "" }}</td>
@@ -65,7 +66,7 @@
 {% else %}
 <div class="card overflow-x-auto">
   <table class="list" id="findings" data-groups="simulation" data-fixed>
-    <thead><tr><th>Modes</th><th class="num hidden sm:table-cell" data-tip="Networks kept as examples, the smallest opens. How often it shows is on its page.">Examples</th><th class="num hidden sm:table-cell" data-tip="Of the smallest network">Routers</th><th class="num hidden sm:table-cell" data-tip="Messages until the smallest network rests, in the longest of its modes">Steps</th><th class="hidden md:table-cell" data-tip="The proofs promise rest and no loops at rest, inside their model. They make no claim on lost routes or the way to rest.">Proof</th></tr></thead>
+    <thead><tr><th>Modes</th><th class="num hidden sm:table-cell" data-tip="The smallest opens.">Examples</th><th class="num hidden sm:table-cell" data-tip="Of the smallest network">Routers</th><th class="num hidden sm:table-cell" data-tip="Messages until the smallest network rests, in the longest of its modes">Steps</th><th class="hidden md:table-cell" data-tip="Within its model the proof covers rest and no loops at rest, not lost routes or the way to rest.">Proof</th></tr></thead>
     {% for g in groups %}{% call group_body(g.kind, 5, g.problems | length, titles.get(g.kind, g.kind)) %}
       {% for p in g.problems %}
       <tr onclick="location.href = '/simulation/{{ current.id }}/{{ p.id }}'" data-item="{{ p.id }}" data-search="{{ titles.get(p.kind, p.kind) }} {{ p.modes | join(' ') }} {{ p.cause }} {{ p.families | join(' ') }}">

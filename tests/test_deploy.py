@@ -335,7 +335,7 @@ def test_the_neighbour_table_is_read_from_the_kernel(tmp_path, monkeypatch):
 
 def test_a_topology_too_large_for_the_neighbour_table_ends_before_any_pod(deploying, monkeypatch):
     monkeypatch.setattr(cluster, "neigh_table", lambda: (100, 1024))
-    with pytest.raises(cluster.HostLimit, match=r"t needs about 1,200 entries in the kernel's neighbour table, which holds 1,024 with 100 in use"):
+    with pytest.raises(cluster.HostLimit, match=r"t needs about 1,200 entries in the kernel's neighbor table, which holds 1,024 with 100 in use"):
         deploying(400)
     monkeypatch.setattr(cluster, "neigh_table", lambda: (100, 65536))
     calls, _ = deploying(64)

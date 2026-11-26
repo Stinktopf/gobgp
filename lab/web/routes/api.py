@@ -140,6 +140,16 @@ def primary(name: str):
     return answer(agent.primary, name)
 
 
+@router.get("/results/{name}/profile/{topology}/{variant}/{scenario}", dependencies=[Depends(reader)])
+def profile(name: str, topology: str, variant: str, scenario: str, run: int = 0, baseline: str = "", top: int = 15):
+    return answer(agent.profile, name, topology, scenario, variant, run, baseline, top)
+
+
+@router.get("/results/{name}/speed", dependencies=[Depends(reader)])
+def speed(name: str):
+    return answer(agent.speed, name)
+
+
 @router.get("/results/{name}/problems", dependencies=[Depends(reader)])
 def problems(name: str):
     return answer(agent.problems, name)

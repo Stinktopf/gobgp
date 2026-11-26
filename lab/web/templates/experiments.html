@@ -9,6 +9,7 @@
 {% if run_all[0].count %}
 <button class="btn" onclick="document.getElementById('run-all').showModal()">{{ icon("play") }}Run all</button>
 {% endif %}
+<a href="/experiments/new?benchmark=1" class="btn" data-tip="Is a commit faster than another, per mode: one result">{{ icon("add") }}New benchmark</a>
 <a href="/experiments/new" class="btn btn-primary">{{ icon("add") }}New experiment</a>
 {% endcall %}
 {{ problem(error) }}
@@ -65,8 +66,8 @@
         <td class="num muted hidden sm:table-cell" data-tip="Scenarios&#10;{{ e.scenarios | join('\n') }}">{{ e.scenarios | length }}</td>
         {% set names = e.variants | map(attribute="name") | list %}
         <td class="muted hidden font-mono text-xs whitespace-nowrap md:table-cell" data-tip="{{ names | join(', ') }}">{{ names | listing }}</td>
-        <td class="num muted">{{ x.runs }}</td>
-        <td class="num muted whitespace-nowrap">{{ x.estimate_s | duration }}</td>
+        <td class="num muted">{{ "–" if x.too_large else x.runs }}</td>
+        <td class="num muted whitespace-nowrap">{{ "–" if x.too_large else x.estimate_s | duration }}</td>
         <td class="w-0 pr-5 text-right">
           <form method="post" action="/experiments/{{ x.name }}/start?stay=1">
             {% if x.too_large %}

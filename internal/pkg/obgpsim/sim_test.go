@@ -4,6 +4,7 @@ package obgpsim
 
 import (
 	"fmt"
+	"maps"
 	"math/rand"
 	"slices"
 	"strings"
@@ -897,6 +898,87 @@ func TestRouteServerOfferMatchesWhatItSends(t *testing.T) {
 			}
 			if !found {
 				t.Errorf("%v: route server 1 sends %v to %d at step %d, its offer there says nothing", mode, s.Path, s.To, s.Sent)
+			}
+		}
+	}
+}
+
+// updatesOf is, per session, the updates and withdrawals a run delivered.
+func updatesOf(r Result) map[[2]int]int {
+	out := map[[2]int]int{}
+	for _, u := range r.Updates {
+		out[[2]int{u[0], u[1]}] = u[2]
+	}
+	return out
+}
+
+func badGadget(seed int64) Instance {
+	return Instance{Routers: 4, Links: [][2]int{{0, 1}, {0, 2}, {0, 3}, {1, 2}, {2, 3}, {3, 1}}, Seed: seed,
+		Sessions: []Session{
+			{From: 2, To: 1, LocalPref: 200, DenyVia: AS(3)},
+			{From: 3, To: 2, LocalPref: 200, DenyVia: AS(1)},
+			{From: 1, To: 3, LocalPref: 200, DenyVia: AS(2)},
+		}}
+}
+
+// After the origin's announcement alone, a table admits a better path without
+// changing its worst, so OBGP sends each neighbor one update at most, on
+// BAD GADGET too, where BGP sends without end.
+func TestOBGPSendsEachNeighborOneUpdateAfterAnAnnouncement(t *testing.T) {
+	var insts []Instance
+	for seed := int64(1); seed <= 20; seed++ {
+		insts = append(insts, badGadget(seed))
+	}
+	for routers := 2; routers <= 4; routers++ {
+		for _, links := range Topologies(routers) {
+			for seed := int64(1); seed <= 3; seed++ {
+				insts = append(insts, Instance{Routers: routers, Links: links, Seed: seed})
+			}
+		}
+	}
+	for _, inst := range insts {
+		for _, m := range BothTables {
+			if m.plain() {
+				continue
+			}
+			r := Run(&inst, m, MaxSteps)
+			assert.True(t, r.Converged, "%s %v", m, inst.Links)
+			for s, c := range updatesOf(r) {
+				assert.LessOrEqual(t, c, 1, "%s %v session %v", m, inst.Links, s)
+			}
+		}
+	}
+	bgp := updatesOf(Run(&insts[0], BGP, MaxSteps))
+	assert.Greater(t, slices.Max(slices.Collect(maps.Values(bgp))), 1, "BGP on BAD GADGET")
+}
+
+// A link that comes up at rest changes no export: only the new link carries
+// messages afterwards, one each way at most.
+func TestALinkUpAtRestChangesNoOtherExport(t *testing.T) {
+	for routers := 3; routers <= 4; routers++ {
+		for _, links := range Topologies(routers) {
+			for _, l := range links {
+				for seed := int64(1); seed <= 3; seed++ {
+					down := Instance{Routers: routers, Links: links, Seed: seed, Events: []Event{{After: -1, Kind: "down", From: l[0], To: l[1]}}}
+					if !connected(routers, slices.DeleteFunc(slices.Clone(links), func(x [2]int) bool { return x == l })) {
+						continue
+					}
+					up := down
+					up.Events = append(slices.Clone(down.Events), Event{After: 1 << 30, Kind: "up", From: l[0], To: l[1]})
+					for _, m := range BothTables {
+						if m.plain() {
+							continue
+						}
+						before, after := updatesOf(Run(&down, m, MaxSteps)), updatesOf(Run(&up, m, MaxSteps))
+						for s, c := range after {
+							if s == [2]int{l[0], l[1]} || s == [2]int{l[1], l[0]} {
+								assert.LessOrEqual(t, c, 1, "%s %v up %v", m, links, l)
+							} else {
+								assert.Equal(t, before[s], c, "%s %v up %v session %v", m, links, l, s)
+							}
+						}
+					}
+				}
 			}
 		}
 	}

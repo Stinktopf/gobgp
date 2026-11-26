@@ -1,6 +1,7 @@
 """Command line interface: uv run lab --help"""
 
 import argparse
+import fcntl
 import getpass
 import json
 import logging
@@ -73,11 +74,6 @@ def main() -> None:
     p.add_argument("dataset", metavar="result", nargs="?")
     p.add_argument("--all", action="store_true", help="every result, with the time series of its runs")
     p.set_defaults(func=cmd_analyse)
-
-    for name, public in (("publish", True), ("unpublish", False)):
-        p = sub.add_parser(name, help=f"move a result to results/{'public' if public else 'private'}")
-        p.add_argument("dataset", metavar="result")
-        p.set_defaults(func=lambda args, public=public: cmd_publish(args, public))
 
     p = sub.add_parser("stop", help="stop a running or queued result; it can be resumed")
     p.add_argument("dataset", metavar="result")
@@ -239,7 +235,7 @@ def cmd_ls(args) -> int:
     for d in Dataset.all():
         status = d.status
         progress = f"{status.get('done', '')}/{status.get('total', '')}" if "total" in status else ""
-        print(f"{d.name:32} {'public' if d.public else 'private':8} {status['state']:9} {progress:>9}  {d.meta['created'][:16]}  {_verdict(d)}".rstrip())
+        print(f"{d.name:32} {d.state:8} {status['state']:9} {progress:>9}  {d.meta['created'][:16]}  {_verdict(d)}".rstrip())
     return 0
 
 
@@ -280,31 +276,32 @@ def cmd_analyse(args) -> int:
         analysis.REPORT = True
         analysis.PROGRESS[str(dataset.path)] = [0, analysis.to_measure(dataset)]
         analysis.summary(dataset)
+        analysis.profile_cells(dataset)
         return 0
+    # One at a time, and only as long as the web server that started it runs: never orphans that pile up.
+    lock = (config.SETTINGS / "analyse.lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    held = lock.open("w")
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("another analysis of every result runs", file=sys.stderr)
+        return 0
+    parent = os.getppid()
     began, failed = time.monotonic(), 0
     for dataset in Dataset.all():
+        if os.getppid() != parent:  # the web server ended
+            print("the web server ended: stopped", file=sys.stderr)
+            return 0
         try:
             analysis.summary(dataset)
             analysis.measure_series(dataset)
+            analysis.profile_cells(dataset)
         except (ValueError, OSError, KeyError) as e:
             failed += 1
             print(f"analysing {dataset.name}: {e}", file=sys.stderr)
     print(f"analysed every result in {time.monotonic() - began:.0f} s", file=sys.stderr)
     return 1 if failed else 0
-
-
-def cmd_publish(args, public: bool) -> int:
-    dataset = _find(args.dataset)
-    try:
-        dataset.publish(public)
-    except FileExistsError:
-        print(f"{dataset.name} exists in results/{'public' if public else 'private'} already", file=sys.stderr)
-        return 1
-    except ValueError as e:
-        print(f"{dataset.name}: {e}", file=sys.stderr)
-        return 1
-    print(dataset.path)
-    return 0
 
 
 def cmd_stop(args) -> int:

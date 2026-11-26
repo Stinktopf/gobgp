@@ -141,8 +141,8 @@ type Destination struct {
 	knownPathList []*Path
 	localIdMap    *Bitmap
 	opera         *operaState
-	routeServer   bool                  // of a route server's table, see RouteServerAdmits
-	views         map[string]*operaView // per neighbor, see OperaPerNeighbor
+	routeServer   bool         // of a route server's table, see RouteServerAdmits
+	views         []operaEntry // per neighbor, sorted by key, see OperaPerNeighbor
 	operaForward  *Path
 }
 

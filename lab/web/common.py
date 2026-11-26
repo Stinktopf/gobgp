@@ -55,6 +55,7 @@ METRICS = {  # label, unit, what it measures in a few words, group, caveat
     "hops_sampled": ("Followed", "prefixes", "the sample loops and black holes on the way are counted on, large tables only", "On the way", None),
     "blocked_s": ("Blocked", "s", "in which a router had a prefix with a valid path set aside and no route", "On the way", None),
     "blocked_max": ("Blocked", "prefixes", "the most at one router at once", "On the way", None),
+    "updates_prefix_max": ("Updates per neighbor", "per prefix", "the most a router received from one neighbor after the announcement alone", "Outcome", None),
     "hold_churn": ("Updates at rest", "updates/s", "per router at rest, zero when routes stand still", "Outcome", None),
     "adj_in_mean": ("Adj-RIB-In", "paths", "received from all peers, peak of the mean over the routers", "Resources", None),
     "rib_mean": ("Admitted", "paths", "the import admits, the Loc-RIB size of the paper", "Resources", COUNT),
@@ -66,7 +67,16 @@ METRICS = {  # label, unit, what it measures in a few words, group, caveat
     "heap_mean": ("Heap", "MiB", "heap in use of the daemon", "Resources", GARBAGE),
     "objects_mean": ("Heap objects", "objects", "of the daemon", "Resources", GARBAGE),
     "cpu_s_mean": ("CPU", "s", "per router while measured", "Resources", "The whole daemon, with its API and the sampling"),
+    "alloc_mb_mean": ("Allocated", "MiB", "per router while measured", "Resources", "Garbage the collector has to find"),
+    "cpu_cores_max": ("CPU cores", "cores", "most a router used at once", "Resources", "Over at least 2 s"),
+    "saturated_s": ("At the limit", "s", "a router used 90 % of its threads", "Resources", "It lags behind the others"),
+    "prof_s": ("Profiled CPU", "s", "of the profiled routers together, while profiled", "Profile", "Only runs with sampling.profile_s"),
 }
+PROFILE_PARTS = {"gc": "Garbage collector", "api": "API, read by the lab", "policy": "Routing policy", "export": "Export filter",
+                 "decision": "Decision process", "tables": "Tables per neighbor", "obgp": "OBGP", "rib": "Rest of the RIB",
+                 "send": "Sending", "receive": "Receiving", "other": "Other"}
+METRICS |= {f"prof_{b}_s": (label, "s", "CPU of the profiled routers in this part, see lab/profile.py", "Profile", None)
+            for b, label in PROFILE_PARTS.items()}
 
 
 # The charts over time, in the order they show: title, unit, log scale. Update
@@ -334,7 +344,7 @@ def ceiling(values: list[float], limit: float, floor: float, unit: float = 1) ->
 
 
 def metric_digits(metric: str, time_digits: int = 1) -> int:
-    return {"convergence_s": time_digits, "settle_s": time_digits, "settle_end_s": time_digits, "path_len_avg": 2, "rss_mean": 1, "heap_mean": 1, "cpu_s_mean": 2}.get(metric, 0)
+    return {"convergence_s": time_digits, "settle_s": time_digits, "settle_end_s": time_digits, "path_len_avg": 2, "rss_mean": 1, "heap_mean": 1, "cpu_s_mean": 2, "alloc_mb_mean": 1, "cpu_cores_max": 2, "saturated_s": 1}.get(metric, 2 if metric.startswith("prof_") else 0)
 
 
 def metric_value(value: float | None, metric: str, time_digits: int = 1) -> str:
@@ -426,6 +436,7 @@ templates.env.filters["clock"] = clock
 templates.env.filters["shown"] = shown
 templates.env.globals["size_series"] = analysis.size_series
 templates.env.globals["router_metrics"] = analysis.ROUTER_METRICS
+templates.env.globals["profile_parts"] = PROFILE_PARTS
 # The level the interval of a median reaches with n runs, in percent; None below 3.
 templates.env.filters["interval_level"] = lambda n: round(100 * ci["level"], 1) if (ci := analysis.median_ci(list(range(int(n or 0))))) else None
 templates.env.filters["created"] = created
@@ -472,7 +483,7 @@ templates.env.filters["present"] = lambda values: [v for v in values or [] if v 
 templates.env.globals["host_series"] = hostload.series
 templates.env.globals["static"] = static
 # Metrics where less is better, which tables rank: times and resources. Sizes of tables and path length only describe.
-templates.env.globals["ranked_metrics"] = ("convergence_s", "settle_s", "settle_end_s", "hold_churn", "rss_mean", "heap_mean", "objects_mean", "cpu_s_mean")
+templates.env.globals["ranked_metrics"] = ("convergence_s", "settle_s", "settle_end_s", "hold_churn", "rss_mean", "heap_mean", "objects_mean", "cpu_s_mean", "alloc_mb_mean", "saturated_s")
 # Times to a state, exact to two sampling intervals. Of those the settling times, which every run without rest misses.
 templates.env.globals["time_metrics"] = ("convergence_s", "settle_s", "settle_end_s")
 templates.env.globals["settle_metrics"] = ("settle_s", "settle_end_s")

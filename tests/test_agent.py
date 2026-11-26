@@ -299,3 +299,30 @@ def test_one_run_can_be_read_with_its_samples_and_loops(app, lab_files):
     assert c.get(f"{base}/samples?routers={b}&limit=1", headers=bearer(reader)).json()["more"] == 1
     assert c.get(f"{base}/forwarding", headers=bearer(reader)).json()["episodes"]
     assert c.post("/api/v1/simulation/predict?topology=t&scenario=s", headers=bearer(reader)).status_code == 403
+
+
+def test_an_agent_reads_where_the_profiled_routers_spent_their_cpu_against_a_baseline(tmp_path, monkeypatch):
+    from test_analysis import _pprof
+
+    from lab.results import RunKey
+    from lab.web import agent
+    keys = [RunKey("t", v, "s", i) for v in ("base", "new") for i in (1, 2)]
+    for k in keys:
+        (tmp_path / k.path).mkdir(parents=True)
+        slow = 2 if k.variant == "base" else 1
+        (tmp_path / k.path / "cpu-a-0.pb.gz").write_bytes(_pprof([(["f", "github.com/osrg/gobgp/v4/internal/pkg/table.UpdatePathAttrs"], slow * 10**9),
+                                                                    (["runtime.gcBgMarkWorker"], 10**9)]))
+    complete = {"status": "completed", "profiles": [{"router": "a", "chunks": [{"t": 0, "seconds": 5}], "end": 4, "complete": True}]}
+    cut = {"status": "completed", "profiles": [{"router": "a", "chunks": [{"t": 0, "seconds": 5}], "end": 40, "complete": False}]}
+    other = RunKey("t", "new", "s", 3)  # cut before rest: told, not counted
+    (tmp_path / other.path).mkdir(parents=True)
+    (tmp_path / other.path / "cpu-a-0.pb.gz").write_bytes(_pprof([(["runtime.gcBgMarkWorker"], 9 * 10**9)]))
+    dataset = type("D", (), {"path": tmp_path, "keys": lambda self: [*keys, other], "is_done": lambda self, k: True,
+                             "run": lambda self, k: cut if k == other else complete})()
+    monkeypatch.setattr(agent, "_result", lambda name: dataset)
+    out = agent.profile("r", "t", "s", "new", baseline="base")
+    assert out["runs"] == 2 and out["left_out"] == 1 and out["seconds_per_run"] == 2 and out["buckets"]["export"] == 1 and out["buckets"]["gc"] == 1
+    assert out["baseline"]["seconds_per_run"] == 3 and ["f", -1.0] in out["baseline"]["cum_change"][:2]
+    assert agent.profile("r", "t", "s", "new", run=1)["runs"] == 1
+    with pytest.raises(LookupError, match="no complete CPU profiles"):
+        agent.profile("r", "t", "s", "other")

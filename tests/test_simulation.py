@@ -64,8 +64,8 @@ def test_a_case_names_every_mode_that_shows_it_on_its_network_and_plays_its_orde
     assert found[("unreachable", 3, 4)]["per_mode"]["obgp-sp"]["routers"] == [2]
     assert found[("unreachable", 1, 4)]["modes"] == ["obgp-rp"]  # another order of messages is another case
     assert [(p["kind"], p["modes"], len(p["examples"]), p["proof"]) for p in simulation.problems(kept)] == [
-        ("unreachable", ["obgp-rp", "obgp-sp"], 1, "outside its model"), ("unreachable", ["obgp-rp"], 2, "outside its model"),
-        ("transient-loop", ["obgp-rp"], 1, "outside its model")]
+        ("unreachable", ["obgp-rp", "obgp-sp"], 1, "no claim"), ("unreachable", ["obgp-rp"], 2, "no claim"),
+        ("transient-loop", ["obgp-rp"], 1, "no claim")]
     assert simulation.modes_label(["bgp", "obgp-rp", "obgp-sp", "obgp-hp", "obgp-np", "obgp-paper"]) == "bgp and every OBGP mode with one table"
     assert simulation.modes_label(list(simulation.MODES)) == "every mode"
     assert simulation.modes_label(["bgp", *simulation.OBGP_ONE, *simulation.OBGP_PN]) == "bgp and every OBGP mode"
@@ -297,12 +297,12 @@ def test_filters_communities_and_relations_are_different_causes():
     related = {"instance": {"routers": 4, "links": links, "customers": [[3, 1]]}, "finding": unreachable, "results": at_rest}
     tagged = {"instance": {"routers": 4, "links": links, "sessions": [{"from": 0, "to": 2, "tag": "0:65004"}]}, "finding": unreachable, "results": at_rest}
     neither = {"instance": {"routers": 4, "links": links}, "finding": unreachable, "results": at_rest}
-    assert simulation.cause(filtered, "obgp-rp") == "an export filter drops the offer"
-    assert simulation.cause(tagged, "obgp-rp") == "a community withholds the offer"
+    assert simulation.cause(filtered, "obgp-rp") == "an export filter drops the path"
+    assert simulation.cause(tagged, "obgp-rp") == "a community withholds the path"
     imported = {"instance": {"routers": 4, "links": links, "sessions": [{"from": 1, "to": 3, "deny_import": True}]}, "finding": unreachable, "results": at_rest}
-    assert simulation.cause(imported, "obgp-rp") == "an import filter drops the offer"
-    assert simulation.cause(related, "obgp-rp") == "a relation stops the offer"
-    assert simulation.cause(neither, "obgp-rp") == "it does not admit the offer"
+    assert simulation.cause(imported, "obgp-rp") == "an import filter drops the path"
+    assert simulation.cause(related, "obgp-rp") == "a relation stops the path"
+    assert simulation.cause(neither, "obgp-rp") == "it does not admit the path"
 
 
 def test_a_link_down_a_filter_set_by_an_event_and_an_offer_through_its_own_as_are_causes():
@@ -313,21 +313,21 @@ def test_a_link_down_a_filter_set_by_an_event_and_an_offer_through_its_own_as_ar
     at_rest = {"obgp-rp": {"best": [[], [65001], None, [65001], [65002, 65500, 65001]],
                            "exported": [[], [65500, 65001], None, [65001], [65002, 65500, 65001]]}}
     found = {"instance": inst, "finding": unreachable, "results": at_rest}
-    assert simulation.cause(found, "obgp-rp") == "the link is down and the offer runs through its own AS"
+    assert simulation.cause(found, "obgp-rp") == "the link is down, the path runs through its own AS"
     back = {**inst, "events": [*inst["events"], {"after": 1 << 30, "kind": "up", "from": 2, "to": 3}]}
     assert "the link is down" not in simulation.cause({**found, "instance": back}, "obgp-rp")
     # A filter an event sets on counts as one of the network's.
     links = [[0, 1], [1, 2]]
     filtered = {"routers": 3, "links": links, "events": [{"after": 1 << 30, "kind": "deny-export", "from": 1, "to": 2, "value": 1}]}
     lost = {"instance": filtered, "finding": unreachable, "results": {"obgp-rp": {"best": [[], [65001], None], "exported": [[], [65001], None]}}}
-    assert simulation.cause(lost, "obgp-rp") == "an export filter drops the offer"
+    assert simulation.cause(lost, "obgp-rp") == "an export filter drops the path"
     off = {**filtered, "events": [*filtered["events"], {"after": 1 << 30, "kind": "deny-export", "from": 1, "to": 2}]}
-    assert simulation.cause({**lost, "instance": off}, "obgp-rp") == "it does not admit the offer"
+    assert simulation.cause({**lost, "instance": off}, "obgp-rp") == "it does not admit the path"
     # Two modes of one network: a cause both name stands once in the case's.
     hard = {"best": [[], [65001], None, [65001], [65002, 65001]], "exported": [[], [65001], None, [65001], [65002, 65001]]}
     entry = {"findings": [{"id": 0, "instance": inst, "finding": unreachable, "results": {**at_rest, "obgp-hp": hard},
                            "findings": [unreachable, {**unreachable, "mode": "obgp-hp"}]}]}
-    assert simulation.cases(entry)[0]["cause"] == "it does not admit the offer and the link is down and the offer runs through its own AS"
+    assert simulation.cases(entry)[0]["cause"] == "it does not admit the path, the link is down, the path runs through its own AS"
 
 
 def test_a_running_search_shows_how_far_it_is(client, lab_files):
@@ -517,3 +517,32 @@ def test_a_starred_case_comes_first_for_everyone_until_its_search_is_deleted(cli
     assert simulation.stars(entry["id"]) == set()
     with pytest.raises(LookupError):
         simulation.star(entry["id"], 2, True)
+
+
+def test_the_family_decides_whether_the_proof_covers_a_case_as_design_md_marks_it():
+    # A search from before kept other flags: the family decides, inside for local preferences, outside for a confederation.
+    def entry(family, flag):
+        return {"findings": [{**EXAMPLE, "instance": {**EXAMPLE["instance"], "family": family}, "in_model": flag,
+                              "finding": {**EXAMPLE["finding"], "mode": "obgp-rp", "kind": "no-convergence"}}]}
+    assert [p["proof"] for p in simulation.problems(entry("local-pref", False))] == ["contradicts it"]
+    assert [p["proof"] for p in simulation.problems(entry("confed", True))] == ["outside its model"]
+
+
+def test_one_analysis_of_every_result_at_a_time_and_none_without_its_web_server(lab_files, monkeypatch):
+    import fcntl
+    from types import SimpleNamespace
+
+    from lab import cli, config
+    from lab.results import Dataset
+
+    monkeypatch.setattr(cli.os, "nice", lambda n: None)
+    read = []
+    monkeypatch.setattr(Dataset, "all", classmethod(lambda cls: read.append(1) or []))
+    (config.SETTINGS).mkdir(parents=True, exist_ok=True)
+    with (config.SETTINGS / "analyse.lock").open("w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert cli.cmd_analyse(SimpleNamespace(all=True, dataset=None)) == 0 and read == []  # another runs
+    parents = iter([1, 2])
+    monkeypatch.setattr(cli.os, "getppid", lambda: next(parents))
+    monkeypatch.setattr(Dataset, "all", classmethod(lambda cls: [object()]))
+    assert cli.cmd_analyse(SimpleNamespace(all=True, dataset=None)) == 0  # the web server ended before the first

@@ -64,6 +64,7 @@ func main() {
 	instance := flag.String("instance", "", "play this network, a JSON file of an instance, - for stdin")
 	asJSON = flag.Bool("json", false, "with -trace: write every step as JSON, for the lab's Simulation")
 	transient := flag.Bool("transient", false, "also report the way: forwarding loops, routers blocked waiting for a refresh, routers without a route; BGP included")
+	updates := flag.Bool("updates", false, "also report a session that carried more than one update after the origin's announcement alone, in an OBGP mode")
 	tunnel := flag.Bool("tunnel", false, "forward inside an AS over tunnels to the exit, as MPLS")
 	perNeighbor := flag.Bool("per-neighbor", false, "OBGP with a table per eBGP neighbor, as GOBGP_OPERA_EXPORT=neighbor, bgp-pn (NS-BGP) always has them")
 	both := flag.Bool("both-tables", false, "play the OBGP modes with one table and, named -pn, with a table per eBGP neighbor, in one pass")
@@ -74,6 +75,7 @@ func main() {
 	serve := flag.Bool("serve", false, "internal: play the networks that come on stdin, one JSON line each, and write what it found as JSON")
 	flag.Parse()
 	obgpsim.Transient = *transient
+	obgpsim.Updates = *updates
 	obgpsim.Tunnel = *tunnel
 	obgpsim.PerNeighbor = *perNeighbor
 	if *both {

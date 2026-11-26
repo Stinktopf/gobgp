@@ -1,7 +1,7 @@
 /* The design system of the lab: source of static/app.css, built with
    scripts/dev/build-css.sh.
 
-   Colours have one job each:
+   Colors have one job each:
    - accent (U of T Blue): titles, interaction, selection, what stands
      out (the best value, OBGP), origins on the graphs of the lab
    - neutrals (slate): structure, text, the graph itself, and limits of
@@ -38,9 +38,9 @@
   --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
 }
 
-/* Tokens read by the charts and graphs (JavaScript), per colour scheme. */
+/* Tokens read by the charts and graphs (JavaScript), per color scheme. */
 :root {
-  /* Variants: passes the colour vision checks on the chart surface. */
+  /* Variants: passes the color vision checks on the chart surface. */
   --series-1: #007c9c;
   --series-2: #1e3765;  /* U of T blue: clear of the problem rose */
   --series-3: #b58900;
@@ -70,7 +70,7 @@
   --graph-waits: #a78bfa;  /* a router that waits for a route refresh */
   --graph-waits-text: #1e1b4b;
   --graph-tip: #0f172a;  /* the speech bubbles of the Simulation's map */
-  /* Routers among few, each in its own colour, here and in the Simulation: none of the meanings above. */
+  /* Routers among few, each in its own color, here and in the Simulation: none of the meanings above. */
   --router-1: #0284c7;
   --router-2: #d97706;
   --router-3: #059669;
@@ -129,7 +129,7 @@
   --graph-waits: #a78bfa;
   --graph-waits-text: #1e1b4b;
   --graph-tip: #1e293b;  /* the speech bubbles of the Simulation's map */
-  /* The routers' colours, mixed 30 % toward white. */
+  /* The routers' colors, mixed 30 % toward white. */
   --router-1: #4ea9d8;
   --router-2: #e4a051;
   --router-3: #50b696;
@@ -187,7 +187,7 @@
   :root[data-theme=dark] {
     color-scheme: dark;
   }
-  /* Thin scrollbars in the colours of the page */
+  /* Thin scrollbars in the colors of the page */
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar) transparent;
@@ -226,7 +226,7 @@
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
   }
   /* The time slider. Its parts are pseudo-elements, which the dark variant
-     cannot follow, so they take their colours from tokens. */
+     cannot follow, so they take their colors from tokens. */
   input[type="range"] {
     @apply h-4 cursor-pointer appearance-none bg-transparent;
   }
@@ -272,7 +272,7 @@
     @apply mx-auto hidden max-h-[60vh] max-w-6xl overflow-y-auto border-t border-slate-100 pt-1 pb-2 dark:border-white/5;
   }
   .dock-job { @apply px-4 py-1 text-sm; }
-  /* Numbers offered for sweeps, in a colour of their own: neither the blue of a selection nor the amber of a warning. */
+  /* Numbers offered for sweeps, in a color of their own: neither the blue of a selection nor the amber of a warning. */
   .sweep-badge { @apply shrink-0 rounded bg-violet-100 px-1.5 py-0.5 font-mono text-xs text-violet-800 dark:bg-violet-950 dark:text-violet-200; }
   .sweep-field { @apply border-violet-400 ring-1 ring-violet-300 dark:border-violet-500 dark:ring-violet-800; }
   .dock-menu-item { @apply flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm whitespace-nowrap pointer-coarse:py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800; }
@@ -298,7 +298,7 @@
   .dock-run-unjudged { @apply border-amber-500; }
   .dock-run-open { @apply bg-slate-400 dark:bg-slate-500; }
   .dock-run-unmeasured { @apply border-slate-400 dark:border-slate-500; }
-  /* The same states as a bar on a phone, where a ring is no colour of its own. */
+  /* The same states as a bar on a phone, where a ring is no color of its own. */
   .dock-bar-completed { @apply bg-emerald-500; }
   .dock-bar-allowed { @apply bg-emerald-300 dark:bg-emerald-700; }
   .dock-bar-failed { @apply bg-rose-600; }
@@ -382,7 +382,7 @@
     @apply absolute -top-1.5 left-1/2 h-3 w-12 -translate-x-1/2 rounded-[1px] bg-amber-200/60 dark:bg-amber-200/20;
     content: "";
   }
-  /* Colours to tell notes apart, each as paper, its tape a shade darker. Done ones turn green. */
+  /* Colors to tell notes apart, each as paper, its tape a shade darker. Done ones turn green. */
   .note-pink { @apply bg-pink-50 ring-pink-200/70 before:bg-pink-200/60 dark:bg-[#3b2230] dark:ring-pink-200/15 dark:before:bg-pink-200/20; }
   .note-blue { @apply bg-sky-50 ring-sky-200/70 before:bg-sky-200/60 dark:bg-[#1b2d3b] dark:ring-sky-200/15 dark:before:bg-sky-200/20; }
   .note-violet { @apply bg-violet-50 ring-violet-200/70 before:bg-violet-200/60 dark:bg-[#2c2340] dark:ring-violet-200/15 dark:before:bg-violet-200/20; }
@@ -670,9 +670,13 @@
   .sim-track .done { @apply left-0 bg-uoft-300/70 dark:bg-uoft-700/70; }
   .sim-track .now { @apply min-w-1 bg-uoft-700 dark:bg-uoft-300; }
 
-  /* Loading: a ring that turns; shown by htmx while a request runs (hx-indicator). */
+  /* Loading: the ring of a bad gadget, the detour in use running around it as under BGP. The text color, by a mask. */
   .spinner {
-    @apply inline-block size-4 shrink-0 animate-spin rounded-full border-2 border-current border-r-transparent opacity-60;
+    @apply inline-block size-5 shrink-0 bg-current;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-linecap='round'%3E%3Cpath d='M12 3.5 20.5 19H3.5Z' stroke-opacity='.28' stroke-width='1.3'/%3E%3Cpath d='M12 3.5 20.5 19H3.5Z' pathLength='1' stroke-width='2.4' stroke-dasharray='.26 .74'%3E%3Canimate attributeName='stroke-dashoffset' from='0' to='-1' dur='0.9s' repeatCount='indefinite'/%3E%3C/path%3E%3Cg fill='black' stroke='none'%3E%3Ccircle cx='12' cy='3.5' r='2'/%3E%3Ccircle cx='3.5' cy='19' r='2'/%3E%3Ccircle cx='20.5' cy='19' r='2'/%3E%3C/g%3E%3C/svg%3E") center / contain no-repeat;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-linecap='round'%3E%3Cpath d='M12 3.5 20.5 19H3.5Z' stroke-opacity='.28' stroke-width='1.3'/%3E%3Cpath d='M12 3.5 20.5 19H3.5Z' pathLength='1' stroke-width='2.4' stroke-dasharray='.26 .74'%3E%3C/path%3E%3Cg fill='black' stroke='none'%3E%3Ccircle cx='12' cy='3.5' r='2'/%3E%3Ccircle cx='3.5' cy='19' r='2'/%3E%3Ccircle cx='20.5' cy='19' r='2'/%3E%3C/g%3E%3C/svg%3E"); @apply animate-pulse; }
   }
   .loading {
     @apply flex items-center justify-center gap-2 py-6 text-sm text-slate-500 dark:text-slate-400;

@@ -210,7 +210,7 @@ window.UI = {
         b.tabIndex = -1;
         b.setAttribute("role", "option");
         b.setAttribute("aria-selected", item.value === current);
-        b.append(UI.el("span", `truncate ${item.cls || ""}`, item.label));  // an option's own colour, e.g. a mode with a problem
+        b.append(UI.el("span", `truncate ${item.cls || ""}`, item.label));  // an option's own color, e.g. a mode with a problem
         if (item.value === current) b.insertAdjacentHTML("beforeend", UI.icon("check"));
         b.onmousedown = (e) => e.preventDefault();  // keeps the focus where it is
         b.onclick = () => { onPick(item.value); close(); };
@@ -284,7 +284,7 @@ window.UI = {
     if (select.getAttribute("aria-label")) button.setAttribute("aria-label", select.getAttribute("aria-label"));
     const items = () => [...select.options].map((o) => ({ value: o.value, label: o.textContent.trim(), cls: o.className, group: o.parentElement.tagName === "OPTGROUP" ? o.parentElement.label : "" }));
     const label = () => {
-      button.className = `${select.className} select-button`;  // a class the page sets on the select, e.g. a colour
+      button.className = `${select.className} select-button`;  // a class the page sets on the select, e.g. a color
       button.replaceChildren(UI.el("span", "truncate", select.selectedOptions[0]?.textContent.trim() ?? ""));
       button.insertAdjacentHTML("beforeend", UI.icon("chevron-down"));
     };

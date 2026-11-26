@@ -76,7 +76,30 @@
       </div>
     </section>
 
+    {% if values.benchmark %}{% set b = values.benchmark %}
     <section class="card overflow-hidden lg:col-span-2">
+      <div class="border-b border-slate-100 px-5 py-3 dark:border-white/5"><h2 class="section-title" data-tip="Per mode the baseline records the workload, then the router is fed it by the baseline, its A/A twin and each candidate. The variants follow on saving">Benchmark</h2></div>
+      <div class="grid gap-4 px-5 py-4 sm:grid-cols-3">
+        <label class="block"><span class="label">Baseline</span>
+          <input name="bench_baseline" list="refs" value="{{ b.baseline }}" placeholder="master" required class="input mt-1 py-1.5 font-mono"></label>
+        <label class="block"><span class="label" data-tip="Git refs, comma-separated">Candidates</span>
+          <input name="bench_candidates" list="refs" value="{{ b.candidates | join(', ') }}" placeholder="branch or commit" class="input mt-1 py-1.5 font-mono"></label>
+        <label class="block"><span class="label" data-tip="The router fed, busiest for the one with the most neighbors">Router</span>
+          <input name="bench_router" value="{{ b.router }}" class="input mt-1 py-1.5 font-mono"></label>
+      </div>
+      <div class="flex flex-wrap gap-1 border-t border-slate-100 px-5 py-3 dark:border-white/5" role="group" aria-label="Modes">
+        <span class="label mr-2 self-center">Modes</span>
+        {% for m in pure_modes %}{% for name in [m] + ([m ~ "-pn"] if m != "obgp-paper" else []) %}
+        <label class="chip chip-sm font-mono"><input type="checkbox" name="bench_modes" value="{{ name }}" {% if name in b.modes %}checked{% endif %}>{{ name }}</label>
+        {% endfor %}{% endfor %}
+        <label class="ml-auto flex items-center gap-2 text-sm" data-tip="One router alone on what it received in a recording of the baseline, instead of the whole network">
+          <input type="checkbox" name="bench_feed" value="on" class="accent-uoft-700" {% if b.feed %}checked{% endif %}>Feed</label>
+      </div>
+    </section>
+    {% endif %}
+
+    {# A benchmark derives its variants and its speed rule: the table stays for the page's scripts, out of sight. #}
+    <section class="card overflow-hidden lg:col-span-2" {% if values.benchmark %}hidden{% endif %}>
       <div class="border-b border-slate-100 px-5 py-3 dark:border-white/5"><h2 class="section-title">Variants</h2></div>
       <table class="variants w-full text-sm">
         <thead><tr class="label text-left">
@@ -114,7 +137,7 @@
       <div class="px-5 pt-2 pb-4"><button type="button" id="add-variant" class="btn">{{ icon("add") }}Variant</button></div>
       {% set p = values.primary or {} %}
       <div class="flex flex-wrap items-center gap-2 border-t border-slate-100 px-5 py-3 text-sm dark:border-white/5">
-        <span class="label" data-tip="The comparison the experiment is about&#10;Each variant Holm-corrected over its cells, other tests exploratory">Primary comparison</span>
+        <span class="label" data-tip="Holm-corrected per variant over its cells. Other tests are exploratory.">Primary comparison</span>
         <select name="primary_metric" class="input w-auto py-1.5 max-sm:min-w-0 max-sm:flex-1" aria-label="Metric of the primary comparison">
           <option value="">none</option>
           {% for key, label in metric_names.items() %}<option value="{{ key }}" {% if p.metric == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
@@ -127,6 +150,28 @@
           <input name="primary_baseline" list="variant-names" value="{{ p.baseline or '' }}" placeholder="bgp" class="input w-32 py-1.5 font-mono max-sm:w-auto max-sm:min-w-0 max-sm:flex-1" aria-label="Baseline">
         </span>
         <datalist id="variant-names">{% for v in values.variants %}<option value="{{ v.name }}">{% endfor %}</datalist>
+      </div>
+      {% set sp = values.speed or {} %}
+      <div class="flex flex-wrap items-center gap-2 border-t border-slate-100 px-5 py-3 text-sm dark:border-white/5">
+        <span class="label" data-tip="Variants that differ in their ref only: is a commit faster than the baseline commit of its mode? Set before the runs">Speed rule</span>
+        <select name="speed_metric" class="input w-auto py-1.5 max-sm:min-w-0 max-sm:flex-1" aria-label="Metric of the speed rule">
+          <option value="">none</option>
+          {% for key, label in metric_names.items() %}<option value="{{ key }}" {% if sp.metric == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+        <span class="flex items-center gap-2 whitespace-nowrap max-sm:basis-full">
+          <span class="muted">than</span>
+          <input name="speed_baseline" list="refs" value="{{ sp.baseline or '' }}" placeholder="baseline ref" data-tip="The baseline commit in every mode, twice in each: once as the baseline, once as its A/A variant" class="input w-32 py-1.5 font-mono" aria-label="Baseline ref">
+          <span class="muted">faster by</span>
+          <input name="speed_margin_pct" inputmode="decimal" value="{{ sp.margin_pct or '' }}" placeholder="5" data-tip="The smallest gain that counts, in percent of the baseline's median, from A/A pairs" class="input w-16 py-1.5 tabular-nums" aria-label="Margin, percent">
+          <span class="muted">%</span>
+        </span>
+        <span class="flex items-center gap-2 whitespace-nowrap max-sm:min-w-0 max-sm:basis-full">
+          <span class="muted">guards</span>
+          <input name="speed_guards" value="{{ (sp.guards or ['settle_s', 'rss_mean', 'flaps']) | join(', ') }}" data-tip="Metrics that must not get worse, comma-separated" class="input w-48 py-1.5 font-mono max-sm:w-auto max-sm:min-w-0 max-sm:flex-1" aria-label="Guards">
+          <span class="muted">within</span>
+          <input name="speed_guard_pct" inputmode="decimal" value="{{ sp.guard_pct if sp.guard_pct is not none and sp else 10 }}" class="input w-14 py-1.5 tabular-nums" aria-label="Guards may get worse by, percent">
+          <span class="muted">%</span>
+        </span>
       </div>
       <datalist id="refs">{% for r in refs %}<option value="{{ r }}">{% endfor %}</datalist>
     </section>
@@ -151,7 +196,7 @@
         <tbody id="sweeps">{% for w in values.sweeps %}{{ sweep_row(loop.index0, w) }}{% endfor %}</tbody>
       </table>
       <template id="sweep-row">{{ sweep_row("__i__", {"scenario": "", "param": "", "values": ""}) }}</template>
-      <p class="muted px-5 pt-3 text-sm" data-sweep-none data-tip="A scenario offers one where its editor marks a number for sweeps">No scenario chosen offers a number.</p>
+      <p class="muted px-5 pt-3 text-sm" data-sweep-none data-tip="A scenario offers one where its editor marks a number for sweeps">None of the chosen scenarios has a number to sweep.</p>
       <div class="px-5 pt-2 pb-4"><button type="button" id="add-sweep" class="btn">{{ icon("add") }}Sweep</button></div>
     </section>
 
@@ -166,7 +211,7 @@
         {{ number("hold_time", "Hold time, s", min=3) }}
         {{ number("keepalive", "Keepalive, s") }}
         {{ number("connect_retry", "Connect retry, s") }}
-        {{ number("mrai", "MRAI, s", step="any", min=0, tip="Seconds at least between two advertisements to another AS, as routers commonly hold them back. 0 sends every change at once") }}
+        {{ number("mrai", "MRAI, s", step="any", min=0, tip="Least seconds between two advertisements to another AS. 0 sends every change at once") }}
         {{ number("refresh", "Refresh, s", step="any", min=0, tip="Seconds at least between two route refreshes that refresh pruning asks of one neighbor") }}
         {{ number("procs", "Threads per router", min=0, tip="Threads that run Go code in each gobgpd. 0 for one per CPU, fewer for many routers on few CPUs") }}
         <label class="flex items-center gap-2 text-sm" data-tip="Peers keep the routes of a router that restarts gracefully">
@@ -179,13 +224,17 @@
             {% for i in intervals %}<option value="{{ i }}" {% if values.interval | float == i %}selected{% endif %}>{{ (1 / i) | round(0) | int }} Hz</option>{% endfor %}
           </select></label>
         {{ number("stable_s", "Stable after, s", step="any", min=0.1) }}
-        {{ number("profile_s", "CPU profile, s", step="any", min=0, tip="Seconds of a CPU profile of the router with the most neighbors, from the first announcement on. 0 for none") }}
+        {{ number("profile_s", "CPU profiles, s", step="any", min=0, tip="Seconds at most of CPU profiles of the routers with the most neighbors, from the first announcement until the run ends. 0 for none") }}
+        {{ number("profile_routers", "Routers profiled", min=1, tip="How many of the routers with the most neighbors keep CPU profiles") }}
+        {{ number("record_routers", "Routers recorded", min=0, tip="How many of the routers with the most neighbors record every update they receive, the input of feeds. Recording costs them time") }}
+        <label class="flex items-center gap-2 text-sm" data-tip="Off, the routers read no paths while they sample: their CPU is their own, loops and black holes on the way go unmeasured">
+          <input type="checkbox" name="paths" value="on" class="accent-uoft-700" {% if values.paths %}checked{% endif %}>Read paths</label>
       </div>
       <div class="space-y-3">
         <h2 class="section-title">Cluster</h2>
         {{ number("cpus", "CPUs") }}
         {{ number("memory_mb", "Memory, MiB", min=1024, tip="At most: a smaller host gives what it has") }}
-        {{ number("memory_min_mb", "At least, MiB", min=1024, tip="Optional. Below it the experiment does not run, for measurements that depend on the memory limit") }}
+        {{ number("memory_min_mb", "At least, MiB", min=1024, tip="Optional. The experiment does not run with less") }}
         {{ number("router_limit_mb", "Per router, MiB", min=128, tip="Memory a router may use before it is restarted. Full Internet tables need several GiB") }}
       </div>
     </section>

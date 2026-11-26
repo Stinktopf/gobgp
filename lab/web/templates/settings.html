@@ -86,7 +86,7 @@
           <h2 class="section-title">Certificate</h2>
           <a class="btn" href="/certificate" download="obgp-lab.crt">{{ icon("download") }}Download</a>
         </div>
-        <p class="muted text-sm">The lab signs its own certificate. Add it to the trusted certificates of your system or browser, and the browser no longer warns. It names localhost and the addresses this host had when it was made.</p>
+        <p class="muted text-sm">The lab signs its own certificate. Trust it in your system or browser to stop the warning. It names localhost and this host's addresses at the time it was made.</p>
         <p class="muted text-xs break-all">SHA-256 {{ fingerprint }}</p>
       </div>
     </section>
@@ -145,7 +145,7 @@ export NODE_EXTRA_CA_CERTS=~/.obgp-lab.crt
       </ul>
       {% endif %}
       <form method="post" action="/settings/agents/limits" class="flex flex-wrap items-center gap-2 border-b border-slate-100 px-5 py-3 text-sm dark:border-white/5">
-        <label for="agent-queue-h" data-tip="Beyond this, queueing waits for your approval, also with a token that acts at once">Agents may fill the queue for</label>
+        <label for="agent-queue-h" data-tip="Beyond this, queueing waits for your approval, for every token">Agents may fill the queue for</label>
         <input id="agent-queue-h" name="queue_h" type="number" min="0" max="720" step="1" value="{{ agent_limits.queue_h | int }}" class="input w-20 tabular-nums" onchange="this.form.requestSubmit()">
         <span class="muted">h</span>
       </form>
@@ -175,6 +175,24 @@ export NODE_EXTRA_CA_CERTS=~/.obgp-lab.crt
         {% if webhook %}<button name="action" value="off" class="btn mr-auto">Turn off</button>{% endif %}
       </div>
     </form>
+    <form id="zenodo" method="post" action="/settings/zenodo" class="card scroll-mt-20 space-y-3 p-5">
+      <h2 class="section-title" data-tip="Archived results go to Zenodo as drafts, which you complete and publish there">Zenodo</h2>
+      <button name="action" value="save" class="sr-only" tabindex="-1" aria-hidden="true"></button>{# Enter saves, never forgets #}
+      {% for kind, label, host in [("sandbox", "Sandbox token", "sandbox.zenodo.org"), ("real", "Token", "zenodo.org")] %}
+      <div>
+        <div class="flex items-center gap-2">
+          <label for="zenodo-{{ kind }}" class="label" data-tip="Of {{ host }}, with the scopes deposit:write and deposit:actions">{{ label }}</label>
+          <span class="muted text-xs">{{ host }}</span>
+          {% if zenodo[kind] %}<span class="ml-auto text-xs text-emerald-700 dark:text-emerald-400">Saved</span>
+          <button name="action" value="forget-{{ kind }}" class="text-xs text-slate-500 underline-offset-2 hover:text-rose-700 hover:underline dark:text-slate-400 dark:hover:text-rose-400">Forget</button>{% endif %}
+        </div>
+        <input id="zenodo-{{ kind }}" name="{{ kind }}" type="password" autocomplete="off" spellcheck="false" class="input mt-1 font-mono" placeholder="{{ 'Empty keeps the saved token' if zenodo[kind] else 'Paste the token' }}">
+      </div>
+      {% endfor %}
+      <div class="flex justify-end">
+        <button name="action" value="save" class="btn btn-primary">Save</button>
+      </div>
+    </form>
     {% endif %}
     <section class="card space-y-3 p-5" aria-label="Display">
       <h2 class="section-title">Display</h2>
@@ -200,7 +218,7 @@ export NODE_EXTRA_CA_CERTS=~/.obgp-lab.crt
         {% else %}Not checked yet.{% endif %}</p>
     </div>
     {% if v.new %}<ul class="space-y-1 text-sm">{% for line in v.new %}{% set hash, _, title = line.partition(" ") %}<li class="flex gap-2"><span class="muted font-mono text-xs leading-5">{{ hash }}</span><span class="min-w-0 truncate" data-tip="{{ title }}">{{ title }}</span></li>{% endfor %}</ul>{% endif %}
-    {% if v.ahead or v.dirty %}<p class="text-sm text-rose-800 dark:text-rose-300">{% if v.dirty %}Local changes block updates.{% else %}{{ v.ahead }} unpublished commits.{% endif %}</p>{% endif %}
+    {% if v.ahead or v.dirty %}<p class="text-sm text-rose-800 dark:text-rose-300">{% if v.dirty %}Local changes block updates.{% else %}{{ v.ahead }} unpublished commit{{ "s" if v.ahead != 1 }}.{% endif %}</p>{% endif %}
     {% if v.branches %}
     <form method="post" action="/settings/update/switch" class="flex flex-wrap items-center gap-2">
       <label for="branch" class="muted text-sm">Branch on GitHub</label>
@@ -216,7 +234,7 @@ export NODE_EXTRA_CA_CERTS=~/.obgp-lab.crt
       {% if v.behind %}
       <form method="post" action="/settings/update">
         {% if running %}<span data-tip="{{ running.name }} runs. Pause the queue or wait until it ends" data-tip-align="end"><button class="btn btn-primary" disabled>Update and restart</button></span>
-        {% else %}<button class="btn btn-primary" data-confirm="Update the lab?" data-confirm-safe data-confirm-text="{{ v.behind }} new commits. Restarts the web interface, results stay." aria-label="Update">Update and restart</button>{% endif %}
+        {% else %}<button class="btn btn-primary" data-confirm="Update the lab?" data-confirm-safe data-confirm-text="{{ v.behind }} new commit{{ "s" if v.behind != 1 }}. Restarts the web interface, results stay." aria-label="Update">Update and restart</button>{% endif %}
       </form>
       {% endif %}
       <form method="post" action="/settings/update/check"><button class="btn">Check now</button></form>

@@ -224,6 +224,87 @@ HOPS_MAX = 256  # as in the controller: above, the routers follow the next hops 
 LOG_NAMES = 6  # routers or links a line of the log names, beyond that it counts them
 
 
+def benchmark_scenario(experiment: Experiment, result: str, key: RunKey) -> "scenario.Scenario | None":
+    """In a benchmark with feed, what a variant other than a recording runs:
+    its router fed what the recording of its mode received, the same input in every run."""
+    if not (b := experiment.benchmark) or not b.feed or not (record := experiment.record_of(key.variant)):
+        return None
+    source = f"{result}/{record}/{key.scenario}/1"
+    return scenario.parse({"name": key.scenario, "steps": [{"feed": {"source": source, "router": b.router, "schedule": b.schedule}}]})
+
+
+def feed_topology(topology: dict, target: str) -> tuple[dict, list[str]]:
+    """The topology of a feed: the router fed with all its neighbors, each of
+    them with that router as its only neighbor. And the neighbors, its feeders."""
+    routers = topology["routers"]
+    feeders = sorted(n["name"] for n in routers[target].get("neighbors", []))
+    star = {target: routers[target]}
+    for f in feeders:
+        star[f] = {**routers[f], "neighbors": [n for n in routers[f].get("neighbors", []) if n["name"] == target]}
+    return {**topology, "routers": star, "roles": {}}, feeders
+
+
+FEED_POLL_S = 1.0  # between the looks at the feeders while they send
+
+
+def routes_quality(table: dict, relations: dict) -> str:
+    """A digest of how good a router's routes at rest are, equal where timing
+    only chose among equal paths: per prefix the length of its AS path and the
+    relation of the neighbor it comes from (customer, peer, provider)."""
+    import hashlib
+    import json
+
+    quality = {p: [len(r.get("as_path") or []), relations.get(r.get("from")) or ""] for p, r in table.items()}
+    return hashlib.sha256(json.dumps(quality, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def routes_digest(table: dict) -> str:
+    """A digest of a router's routes at rest, equal when two runs chose the
+    same: per prefix the neighbor, AS path and the routes sent per neighbor,
+    without next hops, which are the addresses of pods and differ by run."""
+    import hashlib
+    import json
+
+    def plain(x):
+        if isinstance(x, dict):
+            return {k: plain(v) for k, v in x.items() if k != "next_hop"}
+        return x
+    return hashlib.sha256(json.dumps(plain(table), sort_keys=True).encode()).hexdigest()[:16]
+
+
+def feed_records(source: str, topology: str, router: str) -> tuple[dict[str, bytes], int]:
+    """The updates the router received in the recorded run, as BGP4MP
+    records of MRT, by the neighbor that sent them, and the second of the
+    first. MRT keeps updates only, not sessions that fell: a run whose steps
+    took sessions down is no source."""
+    result, variant, scenario_, index = source.split("/")
+    dataset = Dataset.find(result)
+    if dataset is None:
+        raise LabError(f"no result {result}")
+    key = RunKey(topology, variant, scenario_, int(index))
+    path = dataset.path / key.path / f"updates-{router}.mrt.gz"
+    if not path.exists():
+        raise LabError(f"{source} on {topology} has no recording of {router}")
+    run = dataset.run(key)
+    if planned := sorted({e["name"] for e in run.get("events", []) if e["name"] in ("down", "restart", "degrade")}):
+        raise LabError(f"{source} took sessions down ({', '.join(planned)}), which a recording of updates does not keep")
+    flaps = [r["flaps"] for r in dataset.samples(key) if r["router"] == router and r.get("flaps") is not None]
+    if flaps and max(flaps) > min(flaps):
+        raise LabError(f"sessions of {router} fell in {source}, which a recording of updates does not keep")
+    names = run.get("addresses", {})  # the address of each router's pod -> its name
+    out: dict[str, bytearray] = defaultdict(bytearray)
+    first = None
+    try:
+        for peer, second, record in mrt.raw_records(path):
+            if (name := names.get(peer)) is None:
+                raise LabError(f"{source} recorded updates from {peer}, a router its run does not name")
+            out[name] += record
+            first = second if first is None else min(first, second)
+    except ValueError as e:
+        raise LabError(str(e)) from None
+    return {name: bytes(data) for name, data in out.items()}, first or 0
+
+
 def told(details: dict) -> str:
     """The routers and links of an event as the log tells them: by name, or counted when many."""
     parts = []
@@ -233,7 +314,7 @@ def told(details: dict) -> str:
     return ", ".join(parts)
 
 
-ANNOUNCING = ("announce", "announce_real", "announce_rib", "originate", "replay")
+ANNOUNCING = ("announce", "announce_real", "announce_rib", "originate", "replay", "feed")
 
 
 class HostLoad(threading.Thread):
@@ -534,12 +615,25 @@ class Run:
         self.topology = dataset.topology(key.topology)
         self.scenario = dataset.scenario(key.scenario)
         self.network = Network(self.topology["routers"], self.topology["roles"])
-        self.origins = tuple(self.network.roles.get("origins", []))
         self.variant = next(v for v in self.experiment.variants if v.name == key.variant)
+        self.scenario = benchmark_scenario(self.experiment, dataset.name, key) or self.scenario
+        # A feed replays what the neighbors of one router sent it in a recorded
+        # run: that router runs alone, its neighbors as feeders of the recording.
+        self.feed = next((st.args for st in scenario.each_step(self.scenario.steps) if st.kind == "feed"), None)
+        self.feeders: list[str] = []
+        if self.feed:
+            target = self.network.targets("feed", self.feed, None)[0][0]
+            self.topology, self.feeders = feed_topology(self.topology, target)
+            self.network = Network({target: self.topology["routers"][target]}, {})
+        self.origins = tuple(self.network.roles.get("origins", []))
         self.events: list[dict] = []
         self.current = threading.local()  # the position of the step a thread plays
         self.measurements: list[dict] = []
-        self.profiled = ""  # the router of the CPU profile, once asked for
+        self.profiled: list[str] = []  # the routers of the CPU profiles, once asked for
+        self.recorded: list[str] = []  # the routers that record the updates they receive
+        self.profiles: list[dict] = []  # their chunks in the run's time, for run.json
+        self.profile_end: float | None = None  # when the profiles ended, at rest
+        self.profile_rested = False
         # What is down, and the (router, peer) link ends each failure acted on,
         # so that up undoes exactly that.
         self.stopped: set[str] = set()
@@ -558,21 +652,23 @@ class Run:
         self.modes = self.variant.modes_of(self.topology["routers"], seed)
         self.cluster.deploy(self.key.topology, self.topology, self.tag, self.modes, seed, self.experiment.bgp,
                             self.routers, self.variant.refresh_delay or 0, self.variant.per_neighbor,
-                            progress=lambda **p: self.status.update(deploy=p), diagnosis=self.diagnosis)
+                            progress=lambda **p: self.status.update(deploy=p), diagnosis=self.diagnosis,
+                            feeders={f: self.network.busiest()[0] for f in self.feeders})
         log.info("%s: deployed in %.0f s, seed %d", self.key, time.monotonic() - deploying, seed)
         watched = [r for r in self.network.routers if r not in self.origins]
         self.status.watched = set(watched)
         # Every router samples, the origins too for their next hops; the analysis measures the watched ones.
-        self.sampler = Sampler(self.routers, sorted(self.network.routers), self.experiment.sampling_of(self.variant.name).interval, self.status.live, self.spool)
+        sampling = self.experiment.sampling_of(self.variant.name)
+        self.sampler = Sampler(self.routers, sorted(self.network.routers), sampling.interval, self.status.live, self.spool, sampling.paths)
         started = now()
         load = HostLoad(clock=self.sampler.now, cores=host.cpu_list(self.held["cpus"]) if self.held.get("cpus") else None)
         load.start()
         self.sampler.start()
         # A full connection tracking or a silent API ends the run, and with it the result.
-        guard = self.cluster.guard(str(self.key), len(self.network.routers), on_lost=self.stop.set, diagnosis=self.diagnosis)
+        guard = self.cluster.guard(str(self.key), len(self.topology["routers"]), on_lost=self.stop.set, diagnosis=self.diagnosis)
         try:
             self.steps(self.scenario.steps, ())
-            self.final()
+            self.final_feed() if self.feed else self.final()
             if guard.lost.is_set():
                 raise Cancelled
         except BaseException:
@@ -590,16 +686,17 @@ class Run:
         load.stop()
         if self.sampler.failed > 0.05 * max(1, self.sampler.count):
             raise LabError(f"{self.sampler.failed} samples failed")
-        restarts, oom = self.cluster.restarts()
+        restarts, oom, why = self.cluster.restarted()
         if oom:
             raise LabError(f"{', '.join(oom)} took more than {self.experiment.cluster.router_limit_mb} MiB and restarted")
         if restarts:
-            raise LabError(f"routers restarted {restarts} times")
+            raise LabError(f"routers restarted {restarts} times" + (f", {why}" if why else ""))
         try:  # before the rows are read: they can be read once
             self.keep_heaps(self.sampler.peak_mb)
             self.keep_cpu()
         except Exception:  # noqa: BLE001  a diagnosis, never the end of a run
             log.exception("%s: keeping profiles", self.key)
+        self.keep_records()  # a run that records is for its recording: without it, it failed
         addresses, rows = self.cluster.addresses(), self.sampler.rows()
         # Away before the run is written and analysed: routers that oscillate
         # would go on, load the host while the next run waits for quiet and
@@ -625,6 +722,8 @@ class Run:
             "host": load.summary(),
             # Which router ran which mode, where they differ.
             **({"modes": self.modes} if self.variant.mixed else {}),
+            # The windows of the CPU profiles kept beside the run.
+            **({"profiles": self.profiles} if self.profiles else {}),
         }, rows
 
     def keep_heaps(self, peak_mb: dict[str, float]) -> None:
@@ -644,41 +743,102 @@ class Run:
                 (self.spool / f"heap-{router}.pb.gz").write_bytes(base64.b64decode(h["profile"]))
                 log.info("%s: kept the heap profile of %s at %.0f MiB", self.key, router, h["rss_mb"])
 
-    def busiest(self) -> str:
-        """The router with the most neighbors, the first by name among equals."""
-        return min(self.network.routers, key=lambda r: (-len(self.network.routers[r].get("neighbors", [])), r))
+    def busiest(self, k: int = 1) -> list[str]:
+        """The k routers with the most neighbors, by name among equals."""
+        return self.network.busiest(k)
+
+    def record_updates(self) -> None:
+        """Lets the routers the experiment names record every UPDATE they
+        receive, once per run: the source of a feed."""
+        with self.lock:  # parallel announcing steps ask once
+            bench = self.experiment.benchmark
+            k = 1 if self.variant.records else 0 if bench else self.experiment.sampling.record_routers
+            if not k or self.recorded or self.feed:
+                return
+            # A benchmark records the router it feeds, else the k routers with the most neighbors.
+            self.recorded = [bench.router] if bench and bench.router != "busiest" else self.busiest(k)
+        for router in self.recorded:
+            try:
+                self.routers.post(router, "/record", {}, timeout=STATUS_S + 10)
+            except LabError as e:
+                raise LabError(f"{router} does not record its updates: {e}") from None
+        log.info("%s: %s record the updates they receive", self.key, ", ".join(self.recorded))
+
+    def keep_records(self) -> None:
+        """Keeps the updates each recording router received beside the run, as updates-<router>.mrt.gz."""
+        for router in self.recorded:
+            data = self.routers.fetch(router, "/record", timeout=300)
+            self.spool.mkdir(parents=True, exist_ok=True)
+            (self.spool / f"updates-{router}.mrt.gz").write_bytes(data)
+            log.info("%s: kept %.1f MB of updates %s received", self.key, len(data) / 1e6, router)
 
     def profile_cpu(self) -> None:
-        """Starts the CPU profile the experiment asks for, once per run, at the
-        router with the most neighbors: where a busy router spends its time."""
-        seconds = self.experiment.sampling.profile_s
-        if not seconds or self.profiled:
+        """Starts the CPU profiles the experiment asks for, once per run, at
+        the routers with the most neighbors: where a busy router spends its time."""
+        sampling = self.experiment.sampling
+        if not sampling.profile_s or self.profiled or self.variant.records:  # a recording is input, not measured
             return
-        self.profiled = self.busiest()
-        try:
-            self.routers.post(self.profiled, "/cpu", {"seconds": seconds}, timeout=STATUS_S)
-        except LabError as e:
-            log.warning("%s: no CPU profile of %s: %s", self.key, self.profiled, e)
+        self.profiled = self.busiest(sampling.profile_routers)
+        for router in self.profiled:
+            try:
+                self.routers.post(router, "/cpu", {"seconds": sampling.profile_s}, timeout=STATUS_S)
+            except LabError as e:
+                log.warning("%s: no CPU profile of %s: %s", self.key, router, e)
+                continue
+            log.info("%s: CPU profiles of %s for %g s at most", self.key, router, sampling.profile_s)
+
+    def stop_cpu(self, rested: bool) -> None:
+        """Ends the CPU profiles at rest, all routers at once: the window is
+        from the first announcing step until rest and its quiet time, alike in
+        every mode. rested says whether the routes came to rest."""
+        if not self.profiled or self.profile_end is not None:
             return
-        log.info("%s: CPU profile of %s for %g s", self.key, self.profiled, seconds)
+        self.profile_end, self.profile_rested = self.sampler.now(), rested
+
+        def stop(router: str) -> None:
+            try:
+                self.routers.post(router, "/cpu/stop", {}, timeout=STATUS_S + 80)
+            except LabError as e:
+                log.warning("%s: CPU profile of %s not stopped: %s", self.key, router, e)
+        with ThreadPoolExecutor(len(self.profiled)) as pool:
+            list(pool.map(stop, self.profiled))
 
     def keep_cpu(self) -> None:
-        """Keeps the CPU profile beside the run, as cpu-<router>.pb.gz."""
+        """Keeps each chunk of the CPU profiles beside the run as
+        cpu-<router>-<t>.pb.gz, t its start in the run's seconds, and the
+        allocations at start and end as allocs-<router>-start.pb.gz and -end.
+        A profile is complete where the routes came to rest and its chunks
+        reach the end of the window, not cut by profile_s before."""
         import base64
 
-        if not (router := self.profiled):
-            return
-        try:
-            c = self.routers.get(router, "/cpu", timeout=STATUS_S)
-        except LabError as e:
-            log.warning("%s: no CPU profile of %s: %s", self.key, router, e)
-            return
-        if not c.get("profile"):
-            log.warning("%s: no CPU profile of %s: %s", self.key, router, c.get("error") or "not taken yet")
-            return
-        self.spool.mkdir(parents=True, exist_ok=True)
-        (self.spool / f"cpu-{router}.pb.gz").write_bytes(base64.b64decode(c["profile"]))
-        log.info("%s: kept the CPU profile of %s", self.key, router)
+        self.stop_cpu(False)  # a run that ended before its final check
+        for router in self.profiled:
+            try:
+                c = self.routers.get(router, "/cpu", timeout=STATUS_S + 30)
+            except LabError as e:
+                log.warning("%s: no CPU profile of %s: %s", self.key, router, e)
+                continue
+            if c.get("error"):
+                log.warning("%s: CPU profile of %s: %s", self.key, router, c["error"])
+            if not c.get("chunks"):
+                continue
+            offset = self.sampler.offset(router)
+            self.spool.mkdir(parents=True, exist_ok=True)
+            chunks = []
+            for chunk in c["chunks"]:
+                t = round(chunk["started"] - offset - self.sampler.t0, 1)
+                (self.spool / f"cpu-{router}-{t:g}.pb.gz").write_bytes(base64.b64decode(chunk["profile"]))
+                chunks.append({"t": t, "seconds": chunk["seconds"]})
+            for k in ("start", "end"):
+                if c.get(f"allocs_{k}"):
+                    (self.spool / f"allocs-{router}-{k}.pb.gz").write_bytes(base64.b64decode(c[f"allocs_{k}"]))
+            reached = chunks[-1]["t"] + chunks[-1]["seconds"] >= self.profile_end - 1.0
+            self.profiles.append({"router": router, "chunks": chunks, "end": round(self.profile_end, 1),
+                                  "complete": bool(self.profile_rested and reached)})
+        for router in sorted(set(self.profiled) - {p["router"] for p in self.profiles}):
+            # A router that gave no profile: the run's profiles are incomplete, else its part would be missing silently.
+            self.profiles.append({"router": router, "chunks": [], "complete": False})
+            log.info("%s: kept %d CPU profiles of %s", self.key, len(chunks), router)
 
     # The step engine
 
@@ -691,10 +851,12 @@ class Run:
     def step(self, step: Step, position: tuple) -> None:
         self.current.position = position
         self.status.update(phase=step.kind.replace("_", " "))
+        if step.kind in ANNOUNCING:  # before it: an announcing step is where a router works most
+            self.profile_cpu()
+            self.record_updates()
         getattr(self, f"do_{step.kind}")(step.args, position)
         if step.kind in ANNOUNCING:
             self.watch_hops()
-            self.profile_cpu()
 
     def watch_hops(self) -> None:
         """Above HOPS_MAX prefixes every router follows the next hops of the
@@ -762,7 +924,7 @@ class Run:
             raise Cancelled
         self.measurements.append({"stable": stable, "t": round(self.sampler.now(), 3),
                                   "step": ".".join(map(str, position))})
-        log.info("%s: %6.1f s %s", self.key, self.sampler.now(), "stable" if stable else f"not stable within {u.timeout:.0f} s")
+        log.info("%s: %6.1f s %s", self.key, self.sampler.now(), "at rest" if stable else f"not at rest within {u.timeout:.0f} s")
 
     def sessions_up(self) -> bool:
         """Whether every session is established that no step took down."""
@@ -856,6 +1018,60 @@ class Run:
             except LabError:
                 return False
         return True
+
+    def do_feed(self, f: scenario.Feed, position: tuple) -> None:
+        """The neighbors of the router send it again the UPDATE messages they
+        sent it in the recorded run, each from its own feeder: as fast as it
+        takes them, or at the recorded seconds."""
+        target = self.network.busiest()[0]
+        records, base = feed_records(f.source, self.key.topology, target)
+        unknown = sorted(set(records) - set(self.feeders))
+        if unknown:
+            raise LabError(f"{f.source} recorded updates from {', '.join(unknown)}, which are no neighbors of {target} here")
+
+        def load(feeder: str) -> int:
+            return self.routers.post(feeder, "/feed/load", records.get(feeder, b""), timeout=180)["loaded"]
+
+        with ThreadPoolExecutor(min(len(self.feeders), Routers.POOL)) as pool:
+            loaded = dict(zip(self.feeders, pool.map(load, self.feeders)))
+            offsets = dict(zip(self.feeders, pool.map(self.sampler.offset, self.feeders)))
+        start = self.sampler.now() + 2.0  # all feeders start together, on their own clocks
+        for feeder in self.feeders:
+            self.routers.post(feeder, "/feed/start", {"at": self.sampler.t0 + start + offsets[feeder], "schedule": f.schedule, "base": base},
+                              timeout=STATUS_S)
+        self.event("announce", start, routers=[target], feed=f.source, schedule=f.schedule, messages=sum(loaded.values()))
+        deadline = start + f.timeout
+        while True:
+            self.stop.wait(FEED_POLL_S)
+            if self.stop.is_set():
+                raise Cancelled
+            with ThreadPoolExecutor(min(len(self.feeders), Routers.POOL)) as pool:
+                status = dict(zip(self.feeders, pool.map(lambda r: self.routers.get(r, "/feed/status", timeout=STATUS_S), self.feeders)))
+            if failed := {r: s["error"] for r, s in status.items() if s.get("error")}:
+                raise LabError(f"feeders failed: {failed}")
+            if all(s["sent"] == s["loaded"] for s in status.values()):
+                done = max((s["done"] - offsets[r] - self.sampler.t0 for r, s in status.items() if s.get("done")), default=start)
+                self.event("announced", max(start, done), routers=[target])
+                return
+            if self.sampler.now() > deadline:
+                raise LabError(f"the feeders sent {sum(s['sent'] for s in status.values())} of {sum(loaded.values())} messages in {f.timeout:g} s")
+
+    def final_feed(self) -> None:
+        """The final check of a feed: once the router is at rest, what it sent
+        each feeder, with a digest that is equal when two runs sent the same."""
+        import hashlib
+
+        quiet = self.experiment.quiet_s(self.key.variant)
+        stable = self.sampler.wait_quiet(quiet, max(60.0, 3 * quiet), self.stop)
+        if self.stop.is_set():
+            raise Cancelled
+        self.stop_cpu(stable)
+        at = self.sampler.now()
+        with ThreadPoolExecutor(min(len(self.feeders), Routers.POOL)) as pool:
+            status = dict(zip(self.feeders, pool.map(lambda r: self.routers.get(r, "/feed/status", timeout=STATUS_S), self.feeders)))
+        output = {r: {k: s.get(k) for k in ("updates", "prefixes", "refreshes", "digest", "quality")} for r, s in status.items()}
+        digest = hashlib.sha256("".join(f"{r} {o['digest']}\n" for r, o in sorted(output.items())).encode()).hexdigest()[:16]
+        self.event("final", at, stable=stable, feed=True, output=output, digest=digest, updates=sum(o["updates"] for o in output.values()))
 
     def do_replay(self, r: scenario.Replay, position: tuple) -> None:
         """Real prefixes of the routers appear and vanish as a vantage point of
@@ -1123,6 +1339,7 @@ class Run:
         stable = self.sampler.wait_quiet(quiet, max(60.0, 3 * quiet), self.stop)
         if self.stop.is_set():
             raise Cancelled
+        self.stop_cpu(stable)
         at, announced = self.sampler.now(), self.announced()
         if len(announced) > FINAL_PREFIXES:
             self.event("final", at, stable=stable, prefixes=len(announced), skipped=f"more than {FINAL_PREFIXES} prefixes")
@@ -1142,6 +1359,9 @@ class Run:
         valleys = {r: sum(not route.get("as_set") and forwarding.valley_free(between, int(self.network.routers[r]["asn"]), route["as_path"]) is False
                           for p, route in t.items() if p in announced) for r, t in tables.items()} if between else {}
         self.event("final", at, stable=stable, prefixes=len(announced), slowest=slowest,
+                   digests={r: routes_digest(t) for r, t in tables.items()},
+                   qualities={r: routes_quality(t, {n["name"]: n.get("relation") for n in self.network.routers[r].get("neighbors", [])})
+                              for r, t in tables.items() if r in self.network.routers},
                    valleys={r: n for r, n in valleys.items() if n},
                    held={r: len(announced & set(t)) for r, t in tables.items()},
                    stale={r: len(set(t) - announced) for r, t in tables.items()},
@@ -1276,8 +1496,9 @@ class Sampler(threading.Thread):
     LARGE, RATE_LARGE = 64, 50
 
     def __init__(self, routers: Routers, watched: list[str], interval: float,
-                 on_tick: Callable[[float, dict], None] | None = None, spool: Path | None = None) -> None:
+                 on_tick: Callable[[float, dict], None] | None = None, spool: Path | None = None, paths: bool = True) -> None:
         super().__init__(daemon=True)
+        self.paths = paths  # whether the routers read their paths while they sample
         self.routers = routers
         self.watched = watched
         self.interval = interval
@@ -1308,6 +1529,7 @@ class Sampler(threading.Thread):
         self.tick = threading.Condition()
         self.pool = ThreadPoolExecutor(min(len(watched), Routers.POOL))
         self.t0 = time.time()
+        self.offsets: dict[str, float] = {}  # how far the clock of each watched router is ahead
 
     def now(self) -> float:
         return time.time() - self.t0
@@ -1322,15 +1544,19 @@ class Sampler(threading.Thread):
 
     def start(self) -> None:
         try:
-            offsets = dict(zip(self.watched, self.pool.map(self._offset, self.watched)))
+            offsets = self.offsets = dict(zip(self.watched, self.pool.map(self._offset, self.watched)))
             self.t0 = time.time() + 1.0
             for router, offset in offsets.items():
-                self.routers.post(router, "/samples/start", {"t0": self.t0 + offset, "interval": self.interval})
+                self.routers.post(router, "/samples/start", {"t0": self.t0 + offset, "interval": self.interval, "paths": self.paths})
         except BaseException:
             self.pool.shutdown(wait=False, cancel_futures=True)
             raise
         time.sleep(max(0.0, -self.now()))
         super().start()
+
+    def offset(self, router: str) -> float:
+        """How far the clock of a router is ahead, measured at the start if it is watched."""
+        return self.offsets[router] if router in self.offsets else self._offset(router)
 
     def _offset(self, router: str) -> float:
         """How far the clock of a router is ahead, from the fastest of a few requests."""

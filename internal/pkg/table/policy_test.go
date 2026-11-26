@@ -18,7 +18,9 @@ package table
 import (
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -3973,4 +3975,223 @@ func TestNeighborSetContainsAsIPNet(t *testing.T) {
 	require.NoError(t, s.Replace(part))
 	check(s)
 	assert.False(t, s.contains(netip.MustParseAddr("2001:db8::1")))
+}
+
+// applyEveryStatement is ApplyPolicy without the statements per neighbor: it
+// evaluates every statement of every policy.
+func applyEveryStatement(r *RoutingPolicy, id string, dir PolicyDirection, path *Path, options *PolicyOptions) *Path {
+	result, after := ROUTE_TYPE_NONE, path
+	for _, p := range r.getPolicy(id, dir) {
+		if result, after = p.Apply(r.logger, after, options); result != ROUTE_TYPE_NONE {
+			break
+		}
+	}
+	if result == ROUTE_TYPE_NONE {
+		result = r.getDefaultPolicy(id, dir)
+	}
+	if result != ROUTE_TYPE_ACCEPT {
+		return nil
+	}
+	return after
+}
+
+func randomNeighborPolicy(rng *rand.Rand, neighbors int) (oc.RoutingPolicy, []string) {
+	ds := oc.DefinedSets{}
+	for i := range neighbors {
+		ds.NeighborSets = append(ds.NeighborSets, createNeighborSet(fmt.Sprintf("n%d", i), fmt.Sprintf("10.0.%d.%d", i/250, i%250+1)))
+	}
+	ds.NeighborSets = append(ds.NeighborSets, oc.NeighborSet{NeighborSetName: "first", NeighborInfoList: []string{"10.0.0.0/30"}},
+		oc.NeighborSet{NeighborSetName: "pair", NeighborInfoList: []string{"10.0.0.2", "10.0.0.5"}})
+	ds.BgpDefinedSets.CommunitySets = []oc.CommunitySet{
+		{CommunitySetName: "c1", CommunityList: []string{"65000:1"}},
+		{CommunitySetName: "c2", CommunityList: []string{"65000:2"}},
+	}
+	sets := []string{"", "first", "pair"}
+	for i := range neighbors {
+		sets = append(sets, fmt.Sprintf("n%d", i))
+	}
+	dispositions := []oc.RouteDisposition{oc.ROUTE_DISPOSITION_NONE, oc.ROUTE_DISPOSITION_NONE, oc.ROUTE_DISPOSITION_ACCEPT_ROUTE, oc.ROUTE_DISPOSITION_REJECT_ROUTE}
+	var pds []oc.PolicyDefinition
+	var names []string
+	for p := range 1 + rng.IntN(4) {
+		pd := oc.PolicyDefinition{Name: fmt.Sprintf("p%d", p)}
+		for s := range 1 + rng.IntN(2*neighbors) {
+			st := oc.Statement{Name: fmt.Sprintf("p%d-s%d", p, s)}
+			// The neighbor condition first or after the community condition.
+			st.Conditions.MatchNeighborSet.NeighborSet = sets[rng.IntN(len(sets))]
+			if rng.IntN(3) == 0 {
+				st.Conditions.MatchNeighborSet.MatchSetOptions = oc.MATCH_SET_OPTIONS_RESTRICTED_TYPE_INVERT
+			}
+			if rng.IntN(2) == 0 {
+				st.Conditions.BgpConditions.MatchCommunitySet.CommunitySet = []string{"c1", "c2"}[rng.IntN(2)]
+			}
+			st.Actions.RouteDisposition = dispositions[rng.IntN(len(dispositions))]
+			if rng.IntN(2) == 0 {
+				st.Actions.BgpActions.SetCommunity = oc.SetCommunity{
+					Options:            "add",
+					SetCommunityMethod: oc.SetCommunityMethod{CommunitiesList: []string{fmt.Sprintf("65001:%d", s)}},
+				}
+			}
+			pd.Statements = append(pd.Statements, st)
+		}
+		pds = append(pds, pd)
+		names = append(names, pd.Name)
+	}
+	return createRoutingPolicy(ds, pds...), names
+}
+
+func neighborPolicyPath(communities []uint32) *Path {
+	peer := &PeerInfo{AS: 65001, Address: netip.MustParseAddr("10.0.9.1")}
+	attrs := []bgp.PathAttributeInterface{
+		bgp.NewPathAttributeOrigin(0),
+		bgp.NewPathAttributeAsPath([]bgp.AsPathParamInterface{bgp.NewAs4PathParam(2, []uint32{65001})}),
+		bgp.NewPathAttributeCommunities(communities),
+	}
+	nexthop, _ := bgp.NewPathAttributeNextHop(netip.MustParseAddr("10.0.9.1"))
+	attrs = append(attrs, nexthop)
+	nlri, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("10.10.0.0/24"))
+	return ProcessMessage(bgp.NewBGPUpdateMessage(nil, attrs, []bgp.PathNLRI{{NLRI: nlri}}), peer, time.Now(), false)[0]
+}
+
+func TestApplyPolicySkipsOnlyStatementsOfOtherNeighbors(t *testing.T) {
+	const neighbors = 6
+	paths := []*Path{
+		neighborPolicyPath(nil),
+		neighborPolicyPath([]uint32{65000<<16 | 1}),
+		neighborPolicyPath([]uint32{65000<<16 | 2}),
+		neighborPolicyPath([]uint32{65000<<16 | 1, 65000<<16 | 2}),
+	}
+	addresses := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.5", "10.0.0.6", "10.0.7.7", "::ffff:10.0.0.2"}
+	same := func(t *testing.T, r *RoutingPolicy, case_ string) {
+		for _, a := range addresses {
+			options := &PolicyOptions{Info: &PeerInfo{Address: netip.MustParseAddr(a)}}
+			for i, path := range paths {
+				for _, dir := range []PolicyDirection{POLICY_DIRECTION_IMPORT, POLICY_DIRECTION_EXPORT} {
+					want := applyEveryStatement(r, GLOBAL_RIB_NAME, dir, path, options)
+					got := r.ApplyPolicy(GLOBAL_RIB_NAME, dir, path, options)
+					require.Equal(t, want == nil, got == nil, "%s, neighbor %s, path %d, %s", case_, a, i, dir)
+					if want != nil {
+						require.Equal(t, want.GetCommunities(), got.GetCommunities(), "%s, neighbor %s, path %d, %s", case_, a, i, dir)
+					}
+				}
+			}
+		}
+	}
+	for seed := range uint64(300) {
+		rng := rand.New(rand.NewPCG(seed, 0))
+		pl, names := randomNeighborPolicy(rng, neighbors)
+		reversed := slices.Clone(names)
+		slices.Reverse(reversed)
+		def := []oc.DefaultPolicyType{oc.DEFAULT_POLICY_TYPE_ACCEPT_ROUTE, oc.DEFAULT_POLICY_TYPE_REJECT_ROUTE}[rng.IntN(2)]
+		r := NewRoutingPolicy(logger)
+		require.NoError(t, r.Reset(&pl, map[string]oc.ApplyPolicy{GLOBAL_RIB_NAME: {Config: oc.ApplyPolicyConfig{
+			ImportPolicyList: names, DefaultImportPolicy: def,
+			ExportPolicyList: reversed, DefaultExportPolicy: def,
+		}}}))
+		same(t, r, fmt.Sprintf("seed %d", seed))
+
+		// A neighbor set changed in place must not keep the statements of before.
+		ns, err := NewNeighborSet(oc.NeighborSet{NeighborSetName: "n1", NeighborInfoList: []string{"10.0.0.6"}})
+		require.NoError(t, err)
+		require.NoError(t, r.AddDefinedSet(ns, false))
+		same(t, r, fmt.Sprintf("seed %d after a change", seed))
+	}
+}
+
+func BenchmarkApplyExportPolicyPerNeighbor(b *testing.B) {
+	const neighbors = 1000
+	ds := oc.DefinedSets{}
+	var pds []oc.PolicyDefinition
+	var names []string
+	for i := range neighbors {
+		name := fmt.Sprintf("n%d", i)
+		ds.NeighborSets = append(ds.NeighborSets, createNeighborSet(name, fmt.Sprintf("10.0.%d.%d", i/250, i%250+1)))
+		st := oc.Statement{Name: "deny-" + name}
+		st.Conditions.MatchNeighborSet.NeighborSet = name
+		st.Actions.RouteDisposition = oc.ROUTE_DISPOSITION_REJECT_ROUTE
+		pds = append(pds, oc.PolicyDefinition{Name: "deny-" + name, Statements: []oc.Statement{st}})
+		names = append(names, "deny-"+name)
+	}
+	pl := createRoutingPolicy(ds, pds...)
+	r := NewRoutingPolicy(logger)
+	require.NoError(b, r.Reset(&pl, map[string]oc.ApplyPolicy{GLOBAL_RIB_NAME: {Config: oc.ApplyPolicyConfig{
+		ExportPolicyList: names, DefaultExportPolicy: oc.DEFAULT_POLICY_TYPE_ACCEPT_ROUTE,
+	}}}))
+	path := neighborPolicyPath(nil)
+	options := make([]*PolicyOptions, neighbors)
+	for i := range options {
+		options[i] = &PolicyOptions{Info: &PeerInfo{Address: netip.MustParseAddr(fmt.Sprintf("10.0.%d.%d", i/250, i%250+1))}}
+	}
+	for _, mode := range []string{"every statement", "per neighbor"} {
+		b.Run(mode, func(b *testing.B) {
+			for b.Loop() {
+				for _, o := range options {
+					if mode == "per neighbor" {
+						r.ApplyPolicy(GLOBAL_RIB_NAME, POLICY_DIRECTION_EXPORT, path, o)
+					} else {
+						applyEveryStatement(r, GLOBAL_RIB_NAME, POLICY_DIRECTION_EXPORT, path, o)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCommunityConditionMatchesAsWithFmt(t *testing.T) {
+	rng := rand.New(rand.NewPCG(7, 7))
+	exprs := []string{"65000:1", "^65000:.*$", "0:.*", "65535:65281", ".*:100$", "^1[0-9]*:2", "no-export"}
+	for range 3000 {
+		var list []string
+		for range 1 + rng.IntN(3) {
+			list = append(list, exprs[rng.IntN(len(exprs))])
+		}
+		set, err := NewCommunitySet(oc.CommunitySet{CommunitySetName: "c", CommunityList: list})
+		require.NoError(t, err)
+		var cs []uint32
+		for range rng.IntN(4) {
+			cs = append(cs, []uint32{65000<<16 | 1, 65535<<16 | 65281, 100, 12<<16 | 2, rng.Uint32()}[rng.IntN(5)])
+		}
+		path := neighborPolicyPath(cs)
+		for _, option := range []MatchOption{MATCH_OPTION_ANY, MATCH_OPTION_ALL, MATCH_OPTION_INVERT} {
+			c := &CommunityCondition{set: set, option: option}
+			want := false
+			for _, x := range set.list {
+				want = false
+				for _, y := range cs {
+					if x.MatchString(fmt.Sprintf("%d:%d", y>>16, y&0x0000ffff)) {
+						want = true
+						break
+					}
+				}
+				if option == MATCH_OPTION_ALL && !want || option != MATCH_OPTION_ALL && want {
+					break
+				}
+			}
+			if option == MATCH_OPTION_INVERT {
+				want = !want
+			}
+			require.Equal(t, want, c.Evaluate(path, nil), "%v %v %v", list, cs, option)
+		}
+	}
+}
+
+func BenchmarkCommunityAndPathAttrs(b *testing.B) {
+	set, _ := NewCommunitySet(oc.CommunitySet{CommunitySetName: "c", CommunityList: []string{"65535:65281", "0:64500"}})
+	c := &CommunityCondition{set: set, option: MATCH_OPTION_ANY}
+	path := neighborPolicyPath([]uint32{65000<<16 | 1, 65000<<16 | 2, 3356<<16 | 100})
+	q := path.Clone(false)
+	q.PrependAsn(64500, 1, false)
+	q.SetNexthop(netip.MustParseAddr("10.9.9.9"))
+	b.Run("community", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			c.Evaluate(path, nil)
+		}
+	})
+	b.Run("attrs", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			q.GetPathAttrs()
+		}
+	})
 }

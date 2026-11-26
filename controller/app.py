@@ -17,6 +17,7 @@ import signal
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from collections import deque
 from contextlib import asynccontextmanager
@@ -35,6 +36,12 @@ ROUTER_NAME = os.environ["ROUTER_NAME"]
 ASN = int(os.environ["ASN"])
 ROUTER_ID = os.environ["ROUTER_ID"]
 NEIGHBORS = json.loads(os.environ["NEIGHBORS_JSON"])
+# A feeder of a router replay runs obgp-replay instead of gobgpd, with one
+# neighbor: the router under test, which this names.
+FEED = os.environ.get("LAB_FEED") or ""
+FEED_API = "http://127.0.0.1:8081"
+if FEED:
+    NEIGHBORS = [n for n in NEIGHBORS if n["name"] == FEED]
 # Set by the chart from the experiment; a missing one fails at the start.
 SEED = os.environ["LAB_SEED"]
 TIMERS = {k: int(os.environ[k.upper()]) for k in ("hold_time", "keepalive", "connect_retry")}
@@ -63,6 +70,7 @@ GOBGP_METRICS = "http://127.0.0.1:6060/metrics"  # gobgpd's default
 HOPS_MAX = 256  # prefixes up to which a sample records the next hop of each, for loops on the way
 # On larger tables the lab names the prefixes to follow, the same on every router, see /hops/watch.
 WATCHED: list[str] | None = None
+READ_PATHS = True  # the samples read paths: next hops and path lengths. Off, the router's CPU is its own
 WATCH_VERSION = 0
 GOBGP_CONFIG = "/etc/gobgp/gobgp.conf"
 IPV4 = common_pb2.Family(afi=common_pb2.Family.AFI_IP, safi=common_pb2.Family.SAFI_UNICAST)
@@ -140,6 +148,11 @@ class Daemon:
         keep its routes until it sent them all again."""
         with self.lock:
             if self.process and self.process.poll() is None:
+                return
+            if FEED:
+                self.process = subprocess.Popen(["obgp-replay", "-peer", self.addresses[FEED], "-as", str(ASN), "-id", ROUTER_ID,
+                                                 "-address", POD_IP, "-hold", str(TIMERS["hold_time"])])
+                self.started = time.time()
                 return
             self._write()
             flags = ["-r"] if graceful else []
@@ -528,35 +541,55 @@ def heap_watch(rss_mb: float | None) -> None:
     threading.Thread(target=take, daemon=True).start()
 
 
-CPU: dict = {}  # the CPU profile asked for: seconds, taken (wall clock), profile (bytes) or error
+CPU_CHUNK_S = 5.0  # seconds of one CPU profile: the chunks give the profile its course in time
+CPU: dict = {}  # the CPU profiles asked for: seconds at most, chunks of (start, seconds, bytes), allocations at start and end, done, error
+CPU_STOP = threading.Event()
+
+
+def pprof(path: str, timeout: float) -> bytes:
+    with urllib.request.urlopen(f"http://localhost:6060/debug/pprof/{path}", timeout=timeout) as r:
+        return r.read()
 
 
 def cpu_profile(seconds: float) -> None:
-    """Takes one CPU profile of gobgpd over the next seconds, in a thread of
-    its own, so that it shows where a busy router spends its time. One per
-    run: a second request while one is taken or kept changes nothing."""
+    """Takes CPU profiles of gobgpd in chunks of CPU_CHUNK_S one after the
+    other, for at most the seconds given or until the lab stops them, in a
+    thread of its own: where a busy router spends its time, and when. The
+    allocations at the start and at the end give what it allocated meanwhile.
+    One series per run: a second request while one is taken or kept changes nothing."""
     if CPU:
         return
-    CPU["seconds"] = seconds
+    CPU.update(seconds=seconds, chunks=[], done=False)
+    CPU_STOP.clear()
 
     def take() -> None:
         try:
-            with urllib.request.urlopen(f"http://localhost:6060/debug/pprof/profile?seconds={seconds:g}", timeout=seconds + 60) as r:
-                CPU.update(taken=time.time(), profile=r.read())
+            CPU["allocs_start"] = pprof("allocs", 60)
+            used = 0.0
+            while used < seconds and not CPU_STOP.is_set():
+                chunk = min(CPU_CHUNK_S, seconds - used)
+                started = time.time()
+                CPU["chunks"].append((started, chunk, pprof(f"profile?seconds={chunk:g}", chunk + 60)))
+                used += chunk
+            CPU["allocs_end"] = pprof("allocs", 60)
         except OSError as e:
             CPU["error"] = str(e)[:200]
-    threading.Thread(target=take, daemon=True).start()
+        finally:
+            CPU["done"] = True
+    CPU["thread"] = threading.Thread(target=take, daemon=True)
+    CPU["thread"].start()
 
 
 def memory() -> dict:
     """From the Prometheus metrics of gobgpd: the paths OBGP sets aside, the
     prefixes it knows and those blocked, a valid path set aside and no route, the paths
     received from all peers (the Adj-RIB-In), the resident memory, the heap
-    in use, its objects and the CPU seconds so far. A daemon without OBGP's
+    in use, its objects, the CPU seconds so far and the MiB it allocated so far. A daemon without OBGP's
     counts gives None for them."""
     with urllib.request.urlopen(GOBGP_METRICS, timeout=30) as response:
         text = response.read().decode()
-    out = {"suppressed": None, "known": None, "blocked": None, "adj_in": 0, "rss_mb": None, "heap_mb": None, "heap_objects": None, "cpu_s": None}
+    out = {"suppressed": None, "known": None, "blocked": None, "adj_in": 0, "rss_mb": None, "heap_mb": None, "heap_objects": None, "cpu_s": None,
+           "alloc_mb": None}
     for line in text.splitlines():
         name, _, value = line.rpartition(" ")
         if name.startswith("bgp_obgp_suppressed_paths{"):
@@ -575,6 +608,8 @@ def memory() -> dict:
             out["heap_objects"] = int(float(value))
         elif name == "process_cpu_seconds_total":
             out["cpu_s"] = round(float(value), 2)
+        elif name == "go_memstats_alloc_bytes_total":
+            out["alloc_mb"] = round(float(value) / 2**20, 1)
     return out
 
 
@@ -585,7 +620,8 @@ def read_memory(cache: dict) -> None:
     try:
         found = memory()
         heap_watch(found.get("rss_mb"))
-        cache["memory"] = found
+        # gobgpd reads its CPU time as it starts to answer: the reading stands for its start, not its end.
+        cache.update(memory=found, memory_read=started)
     except OSError:
         pass
     finally:  # whatever ends the read, the next one may come
@@ -747,12 +783,13 @@ def sample(cache: dict) -> dict:
     cache.setdefault("lengths", dict.fromkeys(["path_len_min", "path_len_avg", "path_len_max"], 0))
     every = max(1.0, 5 * cache.get("lengths_took", 0))
     due = now - cache["seen_at"] >= LENGTHS_STILL_S if large else now - cache.get("lengths_at", -every) >= every
-    if cache.get("key") != key and not cache.get("lengths_running") and due:
+    if READ_PATHS and cache.get("key") != key and not cache.get("lengths_running") and due:
         cache.update(lengths_running=True, lengths_at=now)
         threading.Thread(target=lengths, args=(cache, key), daemon=True).start()
     # The metrics of gobgpd apart as well, when the table changed or once a second, and at most every five
     # times what reading them took: read in line, a slow scrape held up the sample, as the path lengths did.
-    cache.setdefault("memory", dict.fromkeys(["suppressed", "known", "blocked", "adj_in", "rss_mb", "heap_mb", "heap_objects", "cpu_s"]))
+    cache.setdefault("memory", dict.fromkeys(["suppressed", "known", "blocked", "adj_in", "rss_mb", "heap_mb", "heap_objects", "cpu_s",
+                                              "alloc_mb"]))
     often = max(1.0, 5 * cache.get("memory_took", 0))
     if not cache.get("memory_running") and (cache.get("memory_key") != key or now - cache.get("memory_at", -1.0) >= 1) \
             and now - cache.get("memory_at", -often) >= often:
@@ -763,13 +800,16 @@ def sample(cache: dict) -> dict:
     # With NS-BGP a route sent to a neighbor changes also when the router
     # sends without receiving, as when a session comes up: read then too, or
     # the analysis would see a black hole until the next read, up to 5 s on.
-    changed_hops = hops_changed(cache, table, (*key, tx) if INGRESS else key)
+    changed_hops = hops_changed(cache, table, (*key, tx) if INGRESS else key) if READ_PATHS else ""
     return {
         "destinations": table.num_destination,
         "paths": table.num_path,
         "hops": changed_hops,
-        **(cache["lengths"] if not large or cache.get("key") == key else dict.fromkeys(cache["lengths"])),
+        # Unknown, not 0, while the table is large and moves or the run reads no paths.
+        **(cache["lengths"] if READ_PATHS and (not large or cache.get("key") == key) else dict.fromkeys(cache["lengths"])),
         **cache["memory"],
+        # How old the metrics are: a busy gobgpd answers late, so its CPU counters stand for an earlier time.
+        "metrics_age_s": round(now - cache["memory_read"], 2) if "memory_read" in cache else None,
         "updates_rx": rx,
         "updates_tx": tx,
         # Updates received per neighbor, for the replay: "a=3 b=0"
@@ -1097,8 +1137,69 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title=f"Router controller ({ROUTER_NAME})", lifespan=lifespan)
 
 
+RECORD_FILE = "/var/lib/lab/updates.mrt"  # every UPDATE gobgpd receives, once the lab asks for it
+
+
+@app.post("/record", summary="gobgpd records every UPDATE it receives from now on, as MRT")
+def record_start():
+    request = gobgp_pb2.EnableMrtRequest(dump_type=gobgp_pb2.EnableMrtRequest.DUMP_TYPE_UPDATES, filename=RECORD_FILE)
+    stub.EnableMrt(request, timeout=10)
+    return {"file": RECORD_FILE}
+
+
+@app.get("/record", summary="The updates recorded so far, gzipped MRT; a record still being written is cut off")
+def record():
+    try:
+        with open(RECORD_FILE, "rb") as f:
+            data = f.read()
+    except FileNotFoundError:
+        raise HTTPException(404, "nothing recorded: POST /record first") from None
+    return Response(gzip.compress(data, compresslevel=5), media_type="application/octet-stream")
+
+
+def feed(method: str, path: str, body: bytes | None = None, timeout: float = 10) -> dict:
+    """A request to the obgp-replay of a feeder."""
+    request = urllib.request.Request(f"{FEED_API}{path}", data=body, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise HTTPException(e.code, e.read().decode()[:300]) from None
+    except OSError as e:
+        raise HTTPException(503, f"obgp-replay: {e}") from None
+
+
+@app.post("/feed/load", summary="A feeder's UPDATE messages to replay, BGP4MP records of MRT")
+async def feed_load(request: Request):
+    return feed("POST", "/load", await request.body(), timeout=120)
+
+
+class FeedStart(BaseModel):
+    at: float = Field(description="When to send the first message, by the wall clock of the router")
+    schedule: Literal["flood", "paced"] = "flood"
+    base: float = Field(0, description="The recorded second at stands for, the first any neighbor sent in, the same for every feeder")
+
+
+@app.post("/feed/start", summary="Starts a feeder: flood sends as fast as the router takes them, paced at the recorded seconds")
+def feed_start(request: FeedStart):
+    return feed("POST", "/start", json.dumps(request.model_dump()).encode())
+
+
+@app.get("/feed/status", summary="What a feeder sent, and what the router sent it with its digest")
+def feed_status():
+    return feed("GET", "/status")
+
+
 @app.get("/ready", summary="200 once all BGP sessions are established")
 def ready(response: Response):
+    if FEED:
+        try:
+            up = feed("GET", "/status", timeout=2)["established"]
+        except HTTPException:
+            up = False
+        if not up:
+            response.status_code = 503
+        return {"established": int(up), "neighbors": 1}
     try:
         established = sum(
             p.state.session_state == gobgp_pb2.PeerState.SESSION_STATE_ESTABLISHED for p in peers()
@@ -1151,6 +1252,7 @@ def sessions():
 class Recording(BaseModel):
     t0: float = Field(description="Wall-clock time of the first sample, in seconds since the epoch")
     interval: float = Field(ge=0.01, description="Seconds between samples")
+    paths: bool = Field(True, description="Read paths for next hops and path lengths; false leaves only the counters")
 
 
 @app.get("/time", summary="Wall clock of the pod, to align the samples of all routers")
@@ -1160,8 +1262,9 @@ def clock():
 
 @app.post("/samples/start", summary="Start sampling at t0 + k * interval")
 def samples_start(recording: Recording):
-    global WATCHED, WATCH_VERSION
+    global WATCHED, WATCH_VERSION, READ_PATHS
     WATCHED, WATCH_VERSION = None, WATCH_VERSION + 1  # a new run follows every prefix until the lab names a sample
+    READ_PATHS = recording.paths
     recorder.start(recording.t0, recording.interval)
     return {"now": time.time()}
 
@@ -1408,17 +1511,29 @@ def heap():
     return {"rss_mb": HEAP["rss_mb"], "taken": HEAP["taken"], "profile": base64.b64encode(HEAP["profile"]).decode()}
 
 
-@app.post("/cpu", summary="Starts one CPU profile of gobgpd over the seconds given")
+@app.post("/cpu", summary="Starts CPU profiles of gobgpd in chunks for at most the seconds given")
 def cpu_start(body: dict):
     cpu_profile(float(body.get("seconds", 30)))
     return {"seconds": CPU.get("seconds")}
 
 
-@app.get("/cpu", summary="The CPU profile of gobgpd once taken, base64, else its state")
+@app.post("/cpu/stop", summary="Ends the CPU profiles after the current chunk and waits for it")
+def cpu_stop():
+    CPU_STOP.set()
+    if thread := CPU.get("thread"):
+        thread.join(CPU_CHUNK_S + 70)
+    return {"done": CPU.get("done", False)}
+
+
+@app.get("/cpu", summary="The CPU profiles of gobgpd taken so far, each with its start (wall clock) and seconds, and the allocations at start and end, base64")
 def cpu():
-    if not CPU.get("profile"):
-        return {k: v for k, v in CPU.items() if k != "profile"}
-    return {"seconds": CPU["seconds"], "taken": CPU["taken"], "profile": base64.b64encode(CPU["profile"]).decode()}
+    out = {k: v for k, v in CPU.items() if k in ("seconds", "done", "error")}
+    if "chunks" in CPU:
+        out["chunks"] = [{"started": t, "seconds": d, "profile": base64.b64encode(b).decode()} for t, d, b in CPU["chunks"]]
+    for k in ("allocs_start", "allocs_end"):
+        if k in CPU:
+            out[k] = base64.b64encode(CPU[k]).decode()
+    return out
 
 
 @app.get("/routes", summary="The best route to every prefix: the neighbor it comes from, its AS path and next hop, with NS-BGP also per eBGP neighbor the route sent to it")

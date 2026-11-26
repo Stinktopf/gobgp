@@ -23,7 +23,7 @@
         <span data-status class="muted text-xs"></span>
       </div>
       <div data-stats class="muted absolute top-3 right-4 z-10 text-right font-mono text-xs tabular-nums"><span data-tip="Time, updates/s, routers with every prefix" data-tip-align="end"></span></div>
-      <div data-graph class="relative h-[clamp(16rem,38vh,24rem)] w-full {{ 'md:h-[clamp(18rem,50vh,34rem)]' if n <= 2 else 'md:h-[clamp(16rem,40vh,26rem)]' }}"></div>
+      <div data-graph class="relative mt-9 h-[clamp(16rem,38vh,24rem)] w-full {{ 'md:h-[clamp(18rem,50vh,34rem)]' if n <= 2 else 'md:h-[clamp(16rem,40vh,26rem)]' }}"></div>
       <div data-router hidden class="absolute bottom-3 left-4 z-10 w-72 rounded-lg border border-slate-200 bg-white/95 p-2.5 text-xs shadow-sm dark:border-white/10 dark:bg-slate-900/95"></div>
       <p data-missing hidden class="muted absolute inset-0 grid place-content-center text-sm">This run is not done.</p>
       <p data-loading hidden class="loading absolute inset-0 z-20 py-0" role="status"><span class="spinner"></span>Loading the run…</p>
@@ -35,7 +35,7 @@
     {# The timeline: one lane for all variants by steps, one per variant by
        time, each with its actions above and its phases below; then the
        scrubber. Lanes are inset by the radius of the thumb, which ends at
-       the centre. #}
+       the center. #}
     <div data-lanes class="space-y-1"></div>
     <input data-scrub type="range" min="0" max="0" value="0" aria-label="Time" class="block w-full">
     {# The controls with the clock; what happened last on a line of its own. #}
@@ -74,8 +74,10 @@
       </span>
     </span>
     <span class="flex items-center gap-1.5" data-size-only hidden><span class="size-2 rounded-[2px] border" style="border-color: var(--graph-node)"></span><span class="size-3 rounded-[3px] border" style="border-color: var(--graph-node)"></span>size, admitted paths</span>
-    <span class="flex items-center gap-1.5"><span class="w-5 border-t-2 border-dashed" style="border-color: var(--activity-high)"></span>updates on the link, in the sender's colour among few routers</span>
+    <span class="flex items-center gap-1.5"><span class="w-5 border-t-2 border-dashed" style="border-color: var(--activity-high)"></span>updates on the link, in the sender's color among few routers</span>
     <span class="flex items-center gap-1.5"><span class="relative w-5 border-t-2 border-dashed border-slate-400"><span class="absolute -top-2.5 left-1.5 font-bold" style="color: var(--graph-problem)">×</span></span>down</span>
     <span class="flex items-center gap-1.5"><span class="w-5 border-t-2 border-dotted border-slate-400"></span>degraded</span>
   </div>
+  {# What the marks of this topology mean, as the replay draws it: preferences, relations. #}
+  <div data-legend class="-mt-2"></div>
 </div>

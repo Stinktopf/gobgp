@@ -62,6 +62,8 @@ class Jobs:
     def enqueue(self, name: str) -> None:
         with self.lock:
             dataset = Dataset.find(name)
+            if problem := dataset.kept():
+                raise ValueError(problem)
             dataset.write_status({**dataset.status, "state": "queued"})
             if name not in (queue := self.queue()):
                 self._save(queue + [name])

@@ -34,12 +34,11 @@ Paths are ordered by AS path length, ties broken by ASN.
 - **Re-admission:** once no valid path is left, set-aside paths come back as their neighbors answer a route refresh.
 - **Per neighbor (optional):** a table per eBGP neighbor, each exporting the worst path that neighbor may get.
 - **iBGP:** paths from the own AS skip the import filter but count for the threshold.
-- **Forwarding:** the FIB gets GoBGP's usual best path, loop-free once routes are at rest. With a table per
-  neighbor lab and simulator check forwarding per ingress, as with NS-BGP: gobgpd installs no FIB per table.
+- **Forwarding:** the FIB gets GoBGP's usual best path, loop-free once routes are at rest.
 
 What it costs: [Limitations](docs/router.md#limitations).
 
-The modes since the paper have no published lab results yet.
+The modes added since the paper have no archived lab results yet.
 
 ## Router
 

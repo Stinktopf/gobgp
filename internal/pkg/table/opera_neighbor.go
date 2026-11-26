@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
+	"unique"
 
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
@@ -80,13 +82,50 @@ func (v *operaView) same(w *operaView) bool {
 		samePaths(v.dest.operaSuppressed(), w.dest.operaSuppressed()) && samePaths(v.dest.operaPruned(), w.dest.operaPruned())
 }
 
+// operaEntry is the table of one neighbor in a destination. Its key is
+// unique: every destination holds the same string for a neighbor.
+type operaEntry struct {
+	key  unique.Handle[string]
+	view *operaView
+}
+
+func (dest *Destination) viewIndex(key string) (int, bool) {
+	return slices.BinarySearchFunc(dest.views, key, func(e operaEntry, k string) int { return strings.Compare(e.key.Value(), k) })
+}
+
+// view is the table of neighbor key, nil for none.
+func (dest *Destination) view(key string) *operaView {
+	if i, ok := dest.viewIndex(key); ok {
+		return dest.views[i].view
+	}
+	return nil
+}
+
+// setView makes v the table of neighbor key.
+func (dest *Destination) setView(key string, v *operaView) {
+	i, ok := dest.viewIndex(key)
+	if ok {
+		dest.views[i].view = v
+		return
+	}
+	dest.views = slices.Insert(dest.views, i, operaEntry{unique.Make(key), v})
+}
+
+// addViews makes v the table of the neighbors keys, which have none.
+func (dest *Destination) addViews(keys []string, v *operaView) {
+	for _, k := range keys {
+		dest.views = append(dest.views, operaEntry{unique.Make(k), v})
+	}
+	slices.SortFunc(dest.views, func(a, b operaEntry) int { return strings.Compare(a.key.Value(), b.key.Value()) })
+}
+
 // operaViewList are the distinct tables per neighbor, in the order of their
 // first neighbor.
 func (dest *Destination) operaViewList() []*operaView {
 	var out []*operaView
-	for _, k := range slices.Sorted(maps.Keys(dest.views)) {
-		if v := dest.views[k]; !slices.Contains(out, v) {
-			out = append(out, v)
+	for _, e := range dest.views {
+		if !slices.Contains(out, e.view) {
+			out = append(out, e.view)
 		}
 	}
 	return out
@@ -124,7 +163,7 @@ func (dest *Destination) OperaCandidates(key string) []*Path {
 			out = append(out, p)
 		}
 	}
-	if v := dest.views[key]; v != nil {
+	if v := dest.view(key); v != nil {
 		for _, p := range slices.Concat(v.dest.knownPathList, v.dest.operaSuppressed(), v.dest.operaPruned()) {
 			if o := operaOriginal(p); isOperaValid(o) && !slices.Contains(out, o) {
 				out = append(out, o)
@@ -140,18 +179,15 @@ func (dest *Destination) OperaCandidates(key string) []*Path {
 // export policy now. An update is fed even if its source's path was in
 // before, a sync only where the policy's answer changed.
 func (dest *Destination) OperaFeed(logger *slog.Logger, key string, p *Path, in, update bool) {
-	if dest.views == nil {
-		dest.views = map[string]*operaView{}
-	}
-	v := dest.views[key]
+	v := dest.view(key)
 	switch {
 	case v == nil:
 		v = newOperaView(dest.nlri, 1)
-		dest.views[key] = v
+		dest.setView(key, v)
 	case v.users > 1:
 		v.users--
 		v = v.copy()
-		dest.views[key] = v
+		dest.setView(key, v)
 	}
 	v.feed(logger, p, in, update)
 }
@@ -159,36 +195,52 @@ func (dest *Destination) OperaFeed(logger *slog.Logger, key string, p *Path, in,
 // OperaFeedAll feeds path p to the tables of the neighbors in allows, each
 // told whether its export policy lets p in, as OperaFeed for each.
 func (dest *Destination) OperaFeedAll(logger *slog.Logger, p *Path, allows map[string]bool, update bool) {
-	if dest.views == nil {
-		dest.views = map[string]*operaView{}
-	}
 	keys := slices.Sorted(maps.Keys(allows))
+	in := make([]bool, len(keys))
+	for i, k := range keys {
+		in[i] = allows[k]
+	}
+	dest.OperaFeedSorted(logger, p, keys, in, update)
+}
+
+// OperaFeedSorted is OperaFeedAll for the neighbors keys, sorted and
+// distinct, each told by allows at the same index.
+func (dest *Destination) OperaFeedSorted(logger *slog.Logger, p *Path, keys []string, allows []bool, update bool) {
+	// the table of each key, in one walk through both sorted lists
+	of := make([]*operaView, len(keys))
 	var fresh []string
-	for _, k := range keys {
-		if dest.views[k] == nil {
+	j := 0
+	for i, k := range keys {
+		for j < len(dest.views) && dest.views[j].key.Value() < k {
+			j++
+		}
+		if j < len(dest.views) && dest.views[j].key.Value() == k {
+			of[i] = dest.views[j].view
+		} else {
 			fresh = append(fresh, k)
 		}
 	}
 	if len(fresh) > 0 {
 		v := newOperaView(dest.nlri, len(fresh))
-		for _, k := range fresh {
-			dest.views[k] = v
+		dest.addViews(fresh, v)
+		for i := range of {
+			if of[i] == nil {
+				of[i] = v
+			}
 		}
 	}
-	// the neighbors of each table, split by the answer of their policy
-	type parts struct{ in, out []string }
-	split := map[*operaView]*parts{}
+	// the neighbors of each table, counted by the answer of their policy
+	count := map[*operaView]*[2]int{} // out, in
 	var order []*operaView
-	for _, k := range keys {
-		v := dest.views[k]
-		if split[v] == nil {
-			split[v] = &parts{}
+	for i, v := range of {
+		if count[v] == nil {
+			count[v] = &[2]int{}
 			order = append(order, v)
 		}
-		if allows[k] {
-			split[v].in = append(split[v].in, k)
+		if allows[i] {
+			count[v][1]++
 		} else {
-			split[v].out = append(split[v].out, k)
+			count[v][0]++
 		}
 	}
 	type target struct {
@@ -197,28 +249,31 @@ func (dest *Destination) OperaFeedAll(logger *slog.Logger, p *Path, allows map[s
 	}
 	var targets []target
 	for _, v := range order {
-		g := split[v]
+		c := count[v]
 		// v stays with the first part if every neighbor sharing it is fed,
 		// the other parts get a copy, made before v changes
-		keep := len(g.in)+len(g.out) == v.users
-		for _, part := range []struct {
-			keys []string
-			in   bool
-		}{{g.in, true}, {g.out, false}} {
-			if len(part.keys) == 0 {
+		keep := c[0]+c[1] == v.users
+		for _, in := range []bool{true, false} {
+			n := c[0]
+			if in {
+				n = c[1]
+			}
+			if n == 0 {
 				continue
 			}
 			w := v
 			if !keep {
 				w = v.copy()
-				w.users = len(part.keys)
-				v.users -= len(part.keys)
-				for _, k := range part.keys {
-					dest.views[k] = w
+				w.users = n
+				v.users -= n
+				for i, k := range keys {
+					if of[i] == v && allows[i] == in {
+						dest.setView(k, w)
+					}
 				}
 			}
 			keep = false
-			targets = append(targets, target{w, part.in})
+			targets = append(targets, target{w, in})
 		}
 	}
 	for _, t := range targets {
@@ -238,9 +293,9 @@ func (dest *Destination) operaMerge(v *operaView) {
 			continue
 		}
 		if w.same(v) {
-			for k, u := range dest.views {
-				if u == v {
-					dest.views[k] = w
+			for i := range dest.views {
+				if dest.views[i].view == v {
+					dest.views[i].view = w
 				}
 			}
 			w.users += v.users
@@ -252,14 +307,14 @@ func (dest *Destination) operaMerge(v *operaView) {
 // OperaShare lets the table of neighbor key be shared with another one in
 // the same state, after it was built anew.
 func (dest *Destination) OperaShare(key string) {
-	v := dest.views[key]
+	v := dest.view(key)
 	if v == nil || v.users > 1 {
 		return
 	}
 	for _, w := range dest.operaViewList() {
 		if w != v && w.same(v) {
 			w.users++
-			dest.views[key] = w
+			dest.setView(key, w)
 			return
 		}
 	}
@@ -290,20 +345,39 @@ func (v *operaView) feed(logger *slog.Logger, p *Path, in, update bool) {
 // OperaExport is the path the router sends neighbor key: the worst admitted
 // of its table, its best with OBGP off, nil for none.
 func (dest *Destination) OperaExport(key string) *Path {
-	v := dest.views[key]
-	if v == nil {
-		return nil
+	if v := dest.view(key); v != nil {
+		return v.export()
 	}
+	return nil
+}
+
+func (v *operaView) export() *Path {
 	if !IsOperaEnabled() {
 		return operaOriginal(v.dest.GetBestPath(GLOBAL_RIB_NAME, 0))
 	}
 	return operaOriginal(getOperaWorstPath(GLOBAL_RIB_NAME, 0, v.dest.knownPathList))
 }
 
+// OperaExports are OperaExport for the neighbors keys, sorted, in one walk
+// through the tables.
+func (dest *Destination) OperaExports(keys []string) []*Path {
+	out := make([]*Path, len(keys))
+	j := 0
+	for i, k := range keys {
+		for j < len(dest.views) && dest.views[j].key.Value() < k {
+			j++
+		}
+		if j < len(dest.views) && dest.views[j].key.Value() == k {
+			out[i] = dest.views[j].view.export()
+		}
+	}
+	return out
+}
+
 // OperaViewState is what the table towards neighbor key holds, as AS paths:
 // the admitted and the set-aside ones, for checks.
 func (dest *Destination) OperaViewState(key string) (admitted, aside [][]uint32) {
-	v := dest.views[key]
+	v := dest.view(key)
 	if v == nil {
 		return nil, nil
 	}
@@ -318,9 +392,9 @@ func (dest *Destination) OperaViewState(key string) (admitted, aside [][]uint32)
 
 // OperaDropView forgets the table of a neighbor that is gone.
 func (dest *Destination) OperaDropView(key string) {
-	if v := dest.views[key]; v != nil {
-		v.users--
-		delete(dest.views, key)
+	if i, ok := dest.viewIndex(key); ok {
+		dest.views[i].view.users--
+		dest.views = slices.Delete(dest.views, i, i+1)
 	}
 }
 
@@ -370,8 +444,8 @@ func (dest *Destination) OperaForwarding() *Path {
 
 // operaViewsEmpty tells whether no table per neighbor holds a path.
 func (dest *Destination) operaViewsEmpty() bool {
-	for _, v := range dest.views {
-		if v.dest.operaHolds() {
+	for _, e := range dest.views {
+		if e.view.dest.operaHolds() {
 			return false
 		}
 	}

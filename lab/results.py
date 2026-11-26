@@ -1,7 +1,9 @@
 """Results of experiments, called datasets in the code.
 
-results/private/<result>/ holds every result; representative ones are
-moved to results/public/, which is tracked in git. A result contains
+results/private/<result>/ holds every result the lab makes. Each is in one
+of three states: private, which the lab may still change, archived, frozen
+for Zenodo with a manifest (see archive.py), or legacy, the paper's result
+in results/public/, tracked in git. A result contains
 
     dataset.json                                   experiment, commits, host
     status.json                                    progress while it runs
@@ -15,6 +17,7 @@ moved to results/public/, which is tracked in git. A result contains
 import csv
 import gzip
 import json
+import lzma
 import os
 import random
 import shutil
@@ -32,15 +35,18 @@ csv.field_size_limit(2**31 - 1)
 
 STOP_FILE = "stop"  # in the folder of a result: a person stopped it; any other end of the runner interrupts it
 RESULTS = ROOT / "results"
-PUBLIC = RESULTS / "public"
+LEGACY = RESULTS / "public"  # the paper's result, the paper links this folder
 PRIVATE = RESULTS / "private"
+INDEX = RESULTS / "archived.json"  # the archived results on Zenodo, which the lab offers to fetch
+MANIFEST = "manifest.json"  # an archived result's files and their digests
+ZENODO = "zenodo.json"  # where an archived result is on Zenodo, beside it and outside its manifest
 
 
 BOOT_WAIT_S = 15 * 60  # results wait this long after the host booted, see web/jobs.py
 SAMPLE_FIELDS = [
     "t", "router", "destinations", "paths", "path_len_min", "path_len_avg", "path_len_max",
     "updates_rx", "updates_tx", "peers_rx", "suppressed", "known", "blocked", "adj_in", "rss_mb", "heap_mb", "heap_objects", "cpu_s",
-    "hops", "hops_ms", "flaps", "sessions_down", "flaps_by", "down_by",
+    "alloc_mb", "metrics_age_s", "hops", "hops_ms", "flaps", "sessions_down", "flaps_by", "down_by",
 ]
 TEXT_FIELDS = ("router", "peers_rx", "hops", "flaps_by", "down_by")
 COUNTERS = ("destinations", "paths", "updates_rx")  # what changes while routes change
@@ -98,11 +104,11 @@ def folder_size(path) -> int:
     return total
 
 
-def storage(used: dict[bool, int]) -> dict:
-    """Bytes of the public (True) and private (False) results, and the space left on their disk."""
+def storage(used: dict[str, int]) -> dict:
+    """Bytes of the results in each state, and the space left on their disk."""
     PRIVATE.mkdir(parents=True, exist_ok=True)
     disk = shutil.disk_usage(PRIVATE)
-    return {"public": used[True], "private": used[False], "free": disk.free, "total": disk.total}
+    return {**used, "free": disk.free, "total": disk.total}
 
 
 def copy_files(path: Path, experiment: Experiment) -> None:
@@ -124,8 +130,30 @@ class Dataset:
         return self.path.name
 
     @property
-    def public(self) -> bool:
-        return self.path.parent == PUBLIC
+    def state(self) -> str:
+        """private, archived or legacy, see the top of this file."""
+        if self.path.parent == LEGACY:
+            return "legacy"
+        return "archived" if (self.path / MANIFEST).exists() else "private"
+
+    @property
+    def zenodo(self) -> dict:
+        """Where an archived result is on Zenodo: id, page, host, archive and, once published, DOI."""
+        try:
+            return json.loads((self.path / ZENODO).read_text())
+        except (OSError, ValueError):
+            return {}
+
+    def set_zenodo(self, record: dict) -> None:
+        write_atomic(self.path / ZENODO, json.dumps(record, indent=2))
+
+    def kept(self) -> str | None:
+        """Why the result stays as it is, if it does."""
+        if self.state == "legacy":
+            return "It is the paper's result and stays as it is."
+        if self.state == "archived":
+            return "It is on Zenodo and stays as it is." if self.zenodo else "It is archived. Unarchive it first."
+        return None
 
     @property
     def stopping(self) -> bool:
@@ -166,7 +194,7 @@ class Dataset:
         """The name of a new result: the experiment and the minute, with -2, -3, … if taken."""
         base = f"{experiment.name}-{datetime.now():%Y%m%d-%H%M}"
         name, n = base, 1
-        while Dataset.find(name) or (PRIVATE / name).exists() or (PUBLIC / name).exists():
+        while Dataset.find(name) or (PRIVATE / name).exists() or (LEGACY / name).exists():
             n += 1
             name = f"{base}-{n}"
         return name
@@ -195,7 +223,7 @@ class Dataset:
     @classmethod
     def _each(cls):
         """Every dataset folder, with whether this version of the lab reads it."""
-        for base in (PUBLIC, PRIVATE):
+        for base in (LEGACY, PRIVATE):
             for p in sorted(base.glob("*/dataset.json")):
                 dataset = cls(p.parent)
                 try:
@@ -218,13 +246,13 @@ class Dataset:
     def find(cls, name: str) -> "Dataset | None":
         if not name or name.startswith(".") or Path(name).name != name:  # a folder of the results, never a path out of them
             return None
-        for base in (PRIVATE, PUBLIC):
+        for base in (PRIVATE, LEGACY):
             if (base / name / "dataset.json").exists():
                 return cls(base / name)
         return None
 
     def busy(self) -> str | None:
-        """Why the dataset cannot be moved or deleted now, if it cannot."""
+        """Why the dataset cannot be deleted now, if it cannot."""
         if cluster.holder() == self.name:
             return "It is running. Stop it first."
         if self.name in queued():
@@ -232,29 +260,17 @@ class Dataset:
         return None
 
     def delete(self) -> None:
-        """Deletes a private dataset that does not run; a public one is made private first."""
-        if self.public:
-            raise ValueError("It is public. Make it private first.")
-        if problem := self.busy():
+        """Deletes a private dataset that does not run."""
+        if problem := self.kept() or self.busy():
             raise ValueError(problem)
         shutil.rmtree(self.path)
         from . import marks
 
         marks.forget("result", self.name)  # its star and notes go with it
 
-    def publish(self, public: bool) -> None:
-        """Moves the dataset between results/private and results/public, unless it runs."""
-        if problem := self.busy():
-            raise ValueError(problem)
-        target = (PUBLIC if public else PRIVATE) / self.name
-        if target != self.path:
-            if target.exists():
-                raise FileExistsError(target)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(self.path, target)
-            self.path = target
-
     def update(self, **fields) -> None:
+        if problem := self.kept():
+            raise ValueError(problem)
         self.meta.update(fields)
         write_atomic(self.path / "dataset.json", json.dumps(self.meta, indent=2))
 
@@ -268,9 +284,10 @@ class Dataset:
         out = []
         for t, s in e.combinations():
             for i in range(1, e.runs + 1):
-                names = [v.name for v in e.variants]
+                names = [v.name for v in e.variants if not v.records]
                 random.Random(f"{e.seed}/{t}/{s}/{i}").shuffle(names)
-                out += [RunKey(t, n, s, i) for n in names]
+                # A benchmark's recordings once, first: every run is fed from them.
+                out += [RunKey(t, n, s, i) for n in ([v.name for v in e.variants if v.records] if i == 1 else []) + names]
         self._keys = (e, out)
         return list(out)
 
@@ -305,8 +322,12 @@ class Dataset:
         return json.loads((self.path / key.path / "run.json").read_text())
 
     def samples(self, key: RunKey) -> list[dict]:
-        """The samples of a run, with numbers parsed and missing counters as None."""
-        with gzip.open(self.path / key.path / "samples.csv.gz", "rt", newline="") as f:
+        """The samples of a run, with numbers parsed and missing counters as None:
+        samples.csv.gz as the lab writes them, or samples.csv.xz of an archived result."""
+        folder = self.path / key.path
+        opened = lzma.open(folder / "samples.csv.xz", "rt", newline="") if (folder / "samples.csv.xz").exists() \
+            else gzip.open(folder / "samples.csv.gz", "rt", newline="")
+        with opened as f:
             return [
                 {k: v if k in TEXT_FIELDS else (float(v) if v else None) for k, v in row.items()}
                 for row in csv.DictReader(f)

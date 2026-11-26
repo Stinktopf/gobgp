@@ -52,7 +52,9 @@ def token_rows() -> list[dict]:
 def settings_page(request: Request, saved: str = "", error: str = "", shown: str = ""):
     made, new_token = SHOWN_ONCE.pop(shown, (0, None))
     new_token = new_token if time.monotonic() - made < SHOWN_FOR_S else None
-    return render(request, "settings.html", nav="settings", webhook=notify.masked(notify.load().get("discord")),
+    from ... import zenodo
+
+    return render(request, "settings.html", nav="settings", webhook=notify.masked(notify.load().get("discord")), zenodo=zenodo.state(),
                   waiting=approvals.waiting(), agent_limits=tokens.limits(), tokens=token_rows(), scopes=tokens.SCOPES, activity=[
                       {**a, "when": created(a["t"], "full")} for a in tokens.activity()], new_token=new_token, base=str(request.base_url).rstrip("/"),
                   https=request.url.scheme == "https", fingerprint=certificate_fingerprint(),
@@ -144,10 +146,10 @@ async def settings_host(request: Request):
     values = {k: v for k, v in values.items() if v is not None}
     cpus, memory = values.get("cpus", machine["cpus"]), values.get("memory_mb", machine["memory_mb"])
     keep_cpus, keep_mb = values.get("keep_cpus", config.HOST_DEFAULTS["keep_cpus"]), values.get("keep_mb", config.HOST_DEFAULTS["keep_mb"])
-    problem = ("Threads for the lab: from 1 to the " + str(machine["cpus"]) + " of the host." if not 1 <= cpus <= machine["cpus"]
-               else f"Memory for the lab: at most the {machine['memory_mb'] / 1024:.0f} GiB of the host." if not 1024 <= memory <= machine["memory_mb"]
-               else "Host CPU headroom cannot be negative." if keep_cpus < config.HOST_KEEP_AT_LEAST["keep_cpus"]
-               else "Host memory headroom cannot be negative." if keep_mb < config.HOST_KEEP_AT_LEAST["keep_mb"]
+    problem = ("Budget: from 1 to the " + str(machine["cpus"]) + " of the host." if not 1 <= cpus <= machine["cpus"]
+               else f"Budget: at most the {machine['memory_mb'] / 1024:.0f} GiB of the host." if not 1024 <= memory <= machine["memory_mb"]
+               else "Host reserve of threads cannot be negative." if keep_cpus < config.HOST_KEEP_AT_LEAST["keep_cpus"]
+               else "Host reserve of memory cannot be negative." if keep_mb < config.HOST_KEEP_AT_LEAST["keep_mb"]
                else f"Keep fewer threads free: leave at least {cluster.MIN_CPUS} for minikube." if keep_cpus > cpus - cluster.MIN_CPUS
                else f"Keep less memory free: leave at least {cluster.MIN_MB // 1024} GiB for minikube." if keep_mb > memory - cluster.MIN_MB
                else "Routers per thread: from 1 to 32." if not 1 <= values.get("routers_per_cpu", 4) <= 32 else None)
@@ -162,7 +164,7 @@ async def settings_host(request: Request):
         jobs.cluster_control.request(action, values)
     except (cluster.Busy, ValueError, OSError) as e:
         return RedirectResponse(f"/settings?{urlencode({'error': str(e)})}#budget", 303)
-    message = "Host saved. Applying the new allocation in the background." if action == "apply" else "Host saved. Apply changes to update the cluster allocation."
+    message = "Budget saved. The cluster changes in the background." if action == "apply" else "Budget saved. Save and apply to change the cluster."
     return RedirectResponse(f"/settings?{urlencode({'saved': message})}#budget", 303)
 
 
@@ -247,12 +249,28 @@ def settings_notify(request: Request, discord: str = Form(""), action: str = For
     return RedirectResponse(f"/settings?{urlencode(query)}#notifications", 303)
 
 
+@router.post("/settings/zenodo")
+def settings_zenodo(sandbox: str = Form(""), real: str = Form(""), action: str = Form("save")):
+    """The tokens for uploads to Zenodo: never shown, an empty field keeps a saved one, forget removes one."""
+    from ... import zenodo
+
+    settings = zenodo.load()
+    for kind, token in (("sandbox", sandbox), ("real", real)):
+        if action == f"forget-{kind}":
+            settings.pop(kind, None)
+        elif token.strip():
+            settings[kind] = token.strip()
+    settings.pop("use", None)  # each upload names its Zenodo
+    zenodo.save(settings)
+    return RedirectResponse(f"/settings?{urlencode({'saved': 'Saved.'})}#zenodo", 303)
+
+
 @router.post("/settings/password")
 def settings_password(request: Request, current: str = Form(""), new: str = Form(""), repeat: str = Form("")):
     if not auth.check_password(current, auth.load()):
         return RedirectResponse(f"/settings?{urlencode({'error': 'The current password is wrong.'})}#password", 303)
     if len(new) < 10 or new != repeat:
-        error = "The new password needs 10 characters or more, twice the same."
+        error = "The new password needs at least 10 characters, and both entries must match."
         return RedirectResponse(f"/settings?{urlencode({'error': error})}#password", 303)
     # The change signs out every other session; this one gets a new cookie.
     auth.set_password(new)

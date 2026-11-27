@@ -258,6 +258,27 @@ def routes_quality(table: dict, relations: dict) -> str:
     return hashlib.sha256(json.dumps(quality, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def held_bits(table: dict, ordered: list[str]) -> str:
+    """Which of the announced prefixes, sorted, a router holds, one bit each,
+    as base64: small enough for every run, exact enough to name what is missing."""
+    import base64
+
+    bits = bytearray((len(ordered) + 7) // 8)
+    for i, p in enumerate(ordered):
+        if p in table:
+            bits[i // 8] |= 1 << (i % 8)
+    return base64.b64encode(bytes(bits)).decode()
+
+
+def routes_shape(table: dict, relations: dict) -> list[int]:
+    """What a router's routes at rest add up to, comparable where timing makes
+    the routes themselves differ: prefixes held, their AS path lengths summed,
+    and how many come from a customer, a peer and a provider."""
+    rel = [relations.get(r.get("from")) for r in table.values()]
+    return [len(table), sum(len(r.get("as_path") or []) for r in table.values()),
+            rel.count("customer"), rel.count("peer"), rel.count("provider")]
+
+
 def routes_digest(table: dict) -> str:
     """A digest of a router's routes at rest, equal when two runs chose the
     same: per prefix the neighbor, AS path and the routes sent per neighbor,
@@ -1358,10 +1379,18 @@ class Run:
         between = forwarding.relations(self.network.routers)
         valleys = {r: sum(not route.get("as_set") and forwarding.valley_free(between, int(self.network.routers[r]["asn"]), route["as_path"]) is False
                           for p, route in t.items() if p in announced) for r, t in tables.items()} if between else {}
+        relations = {r: {n["name"]: n.get("relation") for n in self.network.routers[r].get("neighbors", [])}
+                     for r in tables if r in self.network.routers}
+        ordered = sorted(announced)
+        origins = set((self.network.roles or {}).get("origins") or [])
         self.event("final", at, stable=stable, prefixes=len(announced), slowest=slowest,
                    digests={r: routes_digest(t) for r, t in tables.items()},
-                   qualities={r: routes_quality(t, {n["name"]: n.get("relation") for n in self.network.routers[r].get("neighbors", [])})
-                              for r, t in tables.items() if r in self.network.routers},
+                   qualities={r: routes_quality(t, relations[r]) for r, t in tables.items() if r in relations},
+                   shape={r: routes_shape(t, relations[r]) for r, t in tables.items() if r in relations},
+                   announced=ordered, held_bits={r: held_bits(t, ordered) for r, t in tables.items()},
+                   # An origin that reaches its own prefixes through a learned path instead of its own.
+                   origin_learned={r: sum(1 for p, route in tables[r].items() if p in announced and route.get("from"))
+                                   for r in sorted(origins & set(tables))},
                    valleys={r: n for r, n in valleys.items() if n},
                    held={r: len(announced & set(t)) for r, t in tables.items()},
                    stale={r: len(set(t) - announced) for r, t in tables.items()},

@@ -126,7 +126,7 @@ Every run is checked at its end against its reference, whatever its scenario che
 | A step found no rest in time | a step waited for rest in vain |
 | No rest before the final check | the final check waited for rest in vain |
 | Loops at rest | packets to a prefix loop at the end |
-| Fewer routes than BGP | a router holds fewer prefixes than in the reference |
+| Fewer routes than BGP | a router holds fewer prefixes than in the reference, the prefixes named where at most three are missing |
 | No BGP run at rest to compare with | a run misses prefixes and the reference never came to rest |
 | More black holes than BGP | more than in the reference, or any where it never came to rest |
 | More withdrawn routes kept than BGP | more than in the reference, or any where it never came to rest |
@@ -137,8 +137,8 @@ Every run is checked at its end against its reference, whatever its scenario che
 | Sessions dropped without a step | drops no step explains |
 | At rest where the simulator never rests | a run comes to rest where the simulator never did |
 | No final check | skipped, for tables above 2000 prefixes or a router that does not answer twice within 120 s |
-| Routes at rest worse or better than the baseline's | a commit-only variant chooses routes of another quality at rest than the baseline of the same seed (AS path length and neighbor relation, in a feed the path length a feeder gets). Routers that also differ in the A/A variant do not count |
-| No routes at rest to compare with the baseline | such a variant or its baseline was not at rest or had no final check, so the comparison above could not be made |
+| Routes at rest worse or better than the baseline's | a commit-only variant chooses routes of another quality at rest than the baseline of the same seed (AS path length and neighbor relation, in a feed the path length a feeder gets). Routers that also differ in the A/A variant do not count. Where they differ there too, as OBGP's may, the routes of all routers added up compare instead: prefixes held, path lengths summed and routes from customers, peers and providers, beyond what the A/A variant deviates in any seed |
+| No routes at rest to compare with the baseline | such a variant or its baseline was not at rest or had no final check, so the comparison above could not be made, or its routes vary as the baseline's own runs do and their totals stay within them |
 
 As a result begins, the [simulator](simulator.md) plays every cell it can, 20 message orders per mode,
 and every run of a cell whose scenario chooses targets or whose variant chooses its OBGP routers at random.
@@ -190,8 +190,8 @@ not a problem. Checks, lost routes and loops stay judged.
   the lab moved and no verdict is given. Other verdicts: slower, slower within the margin, no change shown, faster but
   worse elsewhere, faster with a guard unmeasured, behaves differently, too few runs. With few runs, faster
   needs every paired difference beyond the margin: the exact interval then spans the smallest and largest difference.
-  Where the routes at rest vary between runs of the baseline itself, as OBGP's may, they are not compared: the verdict
-  stands on the speed and the guards, and says so. The properties every run is checked for still hold for it.
+  Where the routes at rest vary between runs of the baseline itself, as OBGP's may, they are not compared route by
+  route: the verdict stands on the speed, the guards and their totals at rest, and says so. The properties every run is checked for still hold for it.
 
 ## Threats to validity
 

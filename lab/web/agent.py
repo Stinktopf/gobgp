@@ -205,8 +205,11 @@ def run_events(name: str, topology: str, variant: str, scenario: str, run: int) 
     d, key = _run(name, topology, variant, scenario, run)
     r = d.run(key)
     host_ = {k: v for k, v in (r.get("host") or {}).items() if k != "series"}
+    # The final check without what only the analysis reads: hashes, bits and the list of prefixes, tens of kB.
+    bulky = ("digests", "qualities", "held_bits", "announced")
+    events = [{k: v for k, v in e.items() if k not in bulky} if e.get("name") == "final" else e for e in r.get("events", [])]
     return {k: v for k, v in {"status": r.get("status"), "message": r.get("message"), "duration_s": r.get("duration_s"),
-                              "attempts": r.get("attempts"), "failures": r.get("failures"), "events": r.get("events", []),
+                              "attempts": r.get("attempts"), "failures": r.get("failures"), "events": events,
                               "measurements": r.get("measurements", []), "host": host_}.items() if v is not None}
 
 

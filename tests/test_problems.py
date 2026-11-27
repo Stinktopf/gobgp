@@ -390,3 +390,30 @@ def test_the_oracle_judges_the_quality_of_the_routes_where_a_run_kept_it_not_the
     fed = lambda d, q: final(feed=True, output={"f1": {"digest": d, "quality": q}})  # noqa: E731
     assert problems.rest_differs(fed("x", "q"), fed("y", "q")) == [] and problems.rest_differs(fed("x", "q"), fed("x", "p")) == ["f1"]
     assert problems.rest_differs(final(digests={"r1": "x"}), final(digests={"r1": "y"})) == ["r1"]  # older runs: the exact routes
+
+
+def test_the_final_check_names_the_prefixes_a_router_lost_against_bgp():
+    from lab.runner import held_bits
+    ordered = ["10.0.0.0/24", "10.0.1.0/24", "10.0.2.0/24"]
+    final = {"announced": ordered, "held_bits": {"r1": held_bits({"10.0.0.0/24": {}, "10.0.2.0/24": {}}, ordered), "r2": held_bits({}, ordered)}}
+    bgp = {"announced": ordered, "held_bits": {"r1": held_bits(dict.fromkeys(ordered, {}), ordered), "r2": held_bits({"10.0.1.0/24": {}}, ordered)}}
+    assert problems.held_prefixes(final) == {"r1": {"10.0.0.0/24", "10.0.2.0/24"}, "r2": set()}
+    assert problems.lost_prefixes(final, bgp) == {"r1": ["10.0.1.0/24"], "r2": ["10.0.1.0/24"]}
+    assert problems.lost_prefixes(final, bgp, most=0) == {} and problems.lost_prefixes({}, bgp) == {}  # too many, or not kept
+
+
+def test_routes_that_vary_between_runs_of_the_baseline_compare_by_their_totals_against_what_its_aa_twin_shows():
+    from lab.results import RunKey
+    e = Experiment.model_validate({"name": "x", "runs": 2, "topologies": ["t"], "scenarios": ["s"],
+                                   "variants": [{"name": "base", "mode": "obgp-rp", "ref": "abc"}, {"name": "new", "mode": "obgp-rp", "ref": "def"},
+                                                {"name": "aa", "mode": "obgp-rp", "ref": "abc"}]})
+    run = lambda held, length: {"status": "completed", "events": [{"name": "final", "t": 9, "stable": True,  # noqa: E731
+                                                                   "shape": {"r1": [held, length, held, 0, 0]}}]}
+    runs = {RunKey("t", "base", "s", 1): run(1000, 3000), RunKey("t", "aa", "s", 1): run(1000, 3010),
+            RunKey("t", "base", "s", 2): run(1000, 3000), RunKey("t", "aa", "s", 2): run(1000, 2990)}
+    dataset = type("D", (), {"experiment": e, "is_done": lambda self, k: k in runs, "run": lambda self, k: runs[k]})()
+    key, base = RunKey("t", "new", "s", 1), runs[RunKey("t", "base", "s", 1)]
+    assert problems.shape_beyond(dataset, key, "base", "aa", run(1000, 3008), base) == ""  # within the A/A twin's 10
+    assert problems.shape_beyond(dataset, key, "base", "aa", run(990, 3000), base) == "prefixes held 990 against 1000, from customers 990 against 1000"
+    assert problems.shape_beyond(dataset, key, "base", None, run(990, 3000), base) is None  # no A/A twin: timing not told apart
+    assert problems.shape_beyond(dataset, key, "base", "aa", {"events": []}, base) is None  # no totals kept

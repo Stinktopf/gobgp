@@ -347,6 +347,62 @@ def rest_digests(run: dict) -> dict[str, str] | None:
     return final.get("digests") or {r: o["digest"] for r, o in output.items()} or None
 
 
+SHAPE = ("prefixes held", "path length summed", "from customers", "from peers", "from providers")
+
+
+def shape_totals(run: dict) -> list[int] | None:
+    """The routes at rest of every router, added up: see runner.routes_shape. None where the run kept none."""
+    final = next((e for e in run.get("events", []) if e["name"] == "final"), None)
+    if not final or not final.get("shape"):
+        return None
+    return [sum(v[i] for v in final["shape"].values()) for i in range(len(SHAPE))]
+
+
+def shape_beyond(dataset: Dataset, key: RunKey, twin: str, aa: str | None, run: dict, base_run: dict) -> str | None:
+    """Where a candidate's totals at rest differ from the baseline's of the same seed by more than the
+    baseline's own A/A twin does in any seed, and by more than a thousandth, the totals that do; "" where none
+    does; None where the runs kept no totals or there is no A/A twin to tell timing."""
+    mine, theirs = shape_totals(run), shape_totals(base_run)
+    if mine is None or theirs is None or not aa:
+        return None
+    noise = [0] * len(SHAPE)
+    for i in range(1, dataset.experiment.runs + 1):
+        a, b = RunKey(key.topology, aa, key.scenario, i), RunKey(key.topology, twin, key.scenario, i)
+        if dataset.is_done(a) and dataset.is_done(b):
+            x, y = shape_totals(dataset.run(a)), shape_totals(dataset.run(b))
+            if x and y:
+                noise = [max(n, abs(u - v)) for n, u, v in zip(noise, x, y)]
+    off = [f"{name} {u} against {v}" for name, u, v, n in zip(SHAPE, mine, theirs, noise) if abs(u - v) > max(n, v / 1000)]
+    return ", ".join(off)
+
+
+def held_prefixes(final: dict) -> dict[str, set[str]] | None:
+    """The prefixes each router held at rest, from the bits of the final check; None where it kept none."""
+    import base64
+
+    ordered, bits = final.get("announced"), final.get("held_bits")
+    if not ordered or not bits:
+        return None
+    out = {}
+    for r, b in bits.items():
+        raw = base64.b64decode(b)
+        out[r] = {p for i, p in enumerate(ordered) if raw[i // 8] >> (i % 8) & 1}
+    return out
+
+
+def lost_prefixes(final: dict, theirs: dict, most: int = 3) -> dict[str, list[str]]:
+    """Per router the prefixes the BGP run held and this one did not, where at most most are missing."""
+    mine, bgp = held_prefixes(final), held_prefixes(theirs)
+    if not mine or not bgp:
+        return {}
+    out = {}
+    for r, held in mine.items():
+        lost = sorted(bgp.get(r, set()) - held)
+        if 0 < len(lost) <= most:
+            out[r] = lost
+    return out
+
+
 def rest_differs(run: dict, other: dict) -> list[str] | None:
     """The routers, or feeders, whose digests at rest differ between two runs; None when either has none."""
     mine, theirs = rest_digests(run), rest_digests(other)
@@ -488,8 +544,14 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
                     timing = f", beyond {len(noise)} that differ in {aa}, the same commit as {twin}" if aa else ", no A/A variant to tell timing"
                     found.append(("output", f"{len(beyond)} {what} routes of another length or kind than in {twin}: {', '.join(beyond[:10])}{timing}", False))
                 elif hidden := [r for r in differ if r in noise]:
-                    found.append(("output-unchecked", f"{len(hidden)} {what} other routes than in {twin} as they do between two runs of its commit "
-                                                      f"in {aa}: timing or the change, not told apart", None))
+                    # Routes that vary between runs of the baseline itself, as OBGP's may: what they add up to still compares.
+                    beyond = shape_beyond(dataset, key, twin, aa, run, base_run)
+                    if beyond:
+                        found.append(("output", f"routes at rest add up to other totals than in {twin}, beyond what {aa} shows: {beyond}", False))
+                    else:
+                        found.append(("output-unchecked", f"{len(hidden)} {what} other routes than in {twin} as they do between two runs of its commit "
+                                                          f"in {aa}: timing or the change, not told apart"
+                                                          + (", their totals within what those runs show" if beyond is not None else ""), None))
         if at_rest and final.get("loops"):
             found.append(("loops", f"packets to {', '.join(final.get('looping', [])) or str(final['loops']) + ' prefixes'} loop",
                           _predicted(dataset, key, run, set(), "loops")))
@@ -501,7 +563,9 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
         if at_rest and theirs:
             fewer = {r: theirs["held"][r] - h for r, h in final["held"].items() if theirs["held"].get(r, 0) > h}
             if fewer:
-                found.append(("reach", ", ".join(f"{r} {final['held'][r]} of {theirs['held'][r]}" for r in sorted(fewer)),
+                lost = lost_prefixes(final, theirs)  # which, where the runs kept it and few are missing
+                found.append(("reach", ", ".join(f"{r} {final['held'][r]} of {theirs['held'][r]}" + (f" ({', '.join(lost[r])})" if r in lost else "")
+                                                 for r in sorted(fewer)),
                               _predicted(dataset, key, run, set(fewer), "reach")))
             if extra := sorted(set(final.get("holed", [])) - set(theirs.get("holed", []))):
                 found.append(("holes", f"packets to {', '.join(extra)} end at a router without a route", _predicted(dataset, key, run, set(), "holes")))

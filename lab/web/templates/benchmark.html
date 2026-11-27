@@ -18,7 +18,8 @@
 <div id="benchmark" hx-boost="true" hx-target="#benchmark" hx-select="#benchmark" hx-swap="outerHTML show:none" hx-push-url="true">
 <div class="-mt-4 mb-4">
   <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-    <a href="/results/{{ d.name }}?topology={{ topology }}&scenario={{ scenario }}" class="hit muted inline-block py-1 font-mono text-sm hover:underline" data-tip="Its runs and every metric">{{ d.name }}</a>
+    {# Leaves the page: a whole page, not a part swapped in (hx-boost of #benchmark below would find none there). #}
+    <a href="/results/{{ d.name }}?topology={{ topology }}&scenario={{ scenario }}" hx-boost="false" class="hit muted inline-block py-1 font-mono text-sm hover:underline" data-tip="Its runs and every metric">{{ d.name }}</a>
     {% set cases = [] %}{% for t in e.topologies %}{% for s in e.cases_of(t) %}{% set _ = cases.append((t, s)) %}{% endfor %}{% endfor %}
     {% if cases | length == 1 %}<span class="muted font-mono text-sm" data-tip="The workload">{{ topology }}, {{ scenario }}</span>{% endif %}
   </div>

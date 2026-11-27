@@ -660,6 +660,17 @@ document.addEventListener("keydown", (e) => {
   e.key === "ArrowUp" ? other.before(li) : other.after(li);
   saveQueue(li.parentElement, li.dataset.name);
 });
+// A boosted link whose page has no part of the kind it was to swap in, e.g. a
+// link out of an area that swaps in place, opens that page whole instead of
+// an empty part. Registered first, so that no other handler sees the swap.
+document.addEventListener("htmx:beforeSwap", (e) => {
+  const { requestConfig, serverResponse, xhr } = e.detail;
+  if (!(e.detail.boosted || requestConfig?.boosted) || requestConfig?.verb !== "get" || xhr?.status !== 200) return;
+  const select = requestConfig.elt?.closest("[hx-select]")?.getAttribute("hx-select");
+  if (!select || new DOMParser().parseFromString(serverResponse, "text/html").querySelector(select)) return;
+  e.detail.shouldSwap = false;
+  location.assign(xhr.responseURL || requestConfig.path);
+});
 // Live parts refresh every few seconds. What comes back as the part shows
 // it is not replaced, so that hover, selection and open tips stay. Per part:
 // a link back to an address it showed before still swaps. Registered before

@@ -1064,6 +1064,8 @@ def test_a_benchmark_has_a_page_of_its_own_with_its_pair_and_its_profiles_loaded
     page = client.get("/benchmark/b-1?topology=noble-eu&scenario=fill-60").text
     assert "b3dfb4b8 against 6792c5c2" in page and 'href="/benchmark"' in page and "Where the CPU goes" in page
     assert 'hx-get="/benchmark/b-1/details?topology=noble-eu&amp;scenario=fill-60' in page and 'action="/benchmark/b-1"' in page
+    # The link to its result leaves the page whole: swapped in, it found nothing to show.
+    assert 'href="/results/b-1?topology=noble-eu&scenario=fill-60" hx-boost="false"' in page
     # While its metrics are computed, the page says how far.
     monkeypatch.setattr(area, "measuring", lambda d: True)
     monkeypatch.setitem(analysis.PROGRESS, "b-1", [3, 10])

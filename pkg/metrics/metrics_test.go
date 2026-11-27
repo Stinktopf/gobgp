@@ -167,6 +167,20 @@ func TestMetrics(test *testing.T) {
 
 	cancel()
 	<-goroutineCh
+
+	// The paths t added and deleted reached s as prefixes announced and withdrawn.
+	assert.Eventually(func() bool {
+		updates, announced, withdrawn := s.ReceivedPrefixes()
+		return updates > 0 && announced > 0 && withdrawn > 0
+	}, 5*time.Second, 50*time.Millisecond)
+	families, err := registry.Gather()
+	assert.NoError(err)
+	found := map[string]bool{}
+	for _, f := range families {
+		found[f.GetName()] = true
+	}
+	assert.True(found["bgp_handled_update_total"])
+	assert.True(found["bgp_received_prefixes_total"])
 }
 
 func TestFSMLoopMetrics(t *testing.T) {

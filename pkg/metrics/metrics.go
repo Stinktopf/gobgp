@@ -269,6 +269,16 @@ var (
 		"Number of prefixes in the global RIB with a path admitted or set aside",
 		[]string{"route_family"}, nil,
 	)
+	bgpHandledUpdatesDesc = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "handled", "update_total"),
+		"Number of UPDATE messages from all peers the server handled, those whose prefixes bgp_received_prefixes_total counts",
+		nil, nil,
+	)
+	bgpReceivedPrefixesDesc = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "received", "prefixes_total"),
+		"Number of prefixes in the UPDATE messages received from all peers, by whether they were announced or withdrawn",
+		[]string{"kind"}, nil,
+	)
 	bgpObgpBlockedDesc = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "obgp", "blocked_prefixes"),
 		"Number of prefixes with a valid path set aside and none admitted: no route, in every pruning mode",
@@ -318,6 +328,8 @@ func (c *bgpCollector) Describe(out chan<- *prometheus.Desc) {
 	out <- bgpObgpSuppressedDesc
 	out <- bgpObgpKnownDesc
 	out <- bgpObgpBlockedDesc
+	out <- bgpHandledUpdatesDesc
+	out <- bgpReceivedPrefixesDesc
 }
 
 var countAdvertised = os.Getenv("GOBGP_METRICS_ADVERTISED") != "0"
@@ -457,4 +469,8 @@ func (c *bgpCollector) Collect(out chan<- prometheus.Metric) {
 			out <- prometheus.MustNewConstMetric(bgpObgpBlockedDesc, prometheus.GaugeValue, float64(blocked), family.String())
 		}
 	}
+	updates, announced, withdrawn := c.server.ReceivedPrefixes()
+	out <- prometheus.MustNewConstMetric(bgpHandledUpdatesDesc, prometheus.CounterValue, float64(updates))
+	out <- prometheus.MustNewConstMetric(bgpReceivedPrefixesDesc, prometheus.CounterValue, float64(announced), "announced")
+	out <- prometheus.MustNewConstMetric(bgpReceivedPrefixesDesc, prometheus.CounterValue, float64(withdrawn), "withdrawn")
 }

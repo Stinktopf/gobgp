@@ -88,6 +88,8 @@ The metrics are all prefixed with the `bgp` Prometheus namespace.
 | bgp_received_update_total          | Number of received BGP UPDATE messages from peer                             | `peer`                                 |
 | bgp_received_withdraw_prefix_total | Number of received BGP WITHDRAW-PREFIX messages from peer                    | `peer`                                 |
 | bgp_received_withdraw_update_total | Number of received BGP WITHDRAW-UPDATE messages from peer                    | `peer`                                 |
+| bgp_handled_update_total           | Number of UPDATE messages from all peers the server handled                  |                                        |
+| bgp_received_prefixes_total        | Number of prefixes in those UPDATE messages, announced or withdrawn          | `kind`                                 |
 
 ## Label values
 
@@ -97,6 +99,7 @@ Some labels can have specific values depending on the state of GoBGP or of the p
 - `session_state`: the BGP FSM status of the peer, can be either `UNKNOWN`, `IDLE`, `CONNECT`, `IDLE`, `ACTIVE`, `OPENSENT`, `OPENCONFIRM` or `ESTABLISHED`
 - `admin_state`: administrative state of the peer, can be either `DOWN`, `UP` or `PFX_CNT` if prefix limit is reached
 - `route_family`: any address family supported by GoBGP (e.g `ipv4`, `ipv6`, `evpn`)
+- `kind`: `announced` or `withdrawn`
 
 ## Grafana dashboard
 

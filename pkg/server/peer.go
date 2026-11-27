@@ -97,7 +97,13 @@ func newDynamicPeer(g *oc.Global, neighborAddress string, pg *oc.PeerGroup, loc 
 }
 
 type peer struct {
-	tableId           string
+	tableId string
+	// exportStatements keeps its export statements, see table.Statements.
+	// Only the server's goroutine uses it, as s.options.
+	exportStatements table.Statements
+	// class is its export class when exported last made it, classID its number.
+	class             exportClass
+	classID           int
 	operaSlot         int // its entry in the operaUpdate being handled, see slot
 	fsm               *fsm
 	adjRibIn          *table.AdjRib

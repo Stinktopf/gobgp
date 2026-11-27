@@ -16,7 +16,6 @@
 package server
 
 import (
-	"bufio"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -1615,24 +1614,6 @@ func (h *fsmHandler) sendMessageloop(ctx context.Context, conn net.Conn, stateRe
 	defer wg.Done()
 	fsm := h.fsm
 	ticker := keepaliveTicker(fsm)
-	// Messages go out through a buffer, flushed once no other message waits:
-	// what is queued for the neighbor at once leaves in one write, none later.
-	out := bufio.NewWriterSize(conn, 64<<10)
-	failed := func(err error) error {
-		fsm.logger.Warn("failed to send",
-			slog.String("State", fsm.state.String()),
-			slog.Any("Data", err))
-
-		nonblockSendChannel(stateReasonCh, *newfsmStateReason(fsmWriteFailed, nil, nil))
-		conn.Close()
-		return fmt.Errorf("closed")
-	}
-	flush := func() error {
-		if err := out.Flush(); err != nil {
-			return failed(err)
-		}
-		return nil
-	}
 	send := func(m *bgp.BGPMessage) error {
 		if fsm.twoByteAsTrans && m.Header.Type == bgp.BGP_MSG_UPDATE {
 			fsm.logger.Debug("update for 2byte AS peer",
@@ -1650,8 +1631,15 @@ func (h *fsmHandler) sendMessageloop(ctx context.Context, conn net.Conn, stateRe
 			fsm.bgpMessageStateUpdate(0, false)
 			return nil
 		}
-		if _, err = out.Write(b); err != nil {
-			return failed(err)
+		_, err = conn.Write(b)
+		if err != nil {
+			fsm.logger.Warn("failed to send",
+				slog.String("State", fsm.state.String()),
+				slog.Any("Data", err))
+
+			nonblockSendChannel(stateReasonCh, *newfsmStateReason(fsmWriteFailed, nil, nil))
+			conn.Close()
+			return fmt.Errorf("closed")
 		}
 		fsm.bgpMessageStateUpdate(m.Header.Type, false)
 
@@ -1719,61 +1707,36 @@ func (h *fsmHandler) sendMessageloop(ctx context.Context, conn net.Conn, stateRe
 		}
 	}
 
-	// outgoing sends what the server queued, false when the loop is to end.
-	outgoing := func(o any) bool {
-		switch m := o.(type) {
-		case *fsmOutgoingMsg:
-			if len(m.Answer) > 0 {
-				if err := sendAnswer(m.Answer, limit.answer(m.Paths)); err != nil {
-					return false
-				}
-			} else if err := sendPaths(limit.add(m.Paths, time.Now())); err != nil {
-				return false
-			}
-			for _, family := range m.Refresh {
-				if err := send(bgp.NewBGPRouteRefreshMessage(family.Afi(), 0, family.Safi())); err != nil {
-					return false
-				}
-			}
-			arm()
-		default:
-			return false
-		}
-		return true
-	}
-
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case o := <-h.outgoing.Out():
-			if !outgoing(o) {
-				return nil
-			}
-			// what else waits goes into the same write, a bounded number so that keepalives keep their time
-			for drained := 0; drained < 256; drained++ {
-				var more any
-				select {
-				case more = <-h.outgoing.Out():
-				default:
-				}
-				if more == nil {
-					break
-				}
-				if !outgoing(more) {
+			switch m := o.(type) {
+			case *fsmOutgoingMsg:
+				if len(m.Answer) > 0 {
+					if err := sendAnswer(m.Answer, limit.answer(m.Paths)); err != nil {
+						return nil
+					}
+				} else if err := sendPaths(limit.add(m.Paths, time.Now())); err != nil {
 					return nil
 				}
-			}
-			if err := flush(); err != nil {
+				for _, family := range m.Refresh {
+					if err := send(bgp.NewBGPRouteRefreshMessage(family.Afi(), 0, family.Safi())); err != nil {
+						return nil
+					}
+				}
+				arm()
+			default:
 				return nil
 			}
 		case <-due:
-			if err := sendPaths(limit.flush(time.Now())); err != nil || flush() != nil {
+			if err := sendPaths(limit.flush(time.Now())); err != nil {
 				return nil
 			}
 			arm()
 		case <-ticker.C:
-			if err := send(bgp.NewBGPKeepAliveMessage()); err != nil || flush() != nil {
+			if err := send(bgp.NewBGPKeepAliveMessage()); err != nil {
 				return nil
 			}
 		}

@@ -4062,16 +4062,29 @@ func TestApplyPolicySkipsOnlyStatementsOfOtherNeighbors(t *testing.T) {
 		neighborPolicyPath([]uint32{65000<<16 | 1, 65000<<16 | 2}),
 	}
 	addresses := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.5", "10.0.0.6", "10.0.7.7", "::ffff:10.0.0.2"}
+	// kept holds the statements of each neighbor across calls and changes,
+	// as a peer keeps them: a change must make them old.
+	type keptKey struct {
+		neighbor string
+		dir      PolicyDirection
+	}
+	var kept map[keptKey]*Statements
 	same := func(t *testing.T, r *RoutingPolicy, case_ string) {
 		for _, a := range addresses {
-			options := &PolicyOptions{Info: &PeerInfo{Address: netip.MustParseAddr(a)}}
+			info := &PeerInfo{Address: netip.MustParseAddr(a)}
 			for i, path := range paths {
 				for _, dir := range []PolicyDirection{POLICY_DIRECTION_IMPORT, POLICY_DIRECTION_EXPORT} {
-					want := applyEveryStatement(r, GLOBAL_RIB_NAME, dir, path, options)
-					got := r.ApplyPolicy(GLOBAL_RIB_NAME, dir, path, options)
-					require.Equal(t, want == nil, got == nil, "%s, neighbor %s, path %d, %s", case_, a, i, dir)
-					if want != nil {
-						require.Equal(t, want.GetCommunities(), got.GetCommunities(), "%s, neighbor %s, path %d, %s", case_, a, i, dir)
+					want := applyEveryStatement(r, GLOBAL_RIB_NAME, dir, path, &PolicyOptions{Info: info})
+					k := keptKey{a, dir}
+					if kept[k] == nil {
+						kept[k] = &Statements{}
+					}
+					for _, options := range []*PolicyOptions{{Info: info}, {Info: info, Statements: kept[k]}} {
+						got := r.ApplyPolicy(GLOBAL_RIB_NAME, dir, path, options)
+						require.Equal(t, want == nil, got == nil, "%s, neighbor %s, path %d, %s, kept %v", case_, a, i, dir, options.Statements != nil)
+						if want != nil {
+							require.Equal(t, want.GetCommunities(), got.GetCommunities(), "%s, neighbor %s, path %d, %s", case_, a, i, dir)
+						}
 					}
 				}
 			}
@@ -4084,6 +4097,7 @@ func TestApplyPolicySkipsOnlyStatementsOfOtherNeighbors(t *testing.T) {
 		slices.Reverse(reversed)
 		def := []oc.DefaultPolicyType{oc.DEFAULT_POLICY_TYPE_ACCEPT_ROUTE, oc.DEFAULT_POLICY_TYPE_REJECT_ROUTE}[rng.IntN(2)]
 		r := NewRoutingPolicy(logger)
+		kept = map[keptKey]*Statements{}
 		require.NoError(t, r.Reset(&pl, map[string]oc.ApplyPolicy{GLOBAL_RIB_NAME: {Config: oc.ApplyPolicyConfig{
 			ImportPolicyList: names, DefaultImportPolicy: def,
 			ExportPolicyList: reversed, DefaultExportPolicy: def,
@@ -4095,6 +4109,14 @@ func TestApplyPolicySkipsOnlyStatementsOfOtherNeighbors(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, r.AddDefinedSet(ns, false))
 		same(t, r, fmt.Sprintf("seed %d after a change", seed))
+
+		// So must statements assigned anew, in the other order.
+		var defs []*oc.PolicyDefinition
+		for _, n := range names {
+			defs = append(defs, &oc.PolicyDefinition{Name: n})
+		}
+		require.NoError(t, r.SetPolicyAssignment(GLOBAL_RIB_NAME, POLICY_DIRECTION_EXPORT, defs, ROUTE_TYPE_REJECT))
+		same(t, r, fmt.Sprintf("seed %d after an assignment", seed))
 	}
 }
 

@@ -156,7 +156,7 @@ func (s *BgpServer) operaFilter(nb *peer, p *table.Path) (bool, *table.Path) {
 		q := s.exported(nb, p)
 		nb.fsm.lock.Unlock()
 		o := &s.options // in place, see filterpath
-		*o = table.PolicyOptions{Info: nb.peerInfo, OldNextHop: p.GetNexthop()}
+		*o = table.PolicyOptions{Info: nb.peerInfo, OldNextHop: p.GetNexthop(), Statements: &nb.exportStatements}
 		defer func() { *o = table.PolicyOptions{} }()
 		return nb.policy.ApplyPolicy(nb.TableID(), table.POLICY_DIRECTION_EXPORT, q, o) != nil, nil
 	}

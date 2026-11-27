@@ -741,6 +741,7 @@ func (s *BgpServer) filterpath(peer *peer, path, old *table.Path) *table.Path {
 	o := &s.options
 	*o = options
 	o.Validate = s.validate
+	o.Statements = &peer.exportStatements
 	defer func() { *o = table.PolicyOptions{} }()
 	path = peer.policy.ApplyPolicy(peer.TableID(), table.POLICY_DIRECTION_EXPORT, path, o)
 	// When 'path' is filtered (path == nil), check 'old' has been sent to this peer.

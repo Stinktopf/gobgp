@@ -4147,6 +4147,18 @@ func TestCommunityConditionMatchesAsWithFmt(t *testing.T) {
 		}
 		set, err := NewCommunitySet(oc.CommunitySet{CommunitySetName: "c", CommunityList: list})
 		require.NoError(t, err)
+		// A set changed in place compares by what it holds after.
+		other, err := NewCommunitySet(oc.CommunitySet{CommunitySetName: "c", CommunityList: []string{exprs[rng.IntN(len(exprs))]}})
+		require.NoError(t, err)
+		switch rng.IntN(4) {
+		case 1:
+			require.NoError(t, set.Append(other))
+		case 2:
+			require.NoError(t, set.Replace(other))
+		case 3:
+			require.NoError(t, set.Remove(other))
+		}
+		list = set.List()
 		var cs []uint32
 		for range rng.IntN(4) {
 			cs = append(cs, []uint32{65000<<16 | 1, 65535<<16 | 65281, 100, 12<<16 | 2, 1<<16 | 2, rng.Uint32()}[rng.IntN(6)])

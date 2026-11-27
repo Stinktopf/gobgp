@@ -1108,6 +1108,27 @@ func (lhs *regExpSet) Replace(arg DefinedSet) error {
 
 type CommunitySet struct {
 	regExpSet
+	// literals holds per expression of list the community it matches alone,
+	// if it is one written out: it is compared as a number, not as text.
+	literals []literal
+}
+
+func (s *CommunitySet) Append(arg DefinedSet) error {
+	err := s.regExpSet.Append(arg)
+	s.literals = literalsOf(s.list)
+	return err
+}
+
+func (s *CommunitySet) Remove(arg DefinedSet) error {
+	err := s.regExpSet.Remove(arg)
+	s.literals = literalsOf(s.list)
+	return err
+}
+
+func (s *CommunitySet) Replace(arg DefinedSet) error {
+	err := s.regExpSet.Replace(arg)
+	s.literals = literalsOf(s.list)
+	return err
 }
 
 func (s *CommunitySet) List() []string {
@@ -1255,6 +1276,7 @@ func NewCommunitySet(c oc.CommunitySet) (*CommunitySet, error) {
 			name: name,
 			list: list,
 		},
+		literals: literalsOf(list),
 	}, nil
 }
 
@@ -1702,9 +1724,9 @@ func (c *CommunityCondition) Evaluate(path *Path, _ *PolicyOptions) bool {
 	cs := path.communities()
 	result := false
 	var text []byte
-	for _, x := range c.set.list {
-		if v, ok := literalCommunity(x); ok {
-			result = slices.Contains(cs, v)
+	for i, x := range c.set.list {
+		if l := c.set.literals[i]; l.ok {
+			result = slices.Contains(cs, l.value)
 		} else {
 			result = false
 			for _, y := range cs {
@@ -1728,10 +1750,8 @@ func (c *CommunityCondition) Evaluate(path *Path, _ *PolicyOptions) bool {
 	return result
 }
 
-// literalCommunities holds per expression of a community set the community
-// it matches alone, if it is one written out, as ParseCommunityRegexp makes it.
-var literalCommunities sync.Map // *regexp.Regexp -> literal
-
+// literal is the community an expression matches alone, if it is one written
+// out, as ParseCommunityRegexp makes it.
 type literal struct {
 	value uint32
 	ok    bool
@@ -1739,21 +1759,17 @@ type literal struct {
 
 var _regexpLiteralCommunity = regexp.MustCompile(`^\^(0|[1-9]\d{0,4}):(0|[1-9]\d{0,4})\$$`) // as appendCommunity writes it, no leading zeros
 
-// literalCommunity is the community x matches alone, so that it is compared
-// as a number instead of as text.
-func literalCommunity(x *regexp.Regexp) (uint32, bool) {
-	if v, ok := literalCommunities.Load(x); ok {
-		l := v.(literal)
-		return l.value, l.ok
+// literalsOf is the literal of each expression in list.
+func literalsOf(list []*regexp.Regexp) []literal {
+	out := make([]literal, len(list))
+	for i, x := range list {
+		if m := _regexpLiteralCommunity.FindStringSubmatch(x.String()); m != nil {
+			hi, err1 := strconv.ParseUint(m[1], 10, 16)
+			lo, err2 := strconv.ParseUint(m[2], 10, 16)
+			out[i] = literal{uint32(hi<<16 | lo), err1 == nil && err2 == nil}
+		}
 	}
-	l := literal{}
-	if m := _regexpLiteralCommunity.FindStringSubmatch(x.String()); m != nil {
-		hi, err1 := strconv.ParseUint(m[1], 10, 16)
-		lo, err2 := strconv.ParseUint(m[2], 10, 16)
-		l = literal{uint32(hi<<16 | lo), err1 == nil && err2 == nil}
-	}
-	literalCommunities.Store(x, l)
-	return l.value, l.ok
+	return out
 }
 
 // appendCommunity appends a community as text, as fmt "%d:%d" writes it.

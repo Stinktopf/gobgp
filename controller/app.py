@@ -582,14 +582,13 @@ def cpu_profile(seconds: float) -> None:
 
 def memory() -> dict:
     """From the Prometheus metrics of gobgpd: the paths OBGP sets aside, the
-    prefixes it knows and those blocked, a valid path set aside and no route, the paths
-    received from all peers (the Adj-RIB-In), the resident memory, the heap
+    prefixes it knows and those blocked, a valid path set aside and no route, the resident memory, the heap
     in use, its objects, the CPU seconds so far and the MiB it allocated so far, the UPDATE messages it
     handled and the prefixes in them. A daemon without OBGP's counts or those of UPDATE messages gives None
     for them."""
     with urllib.request.urlopen(GOBGP_METRICS, timeout=30) as response:
         text = response.read().decode()
-    out = {"suppressed": None, "known": None, "blocked": None, "adj_in": 0, "rss_mb": None, "heap_mb": None, "heap_objects": None, "cpu_s": None,
+    out = {"suppressed": None, "known": None, "blocked": None, "rss_mb": None, "heap_mb": None, "heap_objects": None, "cpu_s": None,
            "alloc_mb": None, "updates_handled": None, "prefixes_rx": None}
     for line in text.splitlines():
         name, _, value = line.rpartition(" ")
@@ -599,8 +598,6 @@ def memory() -> dict:
             out["known"] = (out["known"] or 0) + int(float(value))
         elif name.startswith("bgp_obgp_blocked_prefixes{"):
             out["blocked"] = (out["blocked"] or 0) + int(float(value))
-        elif name.startswith("bgp_routes_received{"):
-            out["adj_in"] += int(float(value))
         elif name == "process_resident_memory_bytes":
             out["rss_mb"] = round(float(value) / 2**20, 1)
         elif name == "go_memstats_heap_inuse_bytes":
@@ -770,7 +767,9 @@ def sample(cache: dict) -> dict:
     or once a second."""
     table = stub.GetTable(gobgp_pb2.GetTableRequest(table_type=GLOBAL, family=IPV4), timeout=5)
     by_peer, flaps, down = {}, {}, []
+    adj_in = 0  # the paths received from all peers (the Adj-RIB-In), as gobgpd's metrics count them
     for p in peers():
+        adj_in += sum(a.state.received for a in p.afi_safis if a.config.enabled)
         name = next((n for n, ip in daemon.addresses.items() if ip == p.conf.neighbor_address), p.conf.neighbor_address)
         by_peer[name] = (p.state.messages.received.update, p.state.messages.sent.update)
         flaps[name] = p.state.flops  # how often the session fell from established
@@ -793,7 +792,7 @@ def sample(cache: dict) -> dict:
         threading.Thread(target=lengths, args=(cache, key), daemon=True).start()
     # The metrics of gobgpd apart as well, when the table changed or once a second, and at most every five
     # times what reading them took: read in line, a slow scrape held up the sample, as the path lengths did.
-    cache.setdefault("memory", dict.fromkeys(["suppressed", "known", "blocked", "adj_in", "rss_mb", "heap_mb", "heap_objects", "cpu_s",
+    cache.setdefault("memory", dict.fromkeys(["suppressed", "known", "blocked", "rss_mb", "heap_mb", "heap_objects", "cpu_s",
                                               "alloc_mb", "updates_handled", "prefixes_rx"]))
     often = max(1.0, 5 * cache.get("memory_took", 0))
     if not cache.get("memory_running") and (cache.get("memory_key") != key or now - cache.get("memory_at", -1.0) >= 1) \
@@ -815,6 +814,7 @@ def sample(cache: dict) -> dict:
         **cache["memory"],
         # How old the metrics are: a busy gobgpd answers late, so its CPU counters stand for an earlier time.
         "metrics_age_s": round(now - cache["memory_read"], 2) if "memory_read" in cache else None,
+        "adj_in": adj_in,
         "updates_rx": rx,
         "updates_tx": tx,
         # Updates received per neighbor, for the replay: "a=3 b=0"

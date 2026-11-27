@@ -70,6 +70,9 @@ spec:
             # The controller reads no advertised counts: counting them walks the table per peer at every scrape.
             - name: GOBGP_METRICS_ADVERTISED
               value: "0"
+            # Nor the metrics per peer: it lists the peers itself, a second copy of them at every scrape cost gobgpd CPU.
+            - name: GOBGP_METRICS_PEERS
+              value: "0"
             - name: GOBGP_OPERA_REFRESH_S
               value: {{ required "the lab sets bgp.refresh" $.Values.bgp.refresh | quote }}
             - name: GOBGP_OPERA_REFRESH_DELAY_S

@@ -5,7 +5,7 @@ import importlib.util
 import json
 import sys
 import tomllib
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -327,7 +327,7 @@ def test_with_ingress_routes_sent_without_receiving_are_read_too(controller, mon
     peer = lambda: type("P", (), {
         "conf": type("C", (), {"neighbor_address": "10.1.0.1"})(),
         "state": type("S", (), {"messages": type("M", (), {"received": type("R", (), {"update": 5})(), "sent": type("R", (), {"update": sent[0]})()})(),
-                                "flops": 0, "session_state": app.gobgp_pb2.PeerState.SESSION_STATE_ESTABLISHED})()})()
+                                "flops": 0, "session_state": app.gobgp_pb2.PeerState.SESSION_STATE_ESTABLISHED})(), "afi_safis": []})()
     monkeypatch.setattr(app, "peers", lambda: [peer()])
     monkeypatch.setattr(app, "stub", type("Stub", (), {"GetTable": lambda self, req, timeout: type("T", (), {"num_destination": 2, "num_path": 2})()})())
     monkeypatch.setattr(app, "memory", lambda: {})
@@ -425,6 +425,21 @@ def test_a_large_table_tells_its_path_lengths_only_once_it_held_still(controller
     size[0] = 10  # a small table is read at once, as before
     clock[0] += 10
     assert app.sample(cache)["path_len_avg"] == 2.5 and len(read) == 2
+
+
+def test_the_paths_received_come_from_the_peers_the_sample_lists(controller, monkeypatch):
+    app, daemon = controller("b", 65002, [], {})
+    monkeypatch.setattr(app, "daemon", daemon)
+    up = app.gobgp_pb2.PeerState.SESSION_STATE_ESTABLISHED
+    family = lambda enabled, received: SimpleNamespace(config=SimpleNamespace(enabled=enabled), state=SimpleNamespace(received=received))
+    peer = lambda address, *families: SimpleNamespace(
+        conf=SimpleNamespace(neighbor_address=address), afi_safis=list(families),
+        state=SimpleNamespace(messages=SimpleNamespace(received=SimpleNamespace(update=0), sent=SimpleNamespace(update=0)), flops=0, session_state=up))
+    monkeypatch.setattr(app, "peers", lambda: [peer("10.0.0.1", family(True, 5), family(False, 7)), peer("10.0.0.2", family(True, 3))])
+    monkeypatch.setattr(app, "stub", type("Stub", (), {"GetTable": lambda self, req, timeout: type("T", (), {"num_destination": 1, "num_path": 1})()})())
+    monkeypatch.setattr(app, "hops_changed", lambda cache, table, key: "")
+    monkeypatch.setattr(app.threading, "Thread", lambda target, args, daemon: type("T", (), {"start": lambda self: None})())
+    assert app.sample({"key": (1, 1, 0)})["adj_in"] == 8  # a family not enabled counts nothing, as in gobgpd's metrics
 
 
 def test_the_metrics_are_read_apart_and_as_often_as_their_cost_allows(controller, monkeypatch):

@@ -326,3 +326,15 @@ def test_an_agent_reads_where_the_profiled_routers_spent_their_cpu_against_a_bas
     assert agent.profile("r", "t", "s", "new", run=1)["runs"] == 1
     with pytest.raises(LookupError, match="no complete CPU profiles"):
         agent.profile("r", "t", "s", "other")
+
+
+def test_the_list_of_results_never_waits_for_metrics_to_be_computed(lab_files, monkeypatch):
+    # After a new version of the metrics nothing is known: the list says so instead of computing every result.
+    from lab import analysis
+    from lab.web import agent
+    monkeypatch.setattr(analysis, "summary_if_known", lambda d: None)
+    monkeypatch.setattr(agent, "verdict", lambda *a: pytest.fail("computed a verdict"))
+    d = results.Dataset.create(Experiment.load(config.path("lab-smoke")), "t-agent")
+    d.write_status({**d.status, "state": "finished"})
+    listed = {r["name"]: r for r in agent.results()}
+    assert listed["t-agent"]["verdict"] == {"passed": None, "reasons": ["its metrics are computed first: result tells it"]}

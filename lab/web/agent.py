@@ -27,6 +27,7 @@ from .common import METRICS, duration, jobs, load_problem
 from .context import experiments as experiment_files
 from .context import overview, users
 from .routes.experiments import start as queue_new
+from .routes.results import known_verdict
 
 LOG_LINES = 2000  # the most a log answer holds
 PAPER = config.PAPER
@@ -91,8 +92,12 @@ def results() -> list[dict]:
 
 
 def _verdict_of(d: Dataset) -> dict:
+    """The verdict as the list of results shows it: never waiting for metrics to be computed, which after a new
+    version of them took longer than an agent waits, for every result at once."""
+    if d.status.get("state") != "finished":
+        return {"passed": None, "reasons": []}
     try:
-        return verdict(d)
+        return known_verdict(d) or {"passed": None, "reasons": ["its metrics are computed first: result tells it"]}
     except (OSError, ValueError, KeyError):  # one result that cannot be read never hides the others
         return {"passed": None, "reasons": ["cannot be read"]}
 

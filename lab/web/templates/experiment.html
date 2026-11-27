@@ -167,7 +167,22 @@
         </span>
         <span class="flex items-center gap-2 whitespace-nowrap max-sm:min-w-0 max-sm:basis-full">
           <span class="muted">guards</span>
-          <input name="speed_guards" value="{{ (sp.guards or ['settle_s', 'rss_mean', 'flaps']) | join(', ') }}" data-tip="Metrics that must not get worse, comma-separated" class="input w-48 py-1.5 font-mono max-sm:w-auto max-sm:min-w-0 max-sm:flex-1" aria-label="Guards">
+          {% set guards = sp.guards or ['settle_s', 'rss_mean', 'flaps'] %}
+          <details class="relative" data-tip="Metrics that must not get worse">
+            <summary class="picker-summary btn cursor-pointer list-none py-1 text-sm [&::-webkit-details-marker]:hidden" aria-label="Guards">
+              <span class="max-w-48 truncate" data-chosen>{% for g in guards %}{{ metric_names.get(g, g) }}{{ ", " if not loop.last }}{% else %}none{% endfor %}</span>{{ icon("chevron-down") }}
+            </summary>
+            {# The summary names what is ticked, as it changes. A guard the list does not know stays as it was. #}
+            <div class="menu-panel max-h-80 overflow-y-auto" onchange="this.closest('details').querySelector('[data-chosen]').textContent = [...this.querySelectorAll(':checked')].map(i => i.dataset.label).join(', ') || 'none'">
+              {% for key, label in metric_names.items() %}
+              <label class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 pointer-coarse:py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800">
+                <input type="checkbox" name="speed_guards" value="{{ key }}" data-label="{{ label }}" {% if key in guards %}checked{% endif %} class="accent-uoft-700 dark:accent-uoft-400">
+                <span class="text-sm whitespace-nowrap">{{ label }}</span>
+              </label>
+              {% endfor %}
+              {% for g in guards if g not in metric_names %}<input type="hidden" name="speed_guards" value="{{ g }}">{% endfor %}
+            </div>
+          </details>
           <span class="muted">within</span>
           <input name="speed_guard_pct" inputmode="decimal" value="{{ sp.guard_pct if sp.guard_pct is not none and sp else 10 }}" class="input w-14 py-1.5 tabular-nums" aria-label="Guards may get worse by, percent">
           <span class="muted">%</span>

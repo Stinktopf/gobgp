@@ -91,7 +91,7 @@
     root.append(gridEl);
     if (!list.length) gridEl.append(el("p", "empty-state md:col-span-2", "No chart chosen."));
     // Older runs lack some series: one muted line in the place of their cards, after the others.
-    const missing = [], note = el("p", "empty-state md:col-span-2");
+    const missing = [], note = el("p", "muted text-sm md:col-span-2");  // a remark below the charts, not an empty page
     for (const [metric, title, unit, log] of list) {
       const card = el("div", "card relative p-4");
       const head = el("div", "mb-2 flex items-baseline gap-2");

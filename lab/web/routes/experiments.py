@@ -237,7 +237,8 @@ def parse_builder(form) -> Experiment:
                      "variants": [v.strip() for v in str(form.get("primary_variants", "")).split(",") if v.strip()]} if form.get("primary_metric") else None,
             speed={"baseline": str(form.get("speed_baseline", "")).strip(), "metric": str(form.get("speed_metric")),
                    "margin_pct": number("speed_margin_pct", float),
-                   "guards": [g.strip() for g in str(form.get("speed_guards", "")).split(",") if g.strip()],
+                   # ticked one by one, or written as a list, as before
+                   "guards": [g.strip() for raw in form.getlist("speed_guards") for g in str(raw).split(",") if g.strip()],
                    "guard_pct": number("speed_guard_pct", float)} if form.get("speed_metric") else None,
         )
         e.check_files()

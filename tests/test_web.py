@@ -961,6 +961,9 @@ def test_a_speed_rule_saves_unchanged_through_the_builder():
         form += [(f"v{i}_name", x["name"]), (f"v{i}_ref", x["ref"]), (f"v{i}_mode", x["mode"]), (f"v{i}_share", "50"), (f"v{i}_interval", ""), (f"v{i}_refresh_delay", "")]
     form += [(f"speed_{k}", ", ".join(x) if isinstance(x, list) else str(x)) for k, x in v["speed"].items()]
     assert experiment_pages.parse_builder(FormData(form)).speed == e.speed
+    # Ticked one by one in the menu, as the editor sends them.
+    ticked = [(k, x) for k, x in form if k != "speed_guards"] + [("speed_guards", "settle_s"), ("speed_guards", "flaps")]
+    assert experiment_pages.parse_builder(FormData(ticked)).speed == e.speed
 
 
 def test_a_result_leads_to_the_benchmark_area_only_where_it_measured_performance(client):

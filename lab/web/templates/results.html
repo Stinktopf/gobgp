@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "macros.html" import state_badge, visibility_tag, list_header, problem, delete_button, icon, star_button %}
+{% from "macros.html" import result_state, state_badge, visibility_tag, list_header, problem, delete_button, icon, star_button %}
 {% block title %}Results – OBGP Lab{% endblock %}
 {% block content %}
 {% call list_header("Results", "#results") %}
@@ -42,7 +42,7 @@
         <td class="num muted hidden sm:table-cell">{% if s.total and s.done < s.total %}{{ s.done }}/{{ s.total }}{% elif s.total %}{{ s.total }}{% else %}{{ e.runs_total() }}{% endif %}</td>
         <td class="num muted hidden sm:table-cell">{{ sizes[r.name] | size }}</td>
         <td class="num muted hidden whitespace-nowrap sm:table-cell">{{ r.meta.created | created }}</td>
-        <td class="w-0 pr-5 text-right">{% set v = verdicts[r.name] %}{% if s.state != "finished" %}{{ state_badge(s.state) }}{% elif v and v.passed %}{{ state_badge("passed") }}{% elif v and v.passed == false %}<span data-tip="{{ v.reasons | join(', ') }}" data-tip-align="end">{{ state_badge("did not pass") }}</span>{% elif r.meta.imported %}<span data-tip="Imported from the former scripts, not judged" data-tip-align="end">{{ state_badge("legacy") }}</span>{% elif r.name in analysing %}<span data-tip="The lab computes its metrics, again after a new version of them" data-tip-align="end">{{ state_badge("analysing") }}</span>{% else %}<span data-tip="Its metrics wait for a new version of them, computed once it is opened" data-tip-align="end">{{ state_badge("to analyse") }}</span>{% endif %}</td>
+        <td class="w-0 pr-5 text-right">{{ result_state(r, verdicts[r.name], r.name in analysing) }}</td>
       </tr>
       {% else %}
       {% if not older and not remote %}<tr class="empty"><td colspan="7">No results yet.</td></tr>{% endif %}

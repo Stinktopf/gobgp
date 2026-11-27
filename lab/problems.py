@@ -25,7 +25,7 @@ CAUSES = [
      "A fault of the lab, not of the host: the run cannot be measured."),
     ("other", r"", "Other errors", ""),
 ]
-ORDER = ("error", "check", "property", "unmeasured", "retried")  # the most serious first
+ORDER = ("error", "check", "property", "unmeasured", "retried", "note")  # the most serious first
 PROPERTIES = {  # cause: title of its group
     "rest-end": "Routes still change at the end",
     "rest-step": "A step found no rest in time",
@@ -48,8 +48,11 @@ PROPERTIES = {  # cause: title of its group
     "unmeasured": "Not measured",
     "calibration": "Measured other than the known values",
     "output": "Routes at rest worse or better than the baseline's",
+    "output-varied": "Routes at rest vary as in the baseline's own runs, their totals within",
     "output-unchecked": "No routes at rest to compare with the baseline",
 }
+# Causes that tell how the routes at rest were compared with the baseline: notes, no failure of a run.
+NOTES = ("output-varied", "output-unchecked")
 PLANNED = ("down", "restart", "degrade")  # steps that take sessions down, or may
 
 
@@ -548,10 +551,12 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
                     beyond = shape_beyond(dataset, key, twin, aa, run, base_run)
                     if beyond:
                         found.append(("output", f"routes at rest add up to other totals than in {twin}, beyond what {aa} shows: {beyond}", False))
-                    else:
+                    elif beyond is not None:
+                        found.append(("output-varied", f"{len(hidden)} {what} other routes than in {twin} as they do between two runs of its commit "
+                                                       f"in {aa}, their totals within what those runs show", None))
+                    else:  # a final check without the totals, from before they were kept
                         found.append(("output-unchecked", f"{len(hidden)} {what} other routes than in {twin} as they do between two runs of its commit "
-                                                          f"in {aa}: timing or the change, not told apart"
-                                                          + (", their totals within what those runs show" if beyond is not None else ""), None))
+                                                          f"in {aa}: timing or the change, not told apart", None))
         if at_rest and final.get("loops"):
             found.append(("loops", f"packets to {', '.join(final.get('looping', [])) or str(final['loops']) + ' prefixes'} loop",
                           _predicted(dataset, key, run, set(), "loops")))
@@ -633,7 +638,8 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
                 predicted = None
             told = [f[1] for f in restless_] if restless_ and cause_ == restless_[0][0] else [message]
             out.append({**where, "cause": cause_, "message": message, "failures": told, "predicted": predicted,
-                        **({"kind": "unmeasured"} if cause_ == "unmeasured" else _unanswered(dataset, key, predicted))})
+                        **({"kind": "unmeasured"} if cause_ == "unmeasured" else {"kind": "note"} if cause_ in NOTES
+                           else _unanswered(dataset, key, predicted))})
     return out
 
 
@@ -679,7 +685,9 @@ def grouped(found: list[dict]) -> list[dict]:
     groups: dict[tuple, dict] = {}
     for p in found:
         said, unanswered = p.get("predicted", False), p.get("unanswered", False)
-        if p["kind"] in ("check", "property", "unmeasured"):
+        if p["kind"] == "note":
+            title, hint = PROPERTIES[p["cause"]], "Told, no failure: how the routes at rest were compared with the baseline."
+        elif p["kind"] in ("check", "property", "unmeasured"):
             what = "Failed a check" if p["kind"] == "check" else PROPERTIES[p["cause"]]
             if p.get("cause") == "calibration":
                 title, hint = what, "A fault of the lab, not of the protocol: lab calibrate tells each value."

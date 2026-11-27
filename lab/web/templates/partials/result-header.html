@@ -3,7 +3,7 @@
   <h1 class="truncate font-mono text-2xl font-semibold tracking-tight">{{ result.name }}</h1>
   {{ star_button("result", result.name, starred, "/results/" ~ result.name, "the results", "star-title") }}
   {{ visibility_tag(result) }}
-  {% if result.meta.imported %}<span data-tip="Imported from the former scripts, not judged">{{ state_badge("legacy") }}</span>{% endif %}
+  {% if result.meta.imported and result.state != "legacy" %}<span data-tip="Imported from the former scripts, not judged">{{ state_badge("legacy") }}</span>{% endif %}
   {% if status.state != "finished" %}{{ state_badge("queued" if queued and status.state not in ("running", "failed", "stopped") else status.state) }}{% endif %}
   {% if status.state in ("failed", "stopped") and status.phase %}<span class="muted text-sm">The lab is {{ status.phase }}.</span>{% endif %}
   <div class="ml-auto flex items-center gap-2">
@@ -24,7 +24,9 @@
     <a href="{{ z.url }}" class="btn" data-tip="Complete and publish it on Zenodo{{ ' sandbox' if z.use == 'sandbox' }}">Zenodo draft</a>
     <form method="post" action="/results/{{ result.name }}/zenodo"><button class="btn" data-tip="Asks Zenodo whether it was published">Fetch DOI</button></form>
     {% endif %}
+    {% if result.state != "legacy" %}{# the paper's result never goes: no button that could never be used #}
     {{ delete_button("/results/" ~ result.name ~ "/delete", result.name, reason="Stop it first." if live else result.kept() or "", text="Its runs and samples are gone for good.") }}
+    {% endif %}
     {% if live and result.stopping %}
     <span class="muted text-sm whitespace-nowrap" data-tip="It ends its current phase, then stops. Its runs are kept." data-tip-align="end">Stopping…</span>
     {% elif live %}

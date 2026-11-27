@@ -139,7 +139,13 @@ Every run is checked at its end against its reference, whatever its scenario che
 | At rest where the simulator never rests | a run comes to rest where the simulator never did |
 | No final check | skipped, for tables above 2000 prefixes or a router that does not answer twice within 120 s |
 | Routes at rest worse or better than the baseline's | a commit-only variant chooses routes of another quality at rest than the baseline of the same seed (AS path length and neighbor relation, in a feed the path length a feeder gets). Routers that also differ in the A/A variant do not count. Where they differ there too, as OBGP's may, the routes of all routers added up compare instead: prefixes held, path lengths summed and routes from customers, peers and providers, beyond what the A/A variant deviates in any seed |
-| No routes at rest to compare with the baseline | such a variant or its baseline was not at rest or had no final check, so the comparison above could not be made, or its routes vary as the baseline's own runs do and their totals stay within them |
+
+Two notes tell how such a variant's routes at rest were compared. They fail no run.
+
+| Note | When |
+|---|---|
+| Routes at rest vary as in the baseline's own runs, their totals within | its routes differ from the baseline's only where the A/A variant's differ too, and their totals stay within what the A/A variant deviates |
+| No routes at rest to compare with the baseline | it or its baseline was not at rest or had no final check, or its final check predates the totals |
 
 As a result begins, the [simulator](simulator.md) plays every cell it can, 20 message orders per mode,
 and every run of a cell whose scenario chooses targets or whose variant chooses its OBGP routers at random.

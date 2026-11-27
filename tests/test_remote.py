@@ -119,6 +119,15 @@ def test_a_result_and_a_search_come_back_whole(lab):
     assert remote.pull(got["url"], got["token"], force=True).read_text() == stored
 
 
+def test_a_copy_taken_while_it_ran_comes_back_stopped(lab):
+    c, owner, entry = lab
+    source = results.Dataset.find("t-pull")
+    source.write_status({**source.status, "state": "running", "phase": "measuring"})
+    got = download(entry, "t-pull")
+    copy = results.Dataset(remote.pull(got["url"], got["token"], force=True))
+    assert (copy.status["state"], copy.status["phase"]) == ("stopped", "")
+
+
 def test_pull_takes_only_download_addresses_of_the_lab(lab_files):
     for url in ("lab.test/api/v1/results/x/archive", "http://lab.test/api/v1/results", "http://lab.test/api/v1/results/../archive",
                 "http://lab.test/api/v1/simulation/searches/x/file"):

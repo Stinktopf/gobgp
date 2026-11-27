@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "macros.html" import list_header, state_badge, icon, star_button %}
+{% from "macros.html" import list_header, result_state, icon, star_button %}
 {% import "partials/benchmark-common.html" as bc %}
 {% block title %}Benchmark – OBGP Lab{% endblock %}
 {% block content %}
@@ -25,17 +25,15 @@
           </div></div>
         </td>
         <td class="muted hidden whitespace-nowrap sm:table-cell" data-tip="{{ 'Commits against each other, a verdict per mode' if i.kind == 'benchmark' else 'A result with CPU profiles, its variants side by side' }}">{{ "Benchmark" if i.kind == "benchmark" else "Profiled" }}</td>
-        <td class="whitespace-nowrap">
+        <td class="sm:min-w-56">
           {% if i.verdicts %}
-          <span class="inline-flex items-center gap-1" role="img" aria-label="{% for m, v in i.verdicts | dictsort %}{{ m }} {{ v }}{{ ', ' if not loop.last }}{% endfor %}">
-            {% for m, v in i.verdicts | dictsort %}<span class="size-3 rounded-sm {{ bc.TONES[bc.tone(v)].dot }}" data-tip="{{ m }}: {{ v }}"></span>{% endfor %}
-          </span>
-          {% set all = i.verdicts.values() | list %}<span class="muted ml-1.5 text-xs max-sm:hidden">{% for v in all | unique %}{{ all | select("equalto", v) | list | length }} {{ v }}{{ ", " if not loop.last }}{% endfor %}</span>
+          {# One count per verdict, not a mark per mode: it stays short however many modes a benchmark has. #}
+          <span class="text-xs sm:text-sm">{% for v, modes in i.verdict_counts %}<span class="whitespace-nowrap {{ bc.TEXT[bc.tone(v)] }}" data-tip="{{ modes | join(', ') }}">{{ modes | length }} {{ v }}</span>{{ ", " if not loop.last }}{% endfor %}</span>
           {% elif i.kind == "benchmark" %}<span class="muted text-xs max-sm:hidden">{{ "to analyse" if d.status.get("state") == "finished" else "verdict when its runs are in" }}</span>
           {% else %}<span class="muted text-xs max-sm:hidden">{{ d.experiment.variants | length }} variants</span>{% endif %}
         </td>
         <td class="num muted hidden whitespace-nowrap sm:table-cell">{{ d.meta.get("created", "") | created }}</td>
-        <td class="w-0 pr-5 text-right">{{ state_badge(d.status.get("state") or "stopped") }}</td>
+        <td class="w-0 pr-5 text-right">{{ result_state(d, verdicts[d.name], d.name in analysing) }}</td>
       </tr>
     {% else %}
       <tr class="empty"><td colspan="5">{{ "No benchmarks yet." if show != "profiled" else "No profiled results yet." }}</td></tr>

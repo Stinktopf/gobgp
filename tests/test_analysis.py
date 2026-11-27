@@ -607,10 +607,13 @@ def test_a_commit_is_faster_only_beyond_its_margin_with_its_guards_held_and_the_
     cpu["aa"] = 100.0
     found = [{"variant": "fast", "topology": "noble-eu", "scenario": "fill-60", "cause": "output"}]
     assert {r["variant"]: r["verdict"] for r in analysis.speed(dataset, found=found)["cells"]}["fast"] == "behaves differently"
-    # Routes at rest that differ between runs of the baseline itself: judged on the speed, the routes marked as not compared.
-    found = [{"variant": "fast", "topology": "noble-eu", "scenario": "fill-60", "cause": "output-unchecked"}]
-    fast = next(r for r in analysis.speed(dataset, found=found)["cells"] if r["variant"] == "fast")
-    assert (fast["verdict"], fast["routes_compared"]) == ("faster", False)
+    # Routes at rest compared by their totals, as they vary between runs of the baseline itself, or not at all: judged on
+    # the speed, the cell says how its routes were compared.
+    assert next(r for r in analysis.speed(dataset, found=[])["cells"] if r["variant"] == "fast")["routes"] == "compared"
+    for cause, routes in (("output-varied", "totals"), ("output-unchecked", "not compared")):
+        found = [{"variant": "fast", "topology": "noble-eu", "scenario": "fill-60", "cause": cause}]
+        fast = next(r for r in analysis.speed(dataset, found=found)["cells"] if r["variant"] == "fast")
+        assert (fast["verdict"], fast["routes"]) == ("faster", routes)
 
 
 def test_a_speed_rule_needs_commits_to_compare_an_aa_variant_and_runs_enough_for_every_comparison():

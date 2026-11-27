@@ -374,7 +374,13 @@ def test_a_commit_has_to_choose_and_send_what_the_baseline_of_its_mode_did_beyon
             RunKey("t", "bgp", "s", 1): net({"r1": "a"}), RunKey("t", "bgp-new", "s", 1): unstable}
     dataset = type("D", (), {"experiment": e, "meta": {}, "keys": lambda self: list(runs), "is_done": lambda self, k: k in runs,
                              "run": lambda self, k: runs[k]})()
-    found = [(x["variant"], x["cause"], x["message"]) for x in problems.broken(dataset, known={}) if x["cause"].startswith("output")]
+    broken = problems.broken(dataset, known={})
+    found = [(x["variant"], x["cause"], x["message"]) for x in broken if x["cause"].startswith("output")]
+    # How the routes were compared is a note, no failure: the verdict does not count it, the routes differing does.
+    assert {x["cause"]: x["kind"] for x in broken if x["cause"].startswith("output")} == {"output": "property", "output-unchecked": "note"}
+    note = next(g for g in problems.grouped(broken) if g["kind"] == "note")
+    assert (note["title"], note["hint"]) == ("No routes at rest to compare with the baseline",
+                                             "Told, no failure: how the routes at rest were compared with the baseline.")
     assert ("new", "output", "1 feeders get routes of another length or kind than in base: f3, beyond 1 that differ in aa, the same commit as base") in found
     assert ("bgp-new", "output-unchecked", "no routes at rest to compare with bgp: a run was not at rest or had no final check") in found
     assert not [f for f in found if f[0] == "aa"]  # its own differences are timing, told in the others

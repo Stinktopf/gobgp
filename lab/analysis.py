@@ -136,7 +136,7 @@ from . import profile
 from .config import write_atomic
 from .results import COUNTERS, Dataset, RunKey
 
-VERSION = 50  # of the metrics: a change recomputes the cached summaries
+VERSION = 51  # of the metrics: a change recomputes the cached summaries
 METRICS = ["convergence_s", "settle_s", "settle_end_s", "hold_churn", "oscillates", "rest_s", "unreached", "stale_end", "loops_end", "holes_end", "loops_s", "loops_max", "holes_s", "holes_max", "loops_beyond_s", "holes_beyond_s", "flaps", "sessions_down_end", "flaps_unplanned", "down_unplanned", "hops_sampled",
            "blocked_s", "blocked_max", "known_mean", "sample_hz", "sample_hz_min", "host_cpu_max", "host_others_spread", "host_others_mean", "adj_in_mean", "rib_mean", "rib_max", "suppressed_mean",
            "selected_mean", "path_len_avg", "rss_mean", "heap_mean", "objects_mean", "cpu_s_mean", "updates_prefix_max", "prefixes_update",
@@ -1660,9 +1660,9 @@ def speed(dataset: Dataset, found: list[dict] | None = None) -> dict | None:
         r["holm"] = adjusted
     for r in out:
         causes = {x["cause"] for x in found if (x["variant"], x["topology"], x["scenario"]) == (r["variant"], r["topology"], r["scenario"])}
-        # Routes at rest that vary between runs of the baseline itself, as OBGP's may, are no fault: the speed is
-        # judged all the same, and the cell says that its routes were not compared.
-        r["routes_compared"] = "output-unchecked" not in causes
+        # How the routes at rest were compared: route by route, by their totals where they vary between runs of the
+        # baseline itself, as OBGP's may, or not at all. The speed is judged all the same, and the cell says which.
+        r["routes"] = "not compared" if "output-unchecked" in causes else "totals" if "output-varied" in causes else "compared"
         r["verdict"] = (
             "behaves differently" if "output" in causes
             else "too few runs" if r.get("p") is None or r["level"] < r["level_wanted"]

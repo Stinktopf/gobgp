@@ -40,7 +40,7 @@ def test_the_api_reads_with_a_token_and_controls_only_with_scope_control(app, la
     assert c.get("/api/v1/results").status_code == 401
     listed = c.get("/api/v1/results", headers=bearer(reader)).json()
     assert "t-agent" in [r["name"] for r in listed]
-    assert c.get("/api/v1/results/t-agent", headers=bearer(reader)).json()["problems"] == {"error": 0, "check": 0, "property": 0, "unmeasured": 0, "retried": 0}
+    assert c.get("/api/v1/results/t-agent", headers=bearer(reader)).json()["problems"] == {"error": 0, "check": 0, "property": 0, "unmeasured": 0, "retried": 0, "note": 0}
     assert c.get("/api/v1/results/nothing", headers=bearer(reader)).status_code == 404
     assert c.get("/api/v1/results/t-agent/log?grep=(", headers=bearer(reader)).status_code == 422
     assert c.post("/api/v1/queue/pause", headers=bearer(reader)).status_code == 403

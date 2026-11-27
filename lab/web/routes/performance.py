@@ -14,7 +14,7 @@ from ... import analysis, marks
 from ...problems import twins_of
 from ...results import Dataset
 from ..context import render
-from .results import measuring, performance
+from .results import known_verdict, measuring, performance
 
 router = APIRouter()
 
@@ -328,7 +328,13 @@ def listed() -> list[dict]:
         if (kind := kind_of(d)) is None:
             continue
         b = d.experiment.benchmark
-        items.append({"dataset": d, "kind": kind, "verdicts": verdicts(d) if kind == "benchmark" else None,
+        found = verdicts(d) if kind == "benchmark" else None
+        # Per verdict the modes that got it, the most serious first, as the page orders them.
+        counts = {}
+        for mode, v in sorted((found or {}).items()):
+            counts.setdefault(v, []).append(mode)
+        items.append({"dataset": d, "kind": kind, "verdicts": found,
+                      "verdict_counts": sorted(counts.items(), key=lambda x: VERDICT_ORDER.index(x[0])),
                       "title": f"{', '.join(b.candidates)} against {b.baseline}" if b else d.experiment.name})
     starred = marks.starred("result")
     return sorted(items, key=lambda i: i["dataset"].name not in starred)
@@ -342,7 +348,11 @@ def area(request: Request, show: str = "all", result: str = ""):
         return RedirectResponse(f"/benchmark/{quote(result)}" + (f"?{query}" if query else ""), status_code=301)
     show = show if show in ("all", "benchmark", "profiled") else "all"
     items = [i for i in listed() if show in ("all", i["kind"])]
-    return render(request, "benchmarks.html", nav="benchmark", items=items, show=show, starred=marks.starred("result"))
+    shown = [i["dataset"] for i in items]
+    # Their state as in the list of results: the same word for the same result.
+    return render(request, "benchmarks.html", nav="benchmark", items=items, show=show, starred=marks.starred("result"),
+                  verdicts={d.name: known_verdict(d) for d in shown},
+                  analysing={d.name for d in shown if str(d.path) in analysis.PROGRESS})
 
 
 @router.get("/benchmark/{name}", response_class=HTMLResponse)

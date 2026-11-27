@@ -94,6 +94,10 @@ def pull(url: str, token: str, fingerprint: str | None = None, force: bool = Fal
         shutil.rmtree(where, ignore_errors=True)
         where.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(Path(tmp) / name, where)
+    # A copy taken while it ran or waited runs nowhere here: stopped, so that it does not show as running for good.
+    copy = results.Dataset(where)
+    if (status := copy.status).get("state") in ("running", "queued"):
+        copy.write_status({**status, "state": "stopped", "phase": ""})
     return where
 
 

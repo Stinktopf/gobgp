@@ -107,7 +107,7 @@ def result(name: str) -> dict:
             "topologies": e.topologies, "scenarios": e.cases(), "runs_per_combination": e.runs,
             "variants": [{"name": v.name, "mode": v.summary(), "commit": d.commits.get(v.name, "")[:12]} for v in e.variants],
             "bgp": e.bgp.model_dump(), "sampling": e.sampling.model_dump(), "cluster": {**e.cluster.model_dump(), **(d.meta.get("cluster") or {})},
-            "problems": {kind: sum(p["kind"] == kind for p in found) for kind in ("error", "check", "property", "unmeasured", "retried")},
+            "problems": {kind: sum(p["kind"] == kind for p in found) for kind in ("error", "check", "property", "unmeasured", "retried", "note")},
             "verdict": verdict(d, found), "marks": marks.of("result", d.name),
             "state": d.state, "zenodo": d.zenodo or None, "index_entry": archive.entry(d) if d.state == "archived" else None}
 

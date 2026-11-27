@@ -21,7 +21,7 @@
 
 {% macro visibility_tag(dataset) -%}
 {% set z = dataset.zenodo if dataset.state == "archived" else {} %}
-{% if dataset.state == "legacy" %}<span class="tag" data-tip="The paper's result, in the repository under results/public">legacy</span>
+{% if dataset.state == "legacy" %}<span class="tag" data-tip="The paper's result, in the repository under results/public, imported from the former scripts and not judged">legacy</span>
 {% elif dataset.state == "archived" %}<span class="tag tag-accent" data-tip="Frozen with a manifest of every file{{ ', on Zenodo' if z.doi else ', a draft on Zenodo' if z else '' }}{{ ' sandbox' if z.use == 'sandbox' }}">archived</span>
 {% else %}<span class="tag" data-tip="Only on this lab, the lab may still change it">private</span>{% endif %}
 {%- endmacro %}
@@ -93,6 +93,17 @@
 
 {# Delete, asked first in the dialog of the page; disabled with the reason
    while something uses it or it cannot be deleted now. #}
+{# The state of a result in a list: its phase while it runs, then its verdict once known. #}
+{% macro result_state(dataset, verdict, analysing) -%}
+{% set state = dataset.status.get("state") or "stopped" %}
+{%- if state != "finished" %}{{ state_badge(state) }}
+{%- elif verdict and verdict.passed %}{{ state_badge("passed") }}
+{%- elif verdict and verdict.passed == false %}<span data-tip="{{ verdict.reasons | join(', ') }}" data-tip-align="end">{{ state_badge("did not pass") }}</span>
+{%- elif dataset.meta.imported %}<span data-tip="Imported from the former scripts, not judged" data-tip-align="end">{{ state_badge("legacy") }}</span>
+{%- elif analysing %}<span data-tip="The lab computes its metrics, again after a new version of them" data-tip-align="end">{{ state_badge("analysing") }}</span>
+{%- else %}<span data-tip="Its metrics wait for a new version of them, computed once it is opened" data-tip-align="end">{{ state_badge("to analyse") }}</span>{% endif %}
+{%- endmacro %}
+
 {% macro delete_button(action, name, used=[], reason="", text="Results keep their copy.") -%}
 {% if used or reason %}
 <span data-tip="{{ reason or 'Used by ' ~ used | join(', ') }}" data-tip-align="end">{{ icon_button("delete", "Delete", disabled=true, class="btn-danger") }}</span>

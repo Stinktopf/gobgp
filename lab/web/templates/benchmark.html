@@ -109,7 +109,7 @@
     {% for r in plot.rows %}{% set tn = bc.tone(r.verdict) %}
       <tr class="{{ 'bg-slate-50 dark:bg-white/5' if (r.baseline, r.variant) == (reference, compare) }}">
         <td class="px-4 py-2 max-sm:px-2"><a href="{{ here }}&reference={{ r.baseline }}&compare={{ r.variant }}" class="hit font-mono whitespace-nowrap hover:underline">{{ r.baseline }}</a>
-          <span class="mt-1 block sm:hidden"><span data-tip="{{ bc.WHY.get(r.verdict, '') }}{% if r.routes_compared is defined and not r.routes_compared %}&#10;Routes at rest vary between runs of the baseline itself: not compared{% endif %}">{{ state_badge(r.verdict) }}</span></span></td>
+          <span class="mt-1 block sm:hidden"><span data-tip="{{ bc.WHY.get(r.verdict, '') }}{% if bc.ROUTES[r.routes] is defined %}&#10;{{ bc.ROUTES[r.routes] }}{% endif %}">{{ state_badge(r.verdict) }}</span></span></td>
         <td class="px-2 py-2">
           {% if r.drawn %}
           <svg viewBox="0 0 400 20" preserveAspectRatio="none" class="h-5 w-full overflow-visible" role="img" aria-label="{{ '%+.1f' | format(r.s) }} %, {{ '%+.1f' | format(r.lo) }} to {{ '%+.1f' | format(r.hi) }} %">
@@ -126,7 +126,7 @@
         {% for x in (ch.cells[1:] if ch else macro_metrics[1:]) %}{% set beyond = ch and x.beyond and x.change is not none and (x.change | abs) >= 0.05 %}
         <td class="hidden px-3 py-2 text-right tabular-nums whitespace-nowrap lg:table-cell {{ 'muted' if not beyond else 'text-emerald-700 dark:text-emerald-300' if x.change < 0 else 'text-rose-700 dark:text-rose-300' }}">{% if ch and x.change is not none %}{{ ("%+.1f" | format(x.change) | replace("-", "−")) if (x.change | abs) >= 0.05 else "0.0" }} %{% else %}–{% endif %}</td>
         {% endfor %}
-        <td class="hidden px-4 py-2 sm:table-cell"><span data-tip="{{ bc.WHY.get(r.verdict, '') }}{% if r.routes_compared is defined and not r.routes_compared %}&#10;Routes at rest vary between runs of the baseline itself: not compared{% endif %}">{{ state_badge(r.verdict) }}</span></td>
+        <td class="hidden px-4 py-2 sm:table-cell"><span data-tip="{{ bc.WHY.get(r.verdict, '') }}{% if bc.ROUTES[r.routes] is defined %}&#10;{{ bc.ROUTES[r.routes] }}{% endif %}">{{ state_badge(r.verdict) }}</span></td>
       </tr>
     {% endfor %}
     </tbody>

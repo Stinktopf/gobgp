@@ -4,6 +4,7 @@
   "rose": {"dot": "bg-rose-500 dark:bg-rose-400", "line": "stroke-rose-600 dark:stroke-rose-400", "point": "fill-rose-600 dark:fill-rose-400"},
   "slate": {"dot": "bg-slate-400 dark:bg-slate-500", "line": "stroke-slate-500 dark:stroke-slate-400", "point": "fill-slate-500 dark:fill-slate-400"},
 } %}
+{% set TEXT = {"emerald": "text-emerald-700 dark:text-emerald-300", "rose": "text-rose-700 dark:text-rose-300", "slate": "muted"} %}
 {% set WHY = {
   "faster": "Faster beyond the margin, its guards held, the same routes at rest",
   "slower": "Slower beyond the margin",
@@ -14,6 +15,11 @@
   "behaves differently": "It chooses other routes at rest than the baseline",
   "too few runs": "Its runs do not reach the level the rule asks",
   "lab drifts": "The baseline against itself shifted beyond the margin: the lab moved, not the code",
+} %}
+{# How the routes at rest were compared, where not route by route. #}
+{% set ROUTES = {
+  "totals": "Routes at rest vary between runs of the baseline itself: compared by their totals, within what those runs show",
+  "not compared": "Routes at rest not compared: a run was not at rest or had no final check",
 } %}
 {% macro tone(v) -%}
 {{ "emerald" if v == "faster" else "rose" if v in ("slower", "behaves differently", "faster, worse elsewhere") else "slate" }}

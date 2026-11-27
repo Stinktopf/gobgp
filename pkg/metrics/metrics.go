@@ -253,6 +253,16 @@ var (
 		"Number of routes accepted from peer",
 		rfLabels, nil,
 	)
+	bgpHandledUpdatesDesc = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "handled", "update_total"),
+		"Number of UPDATE messages from all peers the server handled, those whose prefixes bgp_received_prefixes_total counts",
+		nil, nil,
+	)
+	bgpReceivedPrefixesDesc = prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "received", "prefixes_total"),
+		"Number of prefixes in the UPDATE messages received from all peers, by whether they were announced or withdrawn",
+		[]string{"kind"}, nil,
+	)
 	bgpRoutesAdvertisedDesc = prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "routes", "advertised"),
 		"Number of routes advertised to peer",
@@ -299,6 +309,8 @@ func (c *bgpCollector) Describe(out chan<- *prometheus.Desc) {
 	out <- bgpRoutesReceivedDesc
 	out <- bgpRoutesAcceptedDesc
 	out <- bgpRoutesAdvertisedDesc
+	out <- bgpHandledUpdatesDesc
+	out <- bgpReceivedPrefixesDesc
 }
 
 // The routes advertised to a peer are counted by building what it gets, a walk over the table per peer at
@@ -314,6 +326,11 @@ func (c *bgpCollector) Collect(out chan<- prometheus.Metric) {
 		out <- prometheus.NewInvalidMetric(prometheus.NewDesc("error", "error during metric collection", nil, nil), err)
 		return
 	}
+
+	updates, announced, withdrawn := c.server.ReceivedPrefixes()
+	out <- prometheus.MustNewConstMetric(bgpHandledUpdatesDesc, prometheus.CounterValue, float64(updates))
+	out <- prometheus.MustNewConstMetric(bgpReceivedPrefixesDesc, prometheus.CounterValue, float64(announced), "announced")
+	out <- prometheus.MustNewConstMetric(bgpReceivedPrefixesDesc, prometheus.CounterValue, float64(withdrawn), "withdrawn")
 
 	if !countPeers {
 		return

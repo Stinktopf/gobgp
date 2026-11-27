@@ -114,6 +114,7 @@ func newSharedData() *sharedData {
 
 type BgpServer struct {
 	shared       *sharedData
+	received     receivedPrefixes
 	apiServer    *server
 	bgpConfig    oc.Bgp
 	acceptCh     chan net.Conn
@@ -1638,6 +1639,7 @@ func (s *BgpServer) handleFSMMessage(peer *peer, e *fsmMsg) {
 				sendfsmOutgoingMsg(peer, paths)
 			}
 		case bgp.BGP_MSG_UPDATE:
+			s.received.count(m.Body.(*bgp.BGPUpdate))
 			pathList, eor, isLimit := peer.handleUpdate(e)
 			if isLimit {
 				_ = s.setAdminState(peer.ID(), "", adminStatePfxCt)

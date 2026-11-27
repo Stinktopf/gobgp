@@ -140,6 +140,7 @@ type BgpServer struct {
 	operaViews   map[bgp.Family]operaViewList // operaViewPeers per family, cleared with operaOrder
 	exports      map[exportKey]*table.Path    // while an update is handled: a path as made for each export class, see exported
 	exported1    map[exportKey]*table.Path    // and for each local address of a class, see exported
+	classes      map[exportClass]int          // a number for each export class seen, see exported
 	unpreffed    map[*table.Path]*table.Path  // and of a path for eBGP neighbors the copy without LOCAL_PREF, see postFilterpath
 	withdrawals  map[*table.Path]*table.Path  // and of a path its withdrawal, see withdrawal
 	validate     func(*table.Path) *table.Validation
@@ -654,7 +655,7 @@ type exportClass struct {
 
 type exportKey struct {
 	path  *table.Path
-	class exportClass
+	class int        // the number of an exportClass in classes
 	local netip.Addr // in exported1 only
 }
 
@@ -669,8 +670,21 @@ func (s *BgpServer) exported(peer *peer, path *table.Path) *table.Path {
 		return table.UpdatePathAttrs(peer.fsm.logger, peer.fsm.gConf, c, peer.peerInfo, path)
 	}
 	local := peer.peerInfo.LocalAddress
-	key := exportKey{path: path, class: exportClass{c.State.PeerType, c.Config.LocalAs, c.State.RemovePrivateAs, c.IsConfederationMember(peer.fsm.gConf),
-		c.RouteReflector.Config.RouteReflectorClient, c.RouteReflector.State.RouteReflectorClusterId, local.Is6()}}
+	class := exportClass{c.State.PeerType, c.Config.LocalAs, c.State.RemovePrivateAs, c.IsConfederationMember(peer.fsm.gConf),
+		c.RouteReflector.Config.RouteReflectorClient, c.RouteReflector.State.RouteReflectorClusterId, local.Is6()}
+	if class != peer.class || peer.classID == 0 {
+		// a number per class, so that the keys below hash no strings
+		id, ok := s.classes[class]
+		if !ok {
+			if s.classes == nil {
+				s.classes = map[exportClass]int{}
+			}
+			id = len(s.classes) + 1
+			s.classes[class] = id
+		}
+		peer.class, peer.classID = class, id
+	}
+	key := exportKey{path: path, class: peer.classID}
 	mine := key
 	mine.local = local
 	if p, ok := s.exported1[mine]; ok {

@@ -65,7 +65,7 @@
   <section class="card flex flex-col overflow-hidden lg:col-span-3">
     <div class="border-b border-slate-100 px-4 py-2 text-sm font-medium dark:border-white/5">Long runners <span class="muted text-xs font-normal font-mono max-sm:block max-sm:truncate">{{ p.variant }}{% if p.against %} vs {{ p.against }}{% endif %}</span></div>
     {% if p.hotspots %}{% set top = (p.hotspots | map(attribute="flat") | max) or 1 %}
-    <div class="lg:relative lg:min-h-40 lg:flex-1"><div class="overflow-y-auto max-lg:max-h-80 lg:absolute lg:inset-0">
+    <div class="lg:relative lg:min-h-40 lg:flex-1"><div class="scroll-shade overflow-y-auto max-lg:max-h-80 lg:absolute lg:inset-0">
     <table class="w-full text-sm">
       <thead class="sticky top-0 bg-white dark:bg-slate-900">
       <tr class="text-xs text-slate-500 dark:text-slate-400"><th class="px-4 py-1.5 text-left font-medium">Function</th><th class="px-3 py-1.5 text-right font-medium whitespace-nowrap" data-tip="Seconds per run in the function itself">Own</th>{% if p.against %}<th class="px-4 py-1.5 text-right font-medium" data-tip="Own seconds against {{ p.against }}">Change</th>{% endif %}</tr>
@@ -127,8 +127,9 @@
          else "bg-slate-100 text-slate-700 dark:bg-white/15 dark:text-slate-300" if p.against
          else BRANCHES[x.branch % BRANCHES | length][x.depth % 2] %}
       {% set labelled = x.width > 0.06 %}
-      <a {{ to("&focus=" ~ (x.path | join(';') | urlencode) if x.path else "") }} {% if not labelled %}tabindex="-1"{% endif %}
-         class="absolute block overflow-hidden rounded-sm px-1.5 text-xs leading-6 text-ellipsis whitespace-nowrap ring-1 ring-white hover:brightness-95 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-uoft-500 dark:ring-slate-900 {{ tone_class }}"
+      {# A dense chart: boxes are 24 px high. One narrower than 24 px on the smallest tree is no target on touch, its parent zooms in. #}
+      <a {{ to("&focus=" ~ (x.path | join(';') | urlencode) if x.path else "") }} {% if not labelled %}tabindex="-1"{% endif %} data-dense
+         class="{{ 'touch-none-target ' if x.width < 0.04 }}absolute block overflow-hidden rounded-sm px-1.5 text-xs leading-6 text-ellipsis whitespace-nowrap ring-1 ring-white hover:brightness-95 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-uoft-500 dark:ring-slate-900 {{ tone_class }}"
          style="left: {{ (100 * x.left) | round(3) }}%; width: {{ (100 * x.width) | round(3) }}%; top: {{ 26 * x.depth }}px; height: 24px"
          data-tip="{{ x.name or 'whole tree' }}&#10;{{ '%.2f' | format(x.s) }} s per run{% if x.before is not none %}, {{ p.against }} {{ '%.2f' | format(x.before) }} s{% endif %}{% if x.new %}&#10;new{% elif c %}&#10;{{ '%+.0f' | format(100 * c) | replace('-', '−') }} %{% endif %}">{% if labelled %}<span class="{{ 'max-sm:hidden' if x.width < 0.15 }}"><span class="font-mono">{{ x.short }}</span> <span class="opacity-70 tabular-nums">{{ "%.1f" | format(x.s) }} s{% if x.new %} new{% elif c %} {{ "%+.0f" | format(100 * c) | replace("-", "−") }} %{% endif %}</span></span>{% endif %}</a>
       {% endfor %}

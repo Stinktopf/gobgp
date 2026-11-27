@@ -11,7 +11,7 @@
   {% if d.status.get("state") != "finished" %}{{ state_badge(d.status.get("state") or "stopped") }}{% endif %}
 {% endcall %}
 {% if analysing is defined %}
-<div class="card p-6 text-sm" id="benchmark" hx-get="/benchmark/{{ d.name }}" hx-trigger="every 3s [document.visibilityState === 'visible']" hx-select="#benchmark" hx-swap="outerHTML">The lab computes the metrics of <span class="font-mono">{{ d.name }}</span>{% if analysing %}, {{ analysing.done }} of {{ analysing.total }} runs{% endif %}.</div>
+<div class="card p-6 text-sm" id="benchmark" hx-get="/benchmark/{{ d.name }}" hx-trigger="every 3s [document.visibilityState === 'visible']" hx-select="#benchmark" hx-swap="outerHTML">The lab computes the metrics of <span class="font-mono">{{ d.name }}</span>{% if analysing %}{% set done, total = analysing %}, {{ done }} of {{ total }} runs{% endif %}.</div>
 {% else %}
 {% set here = "?topology=" ~ topology ~ "&scenario=" ~ scenario %}
 {# Every link and form below changes only this part, in place: the page keeps where it was scrolled to. #}
@@ -109,7 +109,8 @@
     {% for r in plot.rows %}{% set tn = bc.tone(r.verdict) %}
       <tr class="{{ 'bg-slate-50 dark:bg-white/5' if (r.baseline, r.variant) == (reference, compare) }}">
         <td class="px-4 py-2 max-sm:px-2"><a href="{{ here }}&reference={{ r.baseline }}&compare={{ r.variant }}" class="hit font-mono whitespace-nowrap hover:underline">{{ r.baseline }}</a>
-          <span class="mt-1 block sm:hidden"><span data-tip="{{ bc.WHY.get(r.verdict, '') }}{% if bc.ROUTES[r.routes] is defined %}&#10;{{ bc.ROUTES[r.routes] }}{% endif %}">{{ state_badge(r.verdict) }}</span></span></td>
+          {# On the phone the columns of numbers are hidden: the shift stays beside the verdict. #}
+          <span class="mt-1 flex items-center gap-2 sm:hidden">{% if r.drawn %}<span class="tabular-nums whitespace-nowrap">{{ "%+.1f" | format(r.s) | replace("-", "−") }} %</span>{% endif %}<span data-tip="{{ bc.WHY.get(r.verdict, '') }}{% if bc.ROUTES[r.routes] is defined %}&#10;{{ bc.ROUTES[r.routes] }}{% endif %}">{{ state_badge(r.verdict) }}</span></span></td>
         <td class="px-2 py-2">
           {% if r.drawn %}
           <svg viewBox="0 0 400 20" preserveAspectRatio="none" class="h-5 w-full overflow-visible" role="img" aria-label="{{ '%+.1f' | format(r.s) }} %, {{ '%+.1f' | format(r.lo) }} to {{ '%+.1f' | format(r.hi) }} %">
@@ -150,7 +151,7 @@
   <div class="grid items-center gap-x-6 gap-y-2 px-4 py-4 md:grid-cols-[minmax(0,24rem)_1fr]">
     <svg viewBox="-16 -8 132 116" class="mx-auto w-full max-w-sm" data-tip="{{ compare }} against {{ reference }}, the dashed circle. Inside is less, on every axis the better." role="img" aria-label="{{ compare }} against {{ reference }}: {% for a in R.axes %}{{ a.label }} {{ ('%+.0f' | format(a.change)) ~ ' %' if a.change is not none else 'not measured' }}{{ ', ' if not loop.last }}{% endfor %}">
       {% for ring in R.rings %}<circle cx="50" cy="50" r="{{ ring.r }}" fill="none" class="{{ 'stroke-slate-500 dark:stroke-slate-400' if ring.ratio == 1.0 else 'stroke-slate-200 dark:stroke-slate-700' }}" stroke-width="{{ 0.6 if ring.ratio == 1.0 else 0.4 }}" {% if ring.ratio == 1.0 %}stroke-dasharray="2 1.5"{% endif %}/>
-      {% if ring.ratio != 1.0 %}<text x="51.5" y="{{ 50 - ring.r - 1 }}" class="fill-slate-500 dark:fill-slate-400" font-size="4.5">{{ ring.label }}</text>{% endif %}{% endfor %}
+      {% if ring.ratio != 1.0 %}<text x="51.5" y="{{ 50 - ring.r - 1 }}" class="fill-slate-500 dark:fill-slate-400" font-size="5">{{ ring.label }}</text>{% endif %}{% endfor %}
       {% for sp in R.spokes %}<line x1="50" y1="50" x2="{{ sp.end[0] }}" y2="{{ sp.end[1] }}" class="stroke-slate-200 dark:stroke-slate-700" stroke-width="0.4"/>{% endfor %}
       {% if R.band %}<path fill-rule="evenodd" class="fill-slate-200/80 dark:fill-white/15" d="M{% for x, y in R.band.outer %}{{ x }},{{ y }} {% endfor %}Z M{% for x, y in R.band.inner %}{{ x }},{{ y }} {% endfor %}Z"/>{% endif %}
       <polygon points="{% for x, y in R.points %}{{ x }},{{ y }} {% endfor %}" class="fill-uoft-600/15 stroke-uoft-600 dark:fill-uoft-300/20 dark:stroke-uoft-300" stroke-width="0.9" stroke-linejoin="round"/>

@@ -18,7 +18,7 @@ from playwright.sync_api import sync_playwright
 REPO = Path(__file__).resolve().parents[2]
 RESULT, TOPOLOGY, SCENARIO, EXPERIMENT = "ifip-networking-2026", "noble-eu", "fill-60", "behaviour-oscillation"
 PAGES = ["/experiments", f"/experiments/{EXPERIMENT}", "/experiments/new", "/topologies", f"/topologies/{TOPOLOGY}",
-         "/topologies/new", "/scenarios", f"/scenarios/{SCENARIO}", "/scenarios/new", "/results", "/settings", "/simulation"]
+         "/topologies/new", "/scenarios", f"/scenarios/{SCENARIO}", "/scenarios/new", "/results", "/settings", "/simulation", "/benchmark"]
 PAGES += [f"/results/{RESULT}?tab={tab}" for tab in ("runs", "table", "charts", "replay", "quality", "details")]
 SIZES = {"phone": (390, 844), "desktop": (1280, 900)}
 PASSWORD = "screens-password"
@@ -30,6 +30,7 @@ AUDIT = """() => {
   const out = { small: [], tiny: [], fields: [], text: [] };
   for (const e of document.querySelectorAll("a, button, select, input:not([type=hidden]), textarea, summary, [role=button], [data-tip]")) {
     if (!seen(e) || (e.tagName === "A" && e.closest("p, li > span, .item-note, tr[onclick]"))) continue;  // the row is the target
+    if (getComputedStyle(e).pointerEvents === "none") continue;  // no target on touch, see touch-none-target
     if (e.closest("td[data-runs]")) continue;  // on touch the cell is the target, see below
     if (e.getBoundingClientRect().width <= 1) continue;  // hidden for screen readers only, e.g. the radio of a segmented control
     if (e.matches("input[type=checkbox], input[type=radio]") && e.closest("label")) continue;  // the label is the target
@@ -46,7 +47,9 @@ AUDIT = """() => {
     if (seen(e) && e.getBoundingClientRect().height < 44) out.small.push(e.dataset.runs);
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) { const p = walker.currentNode.parentElement;
-    if (walker.currentNode.textContent.trim() && seen(p) && parseFloat(getComputedStyle(p).fontSize) < 12) out.text.push(walker.currentNode.textContent.trim().slice(0, 20)); }
+    // Text in an SVG is drawn at its size times the scale of the drawing, not at its own size.
+    const scale = p instanceof SVGGraphicsElement && p.getScreenCTM() ? Math.hypot(p.getScreenCTM().a, p.getScreenCTM().b) : 1;
+    if (walker.currentNode.textContent.trim() && seen(p) && scale * parseFloat(getComputedStyle(p).fontSize) < 12) out.text.push(walker.currentNode.textContent.trim().slice(0, 20)); }
   return out;
 }"""
 
@@ -89,7 +92,7 @@ def main() -> None:
     out = Path(sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix="obgp-screens-"))
     only = sys.argv[2] if len(sys.argv) > 2 else ""
     out.mkdir(parents=True, exist_ok=True)
-    pages = [only] if only.startswith("/") else PAGES  # a path of its own, e.g. a case of the Simulation
+    pages = [only] if only.startswith("/") else list(PAGES)  # a path of its own, e.g. a case of the Simulation
     wide, faults = [], {}
     with serve() as base:
         with sync_playwright() as p:
@@ -114,6 +117,10 @@ def main() -> None:
                             wide.append(f"{size} {path}")
                         if phone and scheme == "light":
                             faults[path] = page.evaluate(AUDIT)
+                        if path == "/benchmark" and not only.startswith("/"):  # and the first benchmark or profiled result there, if any
+                            first = page.evaluate("document.querySelector('a[href^=\"/benchmark/\"]')?.getAttribute('href')")
+                            if first and first not in pages:
+                                pages.append(first)
                 browser.close()
     print(f"Screenshots in {out}")
     for line in dict.fromkeys(wide):

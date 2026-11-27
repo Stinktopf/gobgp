@@ -1032,6 +1032,20 @@ def test_the_benchmark_area_is_a_list_with_search_and_kinds_and_each_result_a_pa
     assert client.get("/benchmark/ifip-networking-2026").status_code == 404  # neither a benchmark nor profiled
 
 
+def test_the_benchmark_list_counts_its_verdicts_however_many_modes_it_has(client, monkeypatch):
+    from lab.web.routes import performance as area
+    e = Experiment.model_validate({"name": "b", "runs": 6, "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "benchmark": {"baseline": "6792c5c2", "candidates": ["b3dfb4b8"], "modes": ["bgp"]}})
+    d = type("D", (), {"name": "b-1", "experiment": e, "status": {"state": "running"}, "meta": {}, "path": "b-1"})()
+    monkeypatch.setattr(area.Dataset, "all", staticmethod(lambda: [d]))
+    modes = {f"m{i}": "faster" for i in range(9)} | {"x": "no change shown", "y": "slower"}
+    monkeypatch.setattr(area, "verdicts", lambda d: modes)
+    page = client.get("/benchmark").text
+    # One count per verdict, the most serious first, the modes in its tip: no mark per mode.
+    assert page.index("1 slower") < page.index("1 no change shown") < page.index("9 faster")
+    assert 'data-tip="m0, m1, m2, m3, m4, m5, m6, m7, m8"' in page and "rounded-sm" not in page.split("<tbody")[1]
+
+
 def test_a_benchmark_has_a_page_of_its_own_with_its_pair_and_its_profiles_loaded_after(client, monkeypatch):
     from lab.web.routes import performance as area
     e = Experiment.model_validate({"name": "b", "runs": 6, "topologies": ["noble-eu"], "scenarios": ["fill-60"],
@@ -1047,6 +1061,10 @@ def test_a_benchmark_has_a_page_of_its_own_with_its_pair_and_its_profiles_loaded
     page = client.get("/benchmark/b-1?topology=noble-eu&scenario=fill-60").text
     assert "b3dfb4b8 against 6792c5c2" in page and 'href="/benchmark"' in page and "Where the CPU goes" in page
     assert 'hx-get="/benchmark/b-1/details?topology=noble-eu&amp;scenario=fill-60' in page and 'action="/benchmark/b-1"' in page
+    # While its metrics are computed, the page says how far.
+    monkeypatch.setattr(area, "measuring", lambda d: True)
+    monkeypatch.setitem(analysis.PROGRESS, "b-1", [3, 10])
+    assert "3 of 10 runs." in client.get("/benchmark/b-1").text
 
 
 def test_a_forest_plot_puts_every_mode_on_one_axis_with_its_margin():

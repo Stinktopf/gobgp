@@ -252,6 +252,32 @@
   .card {
     @apply rounded-xl bg-white shadow-xs ring-1 ring-slate-900/5 dark:bg-slate-900 dark:ring-white/10;
   }
+  /* A shadow at each edge where there is more to scroll, gone at the end: a cut table or list says so even
+     where the browser hides its scrollbars. The covers scroll with the content, the shadows stay. */
+  .scroll-shade {
+    --shade-bg: var(--color-white);
+    --shade: rgb(15 23 42 / 0.16);
+    background:
+      linear-gradient(to right, var(--shade-bg) 30%, transparent) left / 2rem 100% no-repeat local,
+      linear-gradient(to left, var(--shade-bg) 30%, transparent) right / 2rem 100% no-repeat local,
+      linear-gradient(var(--shade-bg) 30%, transparent) top / 100% 2rem no-repeat local,
+      linear-gradient(transparent, var(--shade-bg) 70%) bottom / 100% 2rem no-repeat local,
+      radial-gradient(farthest-side at 0 50%, var(--shade), transparent) left / 0.75rem 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%, var(--shade), transparent) right / 0.75rem 100% no-repeat scroll,
+      radial-gradient(farthest-side at 50% 0, var(--shade), transparent) top / 100% 0.75rem no-repeat scroll,
+      radial-gradient(farthest-side at 50% 100%, var(--shade), transparent) bottom / 100% 0.75rem no-repeat scroll;
+    background-color: var(--shade-bg);
+    @variant dark {
+      --shade-bg: var(--color-slate-900);
+      --shade: rgb(0 0 0 / 0.5);
+    }
+  }
+  /* Too narrow to hit with a finger: on touch the element around it is the target. */
+  @media (pointer: coarse) {
+    .touch-none-target {
+      pointer-events: none;
+    }
+  }
   .glow-live {
     box-shadow: var(--glow);
     animation: glow-pulse 3s ease-in-out infinite;

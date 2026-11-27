@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"unique"
 
@@ -39,7 +40,23 @@ type operaView struct {
 	dest   *Destination
 	member map[string]bool // the paths fed in, by source and path ID
 	users  int             // the neighbors sharing it
+	slot   int             // its index in the feed under way plus one, else 0
 }
+
+// feeding is what OperaFeedSorted needs while it runs, kept for the next.
+type feeding struct {
+	of      []*operaView
+	order   []*operaView
+	count   [][2]int // per table in order: neighbors out, in
+	targets []feedTarget
+}
+
+type feedTarget struct {
+	v  *operaView
+	in bool
+}
+
+var feedings = sync.Pool{New: func() any { return new(feeding) }}
 
 func newOperaView(nlri bgp.NLRI, users int) *operaView {
 	return &operaView{dest: NewDestination(nlri, 64), member: map[string]bool{}, users: users}
@@ -207,8 +224,18 @@ func (dest *Destination) OperaFeedAll(logger *slog.Logger, p *Path, allows map[s
 // OperaFeedSorted is OperaFeedAll for the neighbors keys, sorted and
 // distinct, each told by allows at the same index.
 func (dest *Destination) OperaFeedSorted(logger *slog.Logger, p *Path, keys []string, allows []bool, update bool) {
+	f := feedings.Get().(*feeding)
+	defer func() {
+		// no table stays reachable from the pool
+		clear(f.of)
+		clear(f.order)
+		clear(f.targets)
+		f.of, f.order, f.count, f.targets = f.of[:0], f.order[:0], f.count[:0], f.targets[:0]
+		feedings.Put(f)
+	}()
 	// the table of each key, in one walk through both sorted lists
-	of := make([]*operaView, len(keys))
+	f.of = slices.Grow(f.of[:0], len(keys))[:len(keys)]
+	of := f.of
 	var fresh []string
 	j := 0
 	for i, k := range keys {
@@ -231,26 +258,23 @@ func (dest *Destination) OperaFeedSorted(logger *slog.Logger, p *Path, keys []st
 		}
 	}
 	// the neighbors of each table, counted by the answer of their policy
-	count := map[*operaView]*[2]int{} // out, in
-	var order []*operaView
 	for i, v := range of {
-		if count[v] == nil {
-			count[v] = &[2]int{}
-			order = append(order, v)
+		if v.slot == 0 {
+			f.order = append(f.order, v)
+			f.count = append(f.count, [2]int{})
+			v.slot = len(f.order)
 		}
 		if allows[i] {
-			count[v][1]++
+			f.count[v.slot-1][1]++
 		} else {
-			count[v][0]++
+			f.count[v.slot-1][0]++
 		}
 	}
-	type target struct {
-		v  *operaView
-		in bool
+	for _, v := range f.order {
+		v.slot = 0
 	}
-	var targets []target
-	for _, v := range order {
-		c := count[v]
+	for o, v := range f.order {
+		c := f.count[o]
 		// v stays with the first part if every neighbor sharing it is fed,
 		// the other parts get a copy, made before v changes
 		keep := c[0]+c[1] == v.users
@@ -274,9 +298,10 @@ func (dest *Destination) OperaFeedSorted(logger *slog.Logger, p *Path, keys []st
 				}
 			}
 			keep = false
-			targets = append(targets, target{w, in})
+			f.targets = append(f.targets, feedTarget{w, in})
 		}
 	}
+	targets := f.targets
 	for _, t := range targets {
 		t.v.feed(logger, p, t.in, update)
 	}

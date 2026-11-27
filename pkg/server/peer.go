@@ -97,7 +97,17 @@ func newDynamicPeer(g *oc.Global, neighborAddress string, pg *oc.PeerGroup, loc 
 }
 
 type peer struct {
-	tableId           string
+	tableId string
+	// addr and rsClient are the neighbor's address and whether it is a route
+	// server client, as it was added: neither changes later, tableId follows them.
+	addr     netip.Addr
+	rsClient bool
+	// exportStatements keeps its export statements, see table.Statements.
+	// Only the server's goroutine uses it, as s.options.
+	exportStatements table.Statements
+	// class is its export class when exported last made it, classID its number.
+	class             exportClass
+	classID           int
 	operaSlot         int // its entry in the operaUpdate being handled, see slot
 	fsm               *fsm
 	adjRibIn          *table.AdjRib
@@ -121,7 +131,9 @@ func newPeer(g *oc.Global, conf *oc.Neighbor, state bgp.FSMState, loc *table.Tab
 		sentPaths:           make(map[table.PathDestLocalKey]map[uint32]struct{}),
 		sendMaxPathFiltered: make(map[table.PathLocalKey]struct{}),
 	}
-	if peer.isRouteServerClient() {
+	peer.addr = conf.State.NeighborAddress
+	peer.rsClient = conf.RouteServer.Config.RouteServerClient
+	if peer.rsClient {
 		peer.tableId = conf.State.NeighborAddress.String()
 	} else {
 		peer.tableId = table.GLOBAL_RIB_NAME
@@ -147,9 +159,7 @@ func (peer *peer) AS() uint32 {
 
 // address is the neighbor's address, which ID writes as text.
 func (peer *peer) address() netip.Addr {
-	peer.fsm.lock.Lock()
-	defer peer.fsm.lock.Unlock()
-	return peer.fsm.pConf.State.NeighborAddress
+	return peer.addr
 }
 
 func (peer *peer) ID() string {
@@ -184,9 +194,7 @@ func (peer *peer) isIBGPPeer() bool {
 }
 
 func (peer *peer) isRouteServerClient() bool {
-	peer.fsm.lock.Lock()
-	defer peer.fsm.lock.Unlock()
-	return peer.fsm.pConf.RouteServer.Config.RouteServerClient
+	return peer.rsClient
 }
 
 func (peer *peer) isSecondaryRouteEnabled() bool {

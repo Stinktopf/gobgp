@@ -85,6 +85,7 @@ A *path* is one AS path to a prefix from one neighbor. A *route* is the path a r
 | Withdrawn kept | routes | router and prefix pairs still held after their withdrawal |
 | Updates at rest | updates/s | per router in the longest pause between steps, from settle on, zero when routes stand still |
 | Updates per neighbor | per prefix | the most a router received from one neighbor from the first announcement to the next step, per announced prefix |
+| Prefixes per update | prefixes | announced and withdrawn in one received UPDATE, in the same stretch, all routers together, from routers whose gobgpd counts them |
 
 **On the way**
 

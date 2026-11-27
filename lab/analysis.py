@@ -23,6 +23,11 @@ updates_prefix_max  the most updates a router received from one neighbor,
                 prefix then (Theorem 4 of the proofs), BGP may send more.
                 Counted from each router's last sample before the
                 announcement, routers without one left out
+prefixes_update the prefixes per UPDATE the routers received in the same
+                stretch, announced and withdrawn, all routers together:
+                many per UPDATE make the work per prefix smaller. Counted
+                by gobgpd, read with its metrics; routers without the
+                counters (commits before it) left out
 sample_hz       how often the routers really sampled, the median router;
                 sample_hz_min the slowest one. Busy routers sample less often
                 than set, and the times above are then only as exact. Per
@@ -131,10 +136,10 @@ from . import profile
 from .config import write_atomic
 from .results import COUNTERS, Dataset, RunKey
 
-VERSION = 49  # of the metrics: a change recomputes the cached summaries
+VERSION = 50  # of the metrics: a change recomputes the cached summaries
 METRICS = ["convergence_s", "settle_s", "settle_end_s", "hold_churn", "oscillates", "rest_s", "unreached", "stale_end", "loops_end", "holes_end", "loops_s", "loops_max", "holes_s", "holes_max", "loops_beyond_s", "holes_beyond_s", "flaps", "sessions_down_end", "flaps_unplanned", "down_unplanned", "hops_sampled",
            "blocked_s", "blocked_max", "known_mean", "sample_hz", "sample_hz_min", "host_cpu_max", "host_others_spread", "host_others_mean", "adj_in_mean", "rib_mean", "rib_max", "suppressed_mean",
-           "selected_mean", "path_len_avg", "rss_mean", "heap_mean", "objects_mean", "cpu_s_mean", "updates_prefix_max",
+           "selected_mean", "path_len_avg", "rss_mean", "heap_mean", "objects_mean", "cpu_s_mean", "updates_prefix_max", "prefixes_update",
            "alloc_mb_mean", "cpu_cores_max", "saturated_s", "prof_s", *(f"prof_{b}_s" for b in profile.NAMES)]
 # The sizes and resources that differ by router, and the field of each in the samples.
 ROUTER_FIELDS = {"adj_in_mean": "adj_in", "rib_mean": "paths", "suppressed_mean": "suppressed", "known_mean": "known", "selected_mean": "destinations",
@@ -566,6 +571,15 @@ def run_metrics(dataset: Dataset, key: RunKey, run: dict | None = None) -> dict:
         counts = [n - before[r].get(p, 0) for r, peers in upto.items() if r in before for p, n in peers.items()]
         if counts:
             out["updates_prefix_max"] = round(max(counts) / final["prefixes"], 3)
+        # Prefixes per UPDATE in the same stretch, all routers together, from the counters of gobgpd beside each other.
+        first, last = {}, {}
+        for row in sorted(every, key=lambda r: r["t"]):
+            if row.get("updates_handled") is not None and row.get("prefixes_rx") is not None:
+                (first if row["t"] < start else last if row["t"] <= stop else {})[row["router"]] = (row["updates_handled"], row["prefixes_rx"])
+        both = [r for r in last if r in first]
+        updates = sum(last[r][0] - first[r][0] for r in both)
+        if updates > 0:
+            out["prefixes_update"] = round(sum(last[r][1] - first[r][1] for r in both) / updates, 2)
     # Where the profiled routers spent their CPU, from the profiles beside the run.
     # Only complete ones: from the first announcing step until rest, never cut before, so that no mode gains by a shorter window.
     complete = all(p.get("complete") for p in run.get("profiles", [])) and run.get("profiles")

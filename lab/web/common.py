@@ -56,6 +56,7 @@ METRICS = {  # label, unit, what it measures in a few words, group, caveat
     "blocked_s": ("Blocked", "s", "in which a router had a prefix with a valid path set aside and no route", "On the way", None),
     "blocked_max": ("Blocked", "prefixes", "the most at one router at once", "On the way", None),
     "updates_prefix_max": ("Updates per neighbor", "per prefix", "the most a router received from one neighbor after the announcement alone", "Outcome", None),
+    "prefixes_update": ("Prefixes per update", "prefixes", "received in one UPDATE after the announcement alone, all routers together", "Outcome", None),
     "hold_churn": ("Updates at rest", "updates/s", "per router at rest, zero when routes stand still", "Outcome", None),
     "adj_in_mean": ("Adj-RIB-In", "paths", "received from all peers, peak of the mean over the routers", "Resources", None),
     "rib_mean": ("Admitted", "paths", "the import admits, the Loc-RIB size of the paper", "Resources", COUNT),

@@ -47,6 +47,7 @@ SAMPLE_FIELDS = [
     "t", "router", "destinations", "paths", "path_len_min", "path_len_avg", "path_len_max",
     "updates_rx", "updates_tx", "peers_rx", "suppressed", "known", "blocked", "adj_in", "rss_mb", "heap_mb", "heap_objects", "cpu_s",
     "alloc_mb", "metrics_age_s", "hops", "hops_ms", "flaps", "sessions_down", "flaps_by", "down_by",
+    "updates_handled", "prefixes_rx",  # last: older samples end before them
 ]
 TEXT_FIELDS = ("router", "peers_rx", "hops", "flaps_by", "down_by")
 COUNTERS = ("destinations", "paths", "updates_rx")  # what changes while routes change

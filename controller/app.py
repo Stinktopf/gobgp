@@ -584,12 +584,13 @@ def memory() -> dict:
     """From the Prometheus metrics of gobgpd: the paths OBGP sets aside, the
     prefixes it knows and those blocked, a valid path set aside and no route, the paths
     received from all peers (the Adj-RIB-In), the resident memory, the heap
-    in use, its objects, the CPU seconds so far and the MiB it allocated so far. A daemon without OBGP's
-    counts gives None for them."""
+    in use, its objects, the CPU seconds so far and the MiB it allocated so far, the UPDATE messages it
+    handled and the prefixes in them. A daemon without OBGP's counts or those of UPDATE messages gives None
+    for them."""
     with urllib.request.urlopen(GOBGP_METRICS, timeout=30) as response:
         text = response.read().decode()
     out = {"suppressed": None, "known": None, "blocked": None, "adj_in": 0, "rss_mb": None, "heap_mb": None, "heap_objects": None, "cpu_s": None,
-           "alloc_mb": None}
+           "alloc_mb": None, "updates_handled": None, "prefixes_rx": None}
     for line in text.splitlines():
         name, _, value = line.rpartition(" ")
         if name.startswith("bgp_obgp_suppressed_paths{"):
@@ -610,6 +611,10 @@ def memory() -> dict:
             out["cpu_s"] = round(float(value), 2)
         elif name == "go_memstats_alloc_bytes_total":
             out["alloc_mb"] = round(float(value) / 2**20, 1)
+        elif name == "bgp_handled_update_total":
+            out["updates_handled"] = int(float(value))
+        elif name.startswith("bgp_received_prefixes_total{"):  # announced and withdrawn
+            out["prefixes_rx"] = (out["prefixes_rx"] or 0) + int(float(value))
     return out
 
 
@@ -789,7 +794,7 @@ def sample(cache: dict) -> dict:
     # The metrics of gobgpd apart as well, when the table changed or once a second, and at most every five
     # times what reading them took: read in line, a slow scrape held up the sample, as the path lengths did.
     cache.setdefault("memory", dict.fromkeys(["suppressed", "known", "blocked", "adj_in", "rss_mb", "heap_mb", "heap_objects", "cpu_s",
-                                              "alloc_mb"]))
+                                              "alloc_mb", "updates_handled", "prefixes_rx"]))
     often = max(1.0, 5 * cache.get("memory_took", 0))
     if not cache.get("memory_running") and (cache.get("memory_key") != key or now - cache.get("memory_at", -1.0) >= 1) \
             and now - cache.get("memory_at", -often) >= often:

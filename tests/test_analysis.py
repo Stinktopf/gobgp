@@ -449,6 +449,25 @@ def test_updates_per_neighbor_count_from_the_last_sample_before_the_announcement
     assert analysis.run_metrics(dataset, RunKey("t", "a", "s", 1), run)["updates_prefix_max"] == 1.0
 
 
+def test_prefixes_per_update_sum_the_routers_with_counters_in_the_same_stretch():
+    # r1 handled 2 UPDATEs before the announcement and 6 more until the withdrawal, with 18 prefixes, then more
+    # after it. r2 counts nothing (an older gobgpd) and r3 has no sample before the announcement: both left out.
+    e = Experiment.model_validate({"name": "x", "sampling": {"interval": 1.0}, "topologies": ["noble-eu"], "scenarios": ["fill-60"],
+                                   "variants": [{"name": "a", "mode": "obgp-rp"}]})
+    run = {"watched": ["r1", "r2", "r3"], "events": [{"name": "announce", "t": 1.0}, {"name": "withdraw", "t": 10.0, "expected": 0},
+                                                     {"name": "final", "t": 20.0, "prefixes": 2, "held": {}, "loops": 0, "holes": 0}]}
+    base = {"destinations": 2, "paths": 2, "path_len_avg": 1}
+    count = lambda t: (2, 2) if t < 1 else (8, 20) if t <= 10 else (30, 40)
+    samples = [{**base, "t": float(t), "router": "r1", "updates_handled": count(t)[0], "prefixes_rx": count(t)[1]} for t in range(0, 21)]
+    samples += [{**base, "t": float(t), "router": "r2"} for t in range(0, 21)]
+    samples += [{**base, "t": float(t), "router": "r3", "updates_handled": 100, "prefixes_rx": 100} for t in range(2, 21)]
+    dataset = type("D", (), {"experiment": e, "samples": lambda self, k: samples})()
+    assert analysis.run_metrics(dataset, RunKey("t", "a", "s", 1), run)["prefixes_update"] == 3.0
+    for row in samples:
+        row.pop("updates_handled", None)
+    assert analysis.run_metrics(dataset, RunKey("t", "a", "s", 1), run)["prefixes_update"] is None
+
+
 def test_cpu_spans_use_the_time_gobgpd_was_read_and_count_a_repeated_reading_once():
     # Read at 0, 1, then busy: the samples at 2 to 4 repeat the reading of 1, the one at 5 was read at 5.
     rows = [{"t": 0.0, "cpu_s": 0.0, "metrics_age_s": 0}, {"t": 1.0, "cpu_s": 1.0, "metrics_age_s": 0},

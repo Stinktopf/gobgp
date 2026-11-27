@@ -680,8 +680,17 @@ def keep_paper(kind: str, name: str) -> None:
 
 
 def save(experiment: Experiment) -> None:
+    """Writes an experiment, unless its file already says the same: saved
+    unchanged, a file of the repository stays as it is written there."""
     experiment.check_files()
-    path(experiment.name).write_text(experiment.to_yaml())
+    p = path(experiment.name)
+    if p.exists():
+        try:
+            if Experiment.model_validate(yaml.safe_load(p.read_text())) == experiment:
+                return
+        except (ValueError, yaml.YAMLError):
+            pass  # a broken file is written anew
+    p.write_text(experiment.to_yaml())
 
 
 def write_atomic(path: Path, text: str) -> None:

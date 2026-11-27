@@ -433,3 +433,20 @@ def test_an_experiment_file_keeps_its_benchmark_and_speed_rule():
         e = Experiment.model_validate(data)
         again = Experiment.model_validate(yaml.safe_load(e.to_yaml()))
         assert again.model_dump() == e.model_dump(), e.to_yaml()
+
+
+def test_an_experiment_or_scenario_saved_unchanged_keeps_its_file_as_written(lab_files):
+    from lab import scenario
+    p = config.path("lab-smoke")
+    p.write_text(p.read_text().replace("refresh_delay: 1.0", "refresh_delay: 1") + "\n# as the repository writes it\n")
+    before = p.read_text()
+    config.save(Experiment.load(p))
+    assert p.read_text() == before  # the same content: not rewritten in the editor's form
+    e = Experiment.load(p)
+    config.save(e.model_copy(update={"runs": 2}))
+    assert "runs: 2" in p.read_text()  # a change is written
+    s = scenario.path("smoke-all")
+    before = s.read_text() + "\n# kept\n"
+    s.write_text(before)
+    scenario.write("smoke-all", scenario.load("smoke-all"))
+    assert s.read_text() == before

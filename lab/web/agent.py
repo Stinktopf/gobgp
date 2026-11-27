@@ -739,7 +739,7 @@ def save_scenario(name: str, yaml: str) -> dict:
         sc = scenario.parse({**_mapping(yaml), "name": name})
     except ValidationError as error:
         raise ValueError(load_problem(error)) from None
-    scenario.path(name).write_text(scenario.to_yaml(sc))
+    scenario.write(name, sc)
     tokens.record(f"saved the scenario {name}")
     return {"saved": name}
 

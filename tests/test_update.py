@@ -150,3 +150,23 @@ def test_the_settings_offer_a_switch_unless_something_blocks_it(client, monkeypa
     monkeypatch.setattr(web.jobs, "active", lambda: type("D", (), {"name": "t-running"})())
     r = client.post("/settings/update/switch", data={"branch": "master"}, follow_redirects=False)
     assert "t-running+runs" in r.headers["location"]
+
+
+def test_an_experiment_the_editor_saved_in_its_own_form_does_not_stop_an_update(repos):
+    lab, other = repos
+    (lab / "experiments").mkdir()
+    (lab / "experiments" / "x.yaml").write_text("name: x\ncluster: {cpus: 2}\nruns: 1\ndelay: 1\n")
+    run("add", "experiments/x.yaml", cwd=lab)
+    run("commit", "-m", "x", cwd=lab)
+    run("push", "origin", "main", cwd=lab)
+    run("pull", cwd=other)
+    push(other, "second", name="b.txt")
+    # Saved again in the editor: other order, 1.0 for 1. The content is the same.
+    (lab / "experiments" / "x.yaml").write_text("name: x\nruns: 1\ncluster: {cpus: 2}\ndelay: 1.0\n")
+    update.update(root=lab, sync=False)
+    assert (lab / "b.txt").exists() and (lab / "experiments" / "x.yaml").read_text().startswith("name: x\ncluster")
+    # A change of content stays a local change.
+    push(other, "third", name="c.txt")
+    (lab / "experiments" / "x.yaml").write_text("name: x\nruns: 2\ncluster: {cpus: 2}\ndelay: 1\n")
+    with pytest.raises(update.UpdateError, match="local changes, in experiments/x.yaml"):
+        update.update(root=lab, sync=False)

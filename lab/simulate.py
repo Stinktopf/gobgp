@@ -1256,7 +1256,7 @@ def export(examples: list[dict], prefix: str = "sim", overwrite: bool = False, n
         topologies.save(name, t["routers"], t["roles"], "obgp-sim")
         s["description"] = (f"The simulator's smallest {finding['kind']} of {finding['mode']} in {inst.get('family')}, "
                              f"seed {inst.get('seed')}: {finding.get('detail', '')}")
-        scenarios.path(name).write_text(scenarios.to_yaml(scenarios.parse(s)))
+        scenarios.write(name, scenarios.parse(s))
         written.append(name)
     return written, skipped
 

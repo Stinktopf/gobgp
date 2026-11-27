@@ -106,7 +106,7 @@ async def scenario_save(request: Request):
         return JSONResponse({"problems": readable(error)}, status_code=422)
     except ValueError as error:
         return JSONResponse({"problems": [str(error)]}, status_code=422)
-    scenario.path(name).write_text(scenario.to_yaml(sc))
+    scenario.write(name, sc)
     if original and original != name and scenario.path(original).exists():
         groups.follow("scenarios", original, name, body.get("mode") == "rename", own_group("scenarios", name), own_group("scenarios", original))
     if original and original != name and body.get("mode") == "rename":

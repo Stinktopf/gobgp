@@ -106,6 +106,30 @@ def _remote(branch: str, root: Path) -> str:
         return "origin"  # no upstream set: the clone's origin
 
 
+EDITED = ("experiments/", "scenarios/")  # what the lab's editors write, in their own form
+
+
+def _settle(s: dict, root: Path) -> None:
+    """Puts back an experiment or scenario the lab's editor saved in its own
+    form with the content it has in the commit: key order, 1 for 1.0. Only
+    a change of content stays a local change."""
+    import yaml
+
+    kept = []
+    for line in s["dirty"]:
+        code, name = line.split(maxsplit=1)  # the first line comes trimmed: no columns to count on
+        if code == "M" and name.startswith(EDITED) and name.endswith(".yaml"):
+            try:
+                same = yaml.safe_load((root / name).read_text()) == yaml.safe_load(git("show", f"HEAD:{name}", root=root))
+            except (OSError, UpdateError, yaml.YAMLError):
+                same = False
+            if same:
+                git("checkout", "--", name, root=root)
+                continue
+        kept.append(line)
+    s["dirty"] = kept
+
+
 def _clean(s: dict) -> None:
     if s["dirty"]:
         raise UpdateError(f"The lab has local changes, in {', '.join(line.split(maxsplit=1)[-1] for line in s['dirty'][:3])}. "
@@ -118,6 +142,7 @@ def update(root: Path = ROOT, sync: bool = True, allow_current: bool = False) ->
     s = status(fetch=True, root=root)
     if s["problem"]:
         raise UpdateError(s["problem"] + (" Switch to a branch on GitHub to continue." if s["resettable"] else ""))
+    _settle(s, root)
     _clean(s)
     if s["ahead"]:
         raise UpdateError(f"The lab has {s['ahead']} commits GitHub does not have. Push them, or switch to a branch on GitHub.")
@@ -144,6 +169,7 @@ def switch(branch: str | None = None, root: Path = ROOT, sync: bool = True) -> s
     s = status(fetch=True, root=root)
     if s["problem"] and not s["resettable"]:
         raise UpdateError(s["problem"])
+    _settle(s, root)
     _clean(s)
     remote = _remote(s["branch"] or "HEAD", root)
     names = {b["name"]: b for b in s["branches"]}

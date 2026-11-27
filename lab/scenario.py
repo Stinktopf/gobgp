@@ -47,6 +47,7 @@ import re
 from pathlib import Path
 from typing import Literal
 
+import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .config import (
@@ -434,6 +435,19 @@ def to_yaml(s: Scenario) -> str:
     head = [f"name: {s.name}"] + ([f"description: {_scalar(s.description)}"] if s.description else [])
     head += [f"params: {value(s.params)}"] if s.params else []
     return "\n".join(head + ["steps:"] + steps(data["steps"], "  ")) + "\n"
+
+
+def write(name: str, s: Scenario) -> None:
+    """Writes a scenario, unless its file already says the same: saved
+    unchanged, a file of the repository stays as it is written there."""
+    text, p = to_yaml(s), path(name)
+    if p.exists():
+        try:
+            if to_yaml(parse(yaml.safe_load(p.read_text()))) == text:
+                return
+        except (ValueError, TypeError, yaml.YAMLError):
+            pass  # a broken file is written anew
+    p.write_text(text)
 
 
 def path(name: str) -> Path:

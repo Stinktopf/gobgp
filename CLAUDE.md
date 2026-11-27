@@ -57,7 +57,7 @@ Paths below are relative to the repository root. The README starts inside `scrip
 - Queuing a result while the cluster is switched off asks to start it.
 - UI cluster controls leave the web server online. Idle stops allow automatic wake on queued work. Explicit Stop disables wake until Start. Default idle timeout is 30 minutes, saved timeouts take precedence.
 - Stop and teardown keep the crontab watchdog off until start.
-- Script, UI and MCP updates restart only the web server and preserve cluster state. Local changes block updates. After a rewritten history a branch switch is needed, MCP updates switch by themselves.
+- Script, UI and MCP updates restart only the web server and preserve cluster state. Local changes block updates, an experiment or scenario the editor saved with the same content does not. After a rewritten history a branch switch is needed, MCP updates switch by themselves.
 - Setup, start and update keep results and configuration. Legacy and archived results and settings always remain.
 - The lab is a guest on a shared host: it never stops, restarts or prunes Docker and touches only its own container,
   profile and the images inside minikube. Recovery only starts its own cluster.

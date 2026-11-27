@@ -91,6 +91,11 @@ The metrics are all prefixed with the `bgp` Prometheus namespace.
 | bgp_handled_update_total           | Number of UPDATE messages from all peers the server handled                  |                                        |
 | bgp_received_prefixes_total        | Number of prefixes in those UPDATE messages, announced or withdrawn          | `kind`                                 |
 
+## Settings
+
+- `GOBGP_METRICS_ADVERTISED=0` leaves out `bgp_routes_advertised`: counting them walks the table for each peer at every scrape.
+- `GOBGP_METRICS_PEERS=0` leaves out every metric per peer: they copy the configuration and state of each peer at every scrape.
+
 ## Label values
 
 Some labels can have specific values depending on the state of GoBGP or of the peers:

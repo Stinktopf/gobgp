@@ -181,6 +181,21 @@ func TestMetrics(test *testing.T) {
 	}
 	assert.True(found["bgp_handled_update_total"])
 	assert.True(found["bgp_received_prefixes_total"])
+	assert.True(found["bgp_peer_state"])
+
+	// Without the metrics per peer, those of the whole server remain.
+	countPeers = false
+	defer func() { countPeers = true }()
+	families, err = registry.Gather()
+	assert.NoError(err)
+	clear(found)
+	for _, f := range families {
+		found[f.GetName()] = true
+	}
+	assert.False(found["bgp_peer_state"])
+	assert.False(found["bgp_routes_received"])
+	assert.True(found["bgp_handled_update_total"])
+	assert.True(found["bgp_obgp_known_prefixes"])
 }
 
 func TestFSMLoopMetrics(t *testing.T) {

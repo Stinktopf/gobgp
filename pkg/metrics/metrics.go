@@ -334,6 +334,10 @@ func (c *bgpCollector) Describe(out chan<- *prometheus.Desc) {
 
 var countAdvertised = os.Getenv("GOBGP_METRICS_ADVERTISED") != "0"
 
+// Every metric per peer is built from ListPeer, a copy of the configuration and state of each peer at every
+// scrape. A reader that lists the peers itself anyway sets GOBGP_METRICS_PEERS=0 to leave them out.
+var countPeers = os.Getenv("GOBGP_METRICS_PEERS") != "0"
+
 func (c *bgpCollector) Collect(out chan<- prometheus.Metric) {
 	bgpServer, err := c.server.GetBgp(context.Background(), &api.GetBgpRequest{})
 	if err != nil {
@@ -344,121 +348,123 @@ func (c *bgpCollector) Collect(out chan<- prometheus.Metric) {
 	// The routes advertised to a peer are counted by building what it gets, a walk over the table per peer,
 	// inside a management operation that holds back the processing of BGP messages meanwhile. Scraped every
 	// second on a large router, that slows the router it measures. GOBGP_METRICS_ADVERTISED=0 leaves them out.
-	req := &api.ListPeerRequest{EnableAdvertised: countAdvertised}
-	err = c.server.ListPeer(context.Background(), req, func(p *api.Peer) {
-		peerState := p.GetState()
-		peerAddr := peerState.GetNeighborAddress()
-		peerTimers := p.GetTimers()
-		msg := peerState.GetMessages()
+	if countPeers {
+		req := &api.ListPeerRequest{EnableAdvertised: countAdvertised}
+		err = c.server.ListPeer(context.Background(), req, func(p *api.Peer) {
+			peerState := p.GetState()
+			peerAddr := peerState.GetNeighborAddress()
+			peerTimers := p.GetTimers()
+			msg := peerState.GetMessages()
 
-		send := func(desc *prometheus.Desc, cnt uint64) {
-			out <- prometheus.MustNewConstMetric(desc, prometheus.CounterValue, float64(cnt), peerAddr)
-		}
-
-		// Statistics about BGP announcements we've received from our peers
-		send(bgpReceivedUpdateTotalDesc, msg.Received.Update)
-		send(bgpReceivedNotificationTotalDesc, msg.Received.Notification)
-		send(bgpReceivedOpenTotalDesc, msg.Received.Open)
-		send(bgpReceivedRefreshTotalDesc, msg.Received.Refresh)
-		send(bgpReceivedKeepaliveTotalDesc, msg.Received.Keepalive)
-		send(bgpReceivedWithdrawUpdateTotalDesc, msg.Received.WithdrawUpdate)
-		send(bgpReceivedWithdrawPrefixTotalDesc, msg.Received.WithdrawPrefix)
-		send(bgpReceivedDiscardedTotalDesc, msg.Received.Discarded)
-		send(bgpReceivedMessageTotalDesc, msg.Received.Total)
-
-		// Statistics about BGP announcements we've sent to our peers
-		send(bgpSentUpdateTotalDesc, msg.Sent.Update)
-		send(bgpSentNotificationTotalDesc, msg.Sent.Notification)
-		send(bgpSentOpenTotalDesc, msg.Sent.Open)
-		send(bgpSentRefreshTotalDesc, msg.Sent.Refresh)
-		send(bgpSentKeepaliveTotalDesc, msg.Sent.Keepalive)
-		send(bgpSentWithdrawUpdateTotalDesc, msg.Sent.WithdrawUpdate)
-		send(bgpSentWithdrawPrefixTotalDesc, msg.Sent.WithdrawPrefix)
-		send(bgpSentDiscardedTotalDesc, msg.Sent.Discarded)
-		send(bgpSentMessageTotalDesc, msg.Sent.Total)
-
-		// The outbound queue message size
-		send(bgpPeerOutQueueDesc, uint64(peerState.GetOutQ()))
-		// The number of neighbor flops
-		send(bgpPeerFlopsDesc, uint64(peerState.GetFlops()))
-		// Uptime in seconds of the session
-		send(bgpPeerUptimeDesc, uint64(peerTimers.GetState().GetUptime().GetSeconds()))
-		// Whether BGP community is being sent
-		send(bgpPeerSendCommunityFlagDesc, uint64(peerState.GetSendCommunity()))
-		// Whether BGP Private AS is being removed (1) or not (0)
-		send(bgpPeerRemovePrivateAsFlagDesc, uint64(peerState.GetRemovePrivate()))
-		// Peer Type (0) for internal, (1) for external
-		send(bgpPeerTypeDesc, uint64(peerState.GetType()))
-
-		// Whether authentication password is being set (1) or not (0)
-		passwordSetFlag := 0
-		if peerState.GetAuthPassword() != "" {
-			passwordSetFlag = 1
-		}
-		send(bgpPeerPasswordSetFlagDesc, uint64(passwordSetFlag))
-
-		// Remote peer router ID and ASN
-		out <- prometheus.MustNewConstMetric(
-			bgpPeerAsnDesc,
-			prometheus.GaugeValue,
-			float64(peerState.GetPeerAsn()),
-			peerAddr,
-			peerState.GetRouterId(),
-		)
-
-		// Local router ID and ASN advertised to peer
-		out <- prometheus.MustNewConstMetric(
-			bgpPeerLocalAsnDesc,
-			prometheus.GaugeValue,
-			float64(peerState.GetLocalAsn()),
-			peerAddr,
-			bgpServer.Global.RouterId,
-		)
-
-		// Session and administrative state of the peer
-		out <- prometheus.MustNewConstMetric(
-			bgpPeerStateDesc,
-			prometheus.GaugeValue,
-			1.0,
-			peerAddr,
-			peerState.GetSessionState().String(),
-			peerState.GetAdminState().String(),
-		)
-
-		for _, afiSafi := range p.GetAfiSafis() {
-			if !afiSafi.GetConfig().GetEnabled() {
-				continue
+			send := func(desc *prometheus.Desc, cnt uint64) {
+				out <- prometheus.MustNewConstMetric(desc, prometheus.CounterValue, float64(cnt), peerAddr)
 			}
-			afiState := afiSafi.GetState()
-			family := bgp.NewFamily(
-				uint16(afiState.GetFamily().GetAfi()),
-				uint8(afiState.GetFamily().GetSafi()),
-			).String()
-			labelValues := []string{peerAddr, family}
+
+			// Statistics about BGP announcements we've received from our peers
+			send(bgpReceivedUpdateTotalDesc, msg.Received.Update)
+			send(bgpReceivedNotificationTotalDesc, msg.Received.Notification)
+			send(bgpReceivedOpenTotalDesc, msg.Received.Open)
+			send(bgpReceivedRefreshTotalDesc, msg.Received.Refresh)
+			send(bgpReceivedKeepaliveTotalDesc, msg.Received.Keepalive)
+			send(bgpReceivedWithdrawUpdateTotalDesc, msg.Received.WithdrawUpdate)
+			send(bgpReceivedWithdrawPrefixTotalDesc, msg.Received.WithdrawPrefix)
+			send(bgpReceivedDiscardedTotalDesc, msg.Received.Discarded)
+			send(bgpReceivedMessageTotalDesc, msg.Received.Total)
+
+			// Statistics about BGP announcements we've sent to our peers
+			send(bgpSentUpdateTotalDesc, msg.Sent.Update)
+			send(bgpSentNotificationTotalDesc, msg.Sent.Notification)
+			send(bgpSentOpenTotalDesc, msg.Sent.Open)
+			send(bgpSentRefreshTotalDesc, msg.Sent.Refresh)
+			send(bgpSentKeepaliveTotalDesc, msg.Sent.Keepalive)
+			send(bgpSentWithdrawUpdateTotalDesc, msg.Sent.WithdrawUpdate)
+			send(bgpSentWithdrawPrefixTotalDesc, msg.Sent.WithdrawPrefix)
+			send(bgpSentDiscardedTotalDesc, msg.Sent.Discarded)
+			send(bgpSentMessageTotalDesc, msg.Sent.Total)
+
+			// The outbound queue message size
+			send(bgpPeerOutQueueDesc, uint64(peerState.GetOutQ()))
+			// The number of neighbor flops
+			send(bgpPeerFlopsDesc, uint64(peerState.GetFlops()))
+			// Uptime in seconds of the session
+			send(bgpPeerUptimeDesc, uint64(peerTimers.GetState().GetUptime().GetSeconds()))
+			// Whether BGP community is being sent
+			send(bgpPeerSendCommunityFlagDesc, uint64(peerState.GetSendCommunity()))
+			// Whether BGP Private AS is being removed (1) or not (0)
+			send(bgpPeerRemovePrivateAsFlagDesc, uint64(peerState.GetRemovePrivate()))
+			// Peer Type (0) for internal, (1) for external
+			send(bgpPeerTypeDesc, uint64(peerState.GetType()))
+
+			// Whether authentication password is being set (1) or not (0)
+			passwordSetFlag := 0
+			if peerState.GetAuthPassword() != "" {
+				passwordSetFlag = 1
+			}
+			send(bgpPeerPasswordSetFlagDesc, uint64(passwordSetFlag))
+
+			// Remote peer router ID and ASN
 			out <- prometheus.MustNewConstMetric(
-				bgpRoutesReceivedDesc,
+				bgpPeerAsnDesc,
 				prometheus.GaugeValue,
-				float64(afiState.GetReceived()),
-				labelValues...,
+				float64(peerState.GetPeerAsn()),
+				peerAddr,
+				peerState.GetRouterId(),
 			)
+
+			// Local router ID and ASN advertised to peer
 			out <- prometheus.MustNewConstMetric(
-				bgpRoutesAcceptedDesc,
+				bgpPeerLocalAsnDesc,
 				prometheus.GaugeValue,
-				float64(afiState.GetAccepted()),
-				labelValues...,
+				float64(peerState.GetLocalAsn()),
+				peerAddr,
+				bgpServer.Global.RouterId,
 			)
-			if countAdvertised {
+
+			// Session and administrative state of the peer
+			out <- prometheus.MustNewConstMetric(
+				bgpPeerStateDesc,
+				prometheus.GaugeValue,
+				1.0,
+				peerAddr,
+				peerState.GetSessionState().String(),
+				peerState.GetAdminState().String(),
+			)
+
+			for _, afiSafi := range p.GetAfiSafis() {
+				if !afiSafi.GetConfig().GetEnabled() {
+					continue
+				}
+				afiState := afiSafi.GetState()
+				family := bgp.NewFamily(
+					uint16(afiState.GetFamily().GetAfi()),
+					uint8(afiState.GetFamily().GetSafi()),
+				).String()
+				labelValues := []string{peerAddr, family}
 				out <- prometheus.MustNewConstMetric(
-					bgpRoutesAdvertisedDesc,
+					bgpRoutesReceivedDesc,
 					prometheus.GaugeValue,
-					float64(afiState.GetAdvertised()),
+					float64(afiState.GetReceived()),
 					labelValues...,
 				)
+				out <- prometheus.MustNewConstMetric(
+					bgpRoutesAcceptedDesc,
+					prometheus.GaugeValue,
+					float64(afiState.GetAccepted()),
+					labelValues...,
+				)
+				if countAdvertised {
+					out <- prometheus.MustNewConstMetric(
+						bgpRoutesAdvertisedDesc,
+						prometheus.GaugeValue,
+						float64(afiState.GetAdvertised()),
+						labelValues...,
+					)
+				}
 			}
+		})
+		if err != nil {
+			out <- prometheus.NewInvalidMetric(prometheus.NewDesc("error", "error during metric collection", nil, nil), err)
 		}
-	})
-	if err != nil {
-		out <- prometheus.NewInvalidMetric(prometheus.NewDesc("error", "error during metric collection", nil, nil), err)
 	}
 
 	// Zero without OBGP, so that a missing value means a daemon without it.

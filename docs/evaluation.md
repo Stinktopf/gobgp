@@ -49,7 +49,7 @@ The paper's experiment `ifip-networking-2026` stays as it was published.
   A feed names a recorded result, so its scenario and experiment are saved in the lab for each comparison.
 - **Benchmark:** `benchmark: {baseline: <ref>, candidates: [<ref>], modes: [obgp-rp-pn]}` (Experiments, New benchmark)
   makes one result: per mode the baseline, its A/A twin and each candidate run the workload on the whole network,
-  the busiest router profiled. With `feed: true` the baseline first records what that router receives, once per
+  the routers with the most neighbors profiled, as many as `profile_routers` sets. With `feed: true` the baseline first records what that router receives, once per
   mode, and the others get it fed to that router alone. The variants, the speed rule and the profiles follow. The
   Benchmark area shows the verdict per mode and compares a chosen pair, Reference and Compared with, on one radar.
 - **Changes for speed:** see Benchmark, and the speed rule under Statistics, which the lab judges (MCP `speed`).
@@ -210,6 +210,10 @@ not a problem. Checks, lost routes and loops stay judged.
 - **Metrics before 14 November 2026:** gobgpd counted the routes advertised to each neighbor at every
   read of its metrics, about once a second, and held back BGP messages meanwhile. On large routers,
   above all with a table per neighbor, that slowed the router and its sampling. The lab now reads no such count.
+- **Metrics per neighbor before 27 November 2026:** gobgpd built them at every read of its metrics, a second
+  copy of every neighbor besides the one the controller reads. Routers of commits before the setting
+  `GOBGP_METRICS_PEERS` still do. A benchmark of such a commit against a newer one counts that cost as the
+  router's, so it compares commits on the same side of it only.
 - **Resolution:** times are exact to two sampling intervals, 0.2 s at 10 Hz, 2 s for the Internet runs.
   A run whose slowest router sampled below 90 % of the rate set samples at its limit: its resolution is two
   of that router's intervals, and a settle time below it shows as such.

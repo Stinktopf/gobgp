@@ -4,8 +4,8 @@ An agent operates the lab over MCP (`/mcp`) or HTTP (`/api/v1`), with a token fr
 
 | Scope | May |
 |---|---|
-| read | read status, results, single runs with their samples and loops on the way, logs, experiments, scenarios, topologies, the simulator's searches, and stars and notes |
-| control | also change experiments and scenarios, run the queue and put a result before the running one, start a simulator search, let the simulator play a topology and scenario, star and note results, searches and cases, and update the lab |
+| read | read status, results, single runs with their samples and loops on the way, CPU profiles and the speed verdict, logs, experiments, scenarios, topologies, the simulator's searches, and stars and notes, and get a download address |
+| control | also change and delete experiments and scenarios, start, stop and resume results, pause and resume the queue and put a result before the running one, fetch archived results, start and stop a simulator search, let the simulator play a topology and scenario, star results, searches and cases and note, edit and delete notes, and update the lab |
 
 The MCP server describes its tools itself. The simulator's are `simulation_*`, `start_simulation`, `stop_simulation`, `predict`, `predict_again` and `agreement`. Its searches
 are also over HTTP, under `/api/v1/simulation/searches`.

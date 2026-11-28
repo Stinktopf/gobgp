@@ -103,9 +103,11 @@
         <li class="px-4 py-3">
           <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
             <span class="min-w-0 basis-full sm:basis-0 sm:flex-1"><span class="font-medium">{{ a.by }}</span> asks to {{ a.text }}
-              {% if a.details or a.why %}<span class="muted mt-0.5 block text-xs">{{ a.details }}{{ ', ' if a.details and a.why }}{% if a.why %}Waits as {{ a.why }}{% endif %}</span>{% endif %}</span>
+              {% if a.details or a.why %}<span class="muted mt-0.5 block text-xs">{{ a.details }}{{ ', ' if a.details and a.why }}{% if a.why %}Waits as {{ a.why }}{% endif %}</span>{% endif %}
+              {% if a.blocked %}<span class="muted mt-0.5 block text-xs">{{ a.blocked }}</span>{% endif %}</span>
             <form method="post" action="/settings/actions/{{ a.id }}/reject" class="max-sm:ml-auto"><button class="btn px-2 py-1 text-xs">Reject</button></form>
-            <form method="post" action="/settings/actions/{{ a.id }}/approve"><button class="btn btn-primary px-2 py-1 text-xs">Approve</button></form>
+            {% if a.blocked %}<span data-tip="{{ a.blocked }}" data-tip-align="end"><button class="btn btn-primary px-2 py-1 text-xs" disabled>Approve</button></span>
+            {% else %}<form method="post" action="/settings/actions/{{ a.id }}/approve"><button class="btn btn-primary px-2 py-1 text-xs">Approve</button></form>{% endif %}
           </div>
           {% if a.args.yaml %}<details class="mt-2"><summary class="muted cursor-pointer text-xs">The file</summary><pre class="mt-1 max-h-64 overflow-auto rounded bg-white p-2 font-mono text-xs dark:bg-slate-950">{{ a.args.yaml }}</pre></details>{% endif %}
         </li>

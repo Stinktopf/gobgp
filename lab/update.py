@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -190,6 +191,19 @@ def _sync(root: Path, sync: bool) -> None:
         done = subprocess.run(["uv", "sync"], cwd=root, capture_output=True, text=True, timeout=600)
         if done.returncode:
             raise UpdateError(f"The code is updated, but uv sync failed: {done.stderr.strip().splitlines()[-1:]}")
+
+
+def restart_later(lock=None, delay: float = 1.0) -> None:
+    """Starts the web server again once the answer to the update is sent. lock, the claim on the cluster
+    taken for the update, stays held until then: the queue starts no result on the new code before the
+    server has it. exec closes it, or this when exec fails."""
+    def go() -> None:
+        try:
+            restart()
+        finally:
+            if lock:
+                lock.close()
+    threading.Timer(delay, go).start()
 
 
 def restart() -> None:

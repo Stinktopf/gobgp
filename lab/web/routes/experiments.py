@@ -131,6 +131,9 @@ def git_refs() -> list[str]:
     return ["HEAD", *out.split()]
 
 
+BENCH_ROUTERS = 25  # the routers with the most neighbors a benchmark offers, per topology
+
+
 def builder_context() -> dict:
     loaded = readable_topologies()[0]
     scenarios = []
@@ -142,6 +145,10 @@ def builder_context() -> dict:
         scenarios.append({"name": n, "duration_s": sc.duration(), "description": sc.description, "kinds": step_kinds(sc.steps), "params": sc.params})
     return {
         "topologies": [{"name": n, **topology_summary(t)} for n, t in loaded.items()],
+        # For the benchmark's router: per topology its routers with the most neighbors, as busiest picks them.
+        "bench_routers": {n: [[r, len(t["routers"][r].get("neighbors", []))]
+                              for r in sorted(t["routers"], key=lambda r: (-len(t["routers"][r].get("neighbors", [])), r))[:BENCH_ROUTERS]]
+                          for n, t in loaded.items()},
         "thumbs": thumb_stamps(loaded),
         "scenarios": scenarios,
         "refs": git_refs(),

@@ -189,7 +189,7 @@ def result_context(dataset: Dataset, tab: str, topology: str = "", scenario: str
                 run = dataset.run(key)
                 facts = run_facts(dataset, key, run, metrics.get(str(key), {}))
                 found = broke.get(key, [])
-                facts["facts"] = [f"{PROPERTIES[p['cause']]}: {p['message']}" for p in found if p["kind"] in ("property", "unmeasured")] + facts["facts"]
+                facts["facts"] = [f"{PROPERTIES[p['cause']]}: {p.get('brief', p['message'])}" for p in found if p["kind"] in ("property", "unmeasured")] + facts["facts"]
                 predictable = problems_prediction(dataset, key) is not None
                 return {"state": problems_look(run, found, facts["allowed"], predictable), **facts}
             running = str(key) == status.get("current") and status.get("state") == "running"

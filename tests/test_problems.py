@@ -384,6 +384,13 @@ def test_a_commit_has_to_choose_and_send_what_the_baseline_of_its_mode_did_beyon
     assert ("new", "output", "1 feeders get routes of another length or kind than in base: f3, beyond 1 that differ in aa, the same commit as base") in found
     assert ("bgp-new", "output-unchecked", "no routes at rest to compare with bgp: a run was not at rest or had no final check") in found
     assert not [f for f in found if f[0] == "aa"]  # its own differences are timing, told in the others
+    # Before the A/A run of a seed is done, or without its rest, the commit is not blamed for routes timing may choose.
+    del runs[RunKey("t", "aa", "s", 1)]
+    found = [(x["variant"], x["cause"], x["message"]) for x in problems.broken(dataset, known={}) if x["variant"] == "new" and x["cause"].startswith("output")]
+    assert found == [("new", "output-unchecked", "2 feeders get other routes than in base, the run of aa for this seed is not done yet")]
+    runs[RunKey("t", "aa", "s", 1)] = unstable
+    found = [(x["variant"], x["cause"], x["message"]) for x in problems.broken(dataset, known={}) if x["variant"] == "new" and x["cause"].startswith("output")]
+    assert found == [("new", "output-unchecked", "2 feeders get other routes than in base, the run of aa for this seed was not at rest or had no final check")]
 
 
 def test_the_oracle_judges_the_quality_of_the_routes_where_a_run_kept_it_not_the_paths_timing_chose():
@@ -408,18 +415,49 @@ def test_the_final_check_names_the_prefixes_a_router_lost_against_bgp():
     assert problems.lost_prefixes(final, bgp, most=0) == {} and problems.lost_prefixes({}, bgp) == {}  # too many, or not kept
 
 
-def test_routes_that_vary_between_runs_of_the_baseline_compare_by_their_totals_against_what_its_aa_twin_shows():
+def test_routes_that_vary_between_runs_of_the_baseline_compare_by_a_shift_of_their_totals_paired_by_seed():
     from lab.results import RunKey
-    e = Experiment.model_validate({"name": "x", "runs": 2, "topologies": ["t"], "scenarios": ["s"],
+    problems._SHIFTS.clear()
+    e = Experiment.model_validate({"name": "x", "runs": 8, "topologies": ["t"], "scenarios": ["s"],
                                    "variants": [{"name": "base", "mode": "obgp-rp", "ref": "abc"}, {"name": "new", "mode": "obgp-rp", "ref": "def"},
                                                 {"name": "aa", "mode": "obgp-rp", "ref": "abc"}]})
-    run = lambda held, length: {"status": "completed", "events": [{"name": "final", "t": 9, "stable": True,  # noqa: E731
-                                                                   "shape": {"r1": [held, length, held, 0, 0]}}]}
-    runs = {RunKey("t", "base", "s", 1): run(1000, 3000), RunKey("t", "aa", "s", 1): run(1000, 3010),
-            RunKey("t", "base", "s", 2): run(1000, 3000), RunKey("t", "aa", "s", 2): run(1000, 2990)}
-    dataset = type("D", (), {"experiment": e, "is_done": lambda self, k: k in runs, "run": lambda self, k: runs[k]})()
-    key, base = RunKey("t", "new", "s", 1), runs[RunKey("t", "base", "s", 1)]
-    assert problems.shape_beyond(dataset, key, "base", "aa", run(1000, 3008), base) == ""  # within the A/A twin's 10
-    assert problems.shape_beyond(dataset, key, "base", "aa", run(990, 3000), base) == "prefixes held 990 against 1000, from customers 990 against 1000"
-    assert problems.shape_beyond(dataset, key, "base", None, run(990, 3000), base) is None  # no A/A twin: timing not told apart
-    assert problems.shape_beyond(dataset, key, "base", "aa", {"events": []}, base) is None  # no totals kept
+    run = lambda length, peers=20: {"status": "completed", "events": [{"name": "final", "t": 9, "stable": True,  # noqa: E731
+                                                                       "shape": {"r1": [1000, length, 10, peers, 30]}}]}
+    noise = [-3, 1, 4, -2, 0, 2, -1, 3]
+    def dataset_of(new_lengths, runs=8, aa_peers=20):
+        found = {RunKey("t", "base", "s", i): run(3000 + n) for i, n in enumerate(noise, 1)}
+        found |= {RunKey("t", "aa", "s", i): run(3000 - n, aa_peers + (i if aa_peers != 20 else 0)) for i, n in enumerate(noise, 1)}
+        found |= {RunKey("t", "new", "s", i): run(x) for i, x in enumerate(new_lengths[:runs], 1)}
+        return type("D", (), {"experiment": e, "path": f"p{new_lengths}{runs}{aa_peers}", "keys": lambda self: list(found),
+                              "is_done": lambda self, k: k in found, "run": lambda self, k: found[k]})()
+    key = RunKey("t", "new", "s", 1)
+    # Every seed longer than the mean of baseline and A/A: a shift, told with its size, its share and the Holm-corrected p.
+    shifted = problems.shape_shift(dataset_of([3700, 3650, 3780, 3720, 3690, 3710, 3705, 3695]), key, "base", "aa")
+    assert shifted["shifted"] == ["path length summed by +703.75 (+23 %, p = 0.039)"] and shifted["slight"] == []
+    # The same direction in every seed but below 1 % of the total: told as slight, no failure.
+    slight = problems.shape_shift(dataset_of([3010, 3012, 3009, 3011, 3010, 3013, 3008, 3010]), key, "base", "aa")
+    assert slight["shifted"] == [] and slight["slight"] == ["path length summed by +10.25 (+0.34 %, p = 0.039)"]
+    # One seed beyond, the others within: no shift.
+    assert problems.shape_shift(dataset_of([3700, 3001, 2999, 3002, 2998, 3000, 3001, 2999]), key, "base", "aa")["shifted"] == []
+    # The null check: where the A/A twin shifts from the baseline itself, that total is not judged.
+    unsteady = problems.shape_shift(dataset_of([3700, 3650, 3780, 3720, 3690, 3710, 3705, 3695], aa_peers=60), key, "base", "aa")
+    assert unsteady["unsteady"] == ["from peers"] and unsteady["shifted"] == shifted["shifted"]
+    # Seven seeds cannot reach 5 % after Holm across the five totals: too few, not judged.
+    assert problems.shape_shift(dataset_of([3700] * 7, runs=7), key, "base", "aa") == {"few": True, "seeds": 7}
+    assert problems.shape_shift(dataset_of([3700]), key, "base", None) is None  # no A/A twin: timing not told apart
+    # While the result runs and seeds are missing, a shift is told as preliminary, judged once all seeds are done.
+    assert problems._running(type("D", (), {"status": {"state": "running"}})()) and not problems._running(type("D", (), {"status": {"state": "stopped"}})())
+
+
+def test_a_long_list_reads_short_on_a_page_and_whole_for_agents():
+    assert problems.listed(["a", "b"]) == "a, b"
+    assert problems.listed([f"as{i}" for i in range(8)]) == "as0, as1, as2, as3, as4, and 3 more"
+    held = [f"as{i} 1 of 2" for i in range(9)]
+    found = [{"topology": "t", "variant": "obgp-rp", "scenario": "s", "run": run, "kind": "property", "cause": "reach",
+              "message": ", ".join(held), "brief": problems.listed(held), "items": held, "failures": [", ".join(held)], "predicted": False}
+             for run in (1, 2)]
+    row = problems.rows(found)[0]
+    # One line for both runs, short, with the whole list folded below it. message and failures stay whole for agents.
+    assert row["span"] == "1 to 2" and row["lines"] == [{"message": "as0 1 of 2, as1 1 of 2, as2 1 of 2, as3 1 of 2, as4 1 of 2, and 4 more",
+                                                         "all": held}]
+    assert found[0]["message"].count(",") == 8

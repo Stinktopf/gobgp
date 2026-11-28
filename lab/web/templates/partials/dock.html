@@ -43,7 +43,8 @@
     {% if asks | length > 1 %}<a href="/settings#agents" class="muted text-xs hover:underline">+{{ asks | length - 1 }} more</a>{% endif %}
     <button type="button" class="btn ml-auto px-2 py-1 text-xs" data-ask-later>Later</button>
     <form method="post" action="/settings/actions/{{ a.id }}/reject"><button class="btn px-2 py-1 text-xs">Reject</button></form>
-    <form method="post" action="/settings/actions/{{ a.id }}/approve"><button class="btn btn-primary px-2 py-1 text-xs">Approve</button></form>
+    {% if a.blocked %}<span data-tip="{{ a.blocked }}" data-tip-align="end"><button class="btn btn-primary px-2 py-1 text-xs" disabled>Approve</button></span>
+            {% else %}<form method="post" action="/settings/actions/{{ a.id }}/approve"><button class="btn btn-primary px-2 py-1 text-xs">Approve</button></form>{% endif %}
   </div>
 </div>
 {% endif %}

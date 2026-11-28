@@ -465,6 +465,8 @@ def test_problems_of_several_routers_read_as_one():
     assert problems(["r1 misses 1 of 1 prefixes", "r2 misses 1 of 1 prefixes", "r3 holds 2 prefixes",
                      "10.0.0.0/24: AS 2 offers 2 different paths"]) == [
         "r1, r2 miss 1 of 1 prefixes", "r3 holds 2 prefixes", "10.0.0.0/24: AS 2 offers 2 different paths"]
+    # Many routers: the first five, the rest counted, so that no tooltip or cell grows with the topology.
+    assert problems([f"as{i} misses 1 of 1 prefixes" for i in range(8)]) == ["as0, as1, as2, as3, as4 and 3 more miss 1 of 1 prefixes"]
 
 
 def test_a_file_that_does_not_load_says_what_is_wrong_where():
@@ -1006,6 +1008,14 @@ def test_a_benchmark_is_set_up_in_one_form_and_saved_with_its_variants(client, l
     e = experiment_pages.parse_builder(form)
     assert [v.name for v in e.variants] == ["obgp-rp-pn", "obgp-rp-pn-aa", "obgp-rp-pn-new"]  # on the whole network, no feed
     assert e.benchmark.candidates == ["fast"] and e.speed.baseline == "master"
+    # The router: a list of busiest and the routers with the most neighbors, checked against every topology on saving.
+    assert 'name="bench_router"' in page and '<option value="busiest" selected>busiest</option>' in page and 'id="bench-routers"' in page
+    offered = experiment_pages.builder_context()["bench_routers"]["noble-eu"]
+    assert offered and offered[0][1] >= offered[-1][1]  # the most neighbors first
+    e = experiment_pages.parse_builder(FormData([*[(k, v) for k, v in form.multi_items() if k != "bench_router"], ("bench_router", offered[0][0])]))
+    assert e.benchmark.router == offered[0][0]
+    with pytest.raises(ValueError, match="not in noble-eu"):
+        experiment_pages.parse_builder(FormData([*[(k, v) for k, v in form.multi_items() if k != "bench_router"], ("bench_router", "as0")]))
 
 
 def test_a_new_benchmark_starts_with_every_mode_ticked(client):
@@ -1069,7 +1079,8 @@ def test_a_benchmark_has_a_page_of_its_own_with_its_pair_and_its_profiles_loaded
     # While its metrics are computed, the page says how far.
     monkeypatch.setattr(area, "measuring", lambda d: True)
     monkeypatch.setitem(analysis.PROGRESS, "b-1", [3, 10])
-    assert "3 of 10 runs." in client.get("/benchmark/b-1").text
+    waiting = client.get("/benchmark/b-1").text  # the bar of a result's waiting page, polled the same way
+    assert "3 of 10 runs measured" in waiting and 'hx-get="/results/b-1/analysing"' in waiting
 
 
 def test_a_forest_plot_puts_every_mode_on_one_axis_with_its_margin():

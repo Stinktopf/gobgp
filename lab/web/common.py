@@ -175,7 +175,8 @@ def problems(found: list[str]) -> list[str]:
         if len(names) > 1:
             verb, _, tail = rest.partition(" ")
             rest = f"{plural[verb]} {tail}"
-        out.append(f"{', '.join(names)} {rest}" if names else rest)
+        shown = ", ".join(names[:5]) + (f" and {len(names) - 5} more" if len(names) > 5 else "")  # the whole list is in the log
+        out.append(f"{shown} {rest}" if names else rest)
     return out
 
 

@@ -55,7 +55,7 @@
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-100 dark:divide-white/5">
-          {% if not rows %}<tr><td colspan="{{ variants | length + 1 }}" class="muted px-4 py-6 text-center">{{ "No scenario ran in both." if topologies else "No topology ran in both." }}</td></tr>{% endif %}
+          {% if not rows %}<tr><td colspan="{{ variants | length + 1 }}" class="empty-state py-6">{{ "No scenario ran in both." if topologies else "No topology ran in both." }}</td></tr>{% endif %}
           {% for row in rows %}
           <tr class="[&>td]:px-4 [&>td]:py-2.5">
             <td class="font-mono">{{ row.scenario }}</td>

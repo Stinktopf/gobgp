@@ -84,8 +84,11 @@
           <input name="bench_baseline" list="refs" value="{{ b.baseline }}" placeholder="master" required class="input mt-1 py-1.5 font-mono"></label>
         <label class="block"><span class="label" data-tip="Git refs, comma-separated">Candidates</span>
           <input name="bench_candidates" list="refs" value="{{ b.candidates | join(', ') }}" placeholder="branch or commit" class="input mt-1 py-1.5 font-mono"></label>
-        <label class="block"><span class="label" data-tip="The router fed, busiest for the one with the most neighbors">Router</span>
-          <input name="bench_router" value="{{ b.router }}" class="input mt-1 py-1.5 font-mono"></label>
+        <label class="block"><span class="label" data-tip="The router profiled, and fed with Feed. Busiest picks the one with the most neighbors in each topology. The list offers the routers with the most neighbors that every chosen topology has">Router</span>
+          <select name="bench_router" class="input mt-1 py-1.5 font-mono" data-bench-router data-value="{{ b.router }}">
+            <option value="busiest" {% if b.router == "busiest" %}selected{% endif %}>busiest</option>
+            {% if b.router != "busiest" %}<option value="{{ b.router }}" selected>{{ b.router }}</option>{% endif %}
+          </select></label>
       </div>
       <div class="flex flex-wrap gap-1 border-t border-slate-100 px-5 py-3 dark:border-white/5" role="group" aria-label="Modes">
         <span class="label mr-2 self-center">Modes</span>
@@ -259,6 +262,7 @@
 {{ save_dialog() }}
 
 <script type="application/json" id="thumbs">{{ thumbs | tojson }}</script>
+<script type="application/json" id="bench-routers">{{ bench_routers | tojson }}</script>
 <script>
   // How many are chosen
   const count = () => ["topologies", "scenarios"].forEach((name) => {
@@ -267,6 +271,25 @@
   });
   document.addEventListener("change", count);
   addEventListener("DOMContentLoaded", count);
+  // The benchmark's router: busiest, or one of the routers with the most neighbors that every chosen topology has.
+  (() => {
+    const select = document.querySelector("[data-bench-router]");
+    if (!select) return;
+    const offered = JSON.parse(document.getElementById("bench-routers").textContent);
+    function sync() {
+      const chosen = [...document.querySelectorAll("input[name=topologies]:checked")].map((b) => b.value).filter((t) => offered[t]);
+      const keep = select.value || select.dataset.value;
+      const lists = chosen.map((t) => new Map(offered[t]));
+      const items = chosen.length ? offered[chosen[0]].filter(([r]) => lists.every((l) => l.has(r))) : [];
+      const options = [new Option("busiest", "busiest", false, keep === "busiest")];
+      for (const [r, n] of items) options.push(new Option(`${r}, ${n} neighbors${chosen.length > 1 ? " in " + chosen[0] : ""}`, r, false, r === keep));
+      // A router the file names stays, also one the list does not offer: saving tells if a topology lacks it.
+      if (keep && !options.some((o) => o.value === keep)) options.push(new Option(keep, keep, false, true));
+      select.replaceChildren(...options);
+    }
+    document.addEventListener("change", (e) => { if (e.target.name === "topologies") sync(); });
+    sync();
+  })();
   // The share applies to random modes only.
   const shares = () => document.querySelectorAll(".variant").forEach((row) => {
     const random = row.querySelector("[data-mode]").selectedOptions[0]?.dataset.random === "yes";

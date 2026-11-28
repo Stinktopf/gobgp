@@ -11,7 +11,11 @@
   {% if d.status.get("state") != "finished" %}{{ state_badge(d.status.get("state") or "stopped") }}{% endif %}
 {% endcall %}
 {% if analysing is defined %}
-<div class="card p-6 text-sm" id="benchmark" hx-get="/benchmark/{{ d.name }}" hx-trigger="every 3s [document.visibilityState === 'visible']" hx-select="#benchmark" hx-swap="outerHTML">The lab computes the metrics of <span class="font-mono">{{ d.name }}</span>{% if analysing %}{% set done, total = analysing %}, {{ done }} of {{ total }} runs{% endif %}.</div>
+{# As the waiting page of a result: the same bar, polled, and the page reloads once the metrics are there. #}
+<div class="card space-y-3 p-6 text-sm" id="benchmark">
+  <p>The lab computes the metrics of <span class="font-mono">{{ d.name }}</span>.</p>
+  {% with result=d, progress=analysing %}{% include "partials/analysing.html" %}{% endwith %}
+</div>
 {% else %}
 {% set here = "?topology=" ~ topology ~ "&scenario=" ~ scenario %}
 {# Every link and form below changes only this part, in place: the page keeps where it was scrolled to. #}
@@ -174,7 +178,7 @@
       </tbody>
     </table>
   </div>
-  {% else %}<p class="muted px-4 py-3 text-sm">No runs of both to pair.</p>{% endif %}
+  {% else %}<p class="empty-state py-6">No runs of both to pair.</p>{% endif %}
 </section>
 {# The profiles take a while to read: they come after the answer. #}
 <div hx-get="/benchmark/{{ d.name }}/details{{ here }}&reference={{ reference }}&compare={{ compare }}{% if focus %}&focus={{ focus | urlencode }}{% endif %}" hx-trigger="load" hx-target="this" hx-select="#details" hx-swap="outerHTML" hx-push-url="false" class="min-h-screen">

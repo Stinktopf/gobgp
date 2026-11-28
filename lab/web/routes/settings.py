@@ -4,7 +4,6 @@ import hashlib
 import logging
 import secrets
 import ssl
-import threading
 import time
 from urllib.parse import urlencode
 
@@ -107,28 +106,20 @@ def settings_update_check():
 @router.post("/settings/update")
 def settings_update():
     """Takes the new commits and starts the server again, only while no result runs."""
-    if active := jobs.active():
-        return RedirectResponse(f"/settings?{urlencode({'error': f'{active.name} runs. Pause the queue or wait until it ends, then update.'})}#version", 303)
     try:
-        with cluster.claim("__maintenance__"):
-            commit = update.update()
-    except (update.UpdateError, cluster.Busy) as e:
+        commit = agent.updating(update.update)
+    except (update.UpdateError, cluster.Busy, ValueError) as e:
         return RedirectResponse(f"/settings?{urlencode({'error': str(e)})}#version", 303)
-    threading.Timer(1.0, update.restart).start()  # after this answer is sent
     return RedirectResponse(f"/settings?{urlencode({'saved': f'Updated to {commit}. The lab starts again, reload in a few seconds.'})}#version", 303)
 
 
 @router.post("/settings/update/switch")
 def settings_update_switch(branch: str = Form("")):
     """Moves the lab to a branch on GitHub and starts the server again, only while no result runs."""
-    if active := jobs.active():
-        return RedirectResponse(f"/settings?{urlencode({'error': f'{active.name} runs. Pause the queue or wait until it ends, then switch.'})}#version", 303)
     try:
-        with cluster.claim("__maintenance__"):
-            commit = update.switch(branch or None)
-    except (update.UpdateError, cluster.Busy) as e:
+        commit = agent.updating(lambda: update.switch(branch or None))
+    except (update.UpdateError, cluster.Busy, ValueError) as e:
         return RedirectResponse(f"/settings?{urlencode({'error': str(e)})}#version", 303)
-    threading.Timer(1.0, update.restart).start()  # after this answer is sent
     message = f"Switched to {branch or 'the default branch'} at {commit}. The lab starts again, reload in a few seconds."
     return RedirectResponse(f"/settings?{urlencode({'saved': message})}#version", 303)
 
@@ -200,8 +191,9 @@ def settings_action(request: Request, action_id: str, decision: str):
         out = agent.decide(action_id, decision == "approve")
     except LookupError as e:
         return RedirectResponse(f"/settings?{urlencode({'error': str(e)})}#agents", 303)
-    message = {"done": "Done.", "rejected": "Rejected."}.get(out["state"], f"It failed: {out.get('outcome', '')}")
-    key = "error" if out["state"] == "failed" else "saved"
+    message = {"done": "Done.", "rejected": "Rejected.", "waiting": f"{out.get('outcome', '')} It waits until then."}.get(
+        out["state"], f"It failed: {out.get('outcome', '')}")
+    key = "error" if out["state"] in ("failed", "waiting") else "saved"
     page = back(request, "/settings")
     if not page.startswith("/settings"):  # decided in the card of another page: back there
         return RedirectResponse(page, 303)

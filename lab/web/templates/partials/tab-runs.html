@@ -35,7 +35,7 @@
         {# On a touch screen the cell is the target: a tap lists its runs with what they tell (ui.js). #}
         <td class="pointer-coarse:h-11 pointer-coarse:cursor-pointer" data-runs="{{ v.name }}, {{ s }}"><span class="flex gap-1">
           {% for c in grid[topo][v.name][s] %}{% set r = c.state %}
-          {% if r in ("completed", "allowed", "open", "unjudged", "failed", "unmeasured") %}<a href="?tab=replay&topology={{ topo }}&scenario={{ s }}&run={{ loop.index }}&variant={{ v.name }}" data-dense class="flex rounded-full hover:outline-2 hover:outline-offset-2 hover:outline-uoft-400" aria-label="Replay run {{ loop.index }}" data-tip="Run {{ loop.index }}, {{ run_state(r) }}{% for f in c.facts %}&#10;{{ f }}{% endfor %}">{{ run_dot(r) }}</a>
+          {% if r in ("completed", "allowed", "open", "unjudged", "failed", "unmeasured") %}<a href="?tab=replay&topology={{ topo }}&scenario={{ s }}&run={{ loop.index }}&variant={{ v.name }}" data-dense class="flex rounded-full hover:outline-2 hover:outline-offset-2 hover:outline-uoft-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-uoft-400" aria-label="Replay run {{ loop.index }}" data-tip="Run {{ loop.index }}, {{ run_state(r) }}{% for f in c.facts %}&#10;{{ f }}{% endfor %}">{{ run_dot(r) }}</a>
           {% elif r == "error" %}<span class="flex" data-tip="Run {{ loop.index }}, {{ run_state(r) }}{% for f in c.facts %}&#10;{{ f }}{% endfor %}">{{ run_dot(r) }}</span>
           {% else %}{{ run_dot(r) }}{% endif %}
           {% endfor %}
@@ -73,7 +73,7 @@
         <span class="block font-medium">{{ g.title }}</span>
         {% if g.hint %}<span class="muted mt-0.5 block text-sm">{{ g.hint }}</span>{% endif %}
       </span>
-      <span class="muted shrink-0 text-sm whitespace-nowrap tabular-nums">{{ g.runs | length }} {{ "check" if g.kind == "check" else "run" }}{{ "s" if g.runs | length != 1 }}, {{ g.rows | length }} setup{{ "s" if g.rows | length != 1 }}</span>
+      <span class="muted shrink-0 text-sm whitespace-nowrap tabular-nums">{{ g.runs | length }} {{ "check" if g.kind == "check" else "run" }}{{ "s" if g.runs | length != 1 }}</span>
       {{ icon("chevron-down", "mt-0.5 size-4 shrink-0 text-slate-400 transition group-open/problem:rotate-180") }}
     </summary>
     {# One row per topology, variant and scenario: the runs it hit, each failure once. #}
@@ -85,7 +85,14 @@
           <span class="block font-mono text-xs break-words">{{ row.topology }}, {{ row.variant }}, {{ row.scenario }}</span>
           <span class="muted block text-xs">run{{ "s" if row.runs | length != 1 }} {{ row.span }}</span>
           {% for l in row.lines %}
+          {% if l.all %}
+          <details class="group/items mt-0.5 text-xs">
+            <summary class="cursor-pointer list-none break-words [&::-webkit-details-marker]:hidden"><span class="group-open/items:hidden">{{ l.message }} </span><span class="whitespace-nowrap text-uoft-600 hover:underline dark:text-uoft-300"><span class="group-open/items:hidden">Show all {{ l.all | length }}</span><span class="hidden group-open/items:inline">Hide the {{ l.all | length }}</span></span></summary>
+            <ul class="mt-1 max-h-64 overflow-auto rounded border border-slate-100 font-mono dark:border-white/5">{% for i in l.all %}<li class="px-2 py-0.5 break-words odd:bg-slate-50 dark:odd:bg-white/5">{{ i }}</li>{% endfor %}</ul>
+          </details>
+          {% else %}
           <span class="mt-0.5 block text-xs break-words">{% if l.message %}{{ l.message }}{% else %}Step {{ l.step }}{% if l.t is not none %} at {{ l.t | round(1) }} s{% endif %}: {{ l.problems | problems | join(", ") }}{% endif %}</span>
+          {% endif %}
           {% endfor %}
         </span>
         {% if g.kind != "error" %}<a href="{{ replay }}" class="btn shrink-0 px-2 py-1 text-xs" data-tip="The first of these runs">Replay</a>{% endif %}

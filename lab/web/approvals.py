@@ -9,6 +9,8 @@ import time
 from .. import config
 
 KEPT_S = 7 * 86400
+# Per kind of action, why it cannot run now, if it cannot: it waits on, and Approve waits with it.
+BLOCKS: dict = {}
 
 
 def file():
@@ -61,7 +63,13 @@ def waiting() -> list[dict]:
         for e in stale:
             settle(e["id"], "obsolete", "the lab moved to another commit since")
         entries = [e for e in entries if e not in stale]
-    return entries
+    return [{**e, "blocked": blocked(e)} for e in entries]
+
+
+def blocked(entry: dict) -> str:
+    """Why an action that waits cannot run now, or nothing."""
+    block = BLOCKS.get(entry["call"])
+    return block(**entry["args"]) if block else ""
 
 
 def settle(action_id: str, state: str, outcome: str) -> None:

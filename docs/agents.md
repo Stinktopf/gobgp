@@ -18,7 +18,7 @@ set them: `marks`, `star`, `add_note`, `edit_note`, `delete_note`. They stay out
 - **Default:** a control token asks first, and each change waits under Settings › Agents. A token made to act
   at once skips this, except for updates and changes beyond the budget.
 - **Shown:** the runs and hours of an experiment, the file it saves, or the commits of an update.
-- **Updates:** always wait, also with a token that acts at once.
+- **Updates:** always wait, also with a token that acts at once. While a result runs or the cluster starts or stops, Approve is off and the update waits on.
 - **Budget:** queueing waits once the queue would run longer than agents may fill, 24 h by default.
 
 ## Claude Code
@@ -61,6 +61,7 @@ uv run lab pull URL --fingerprint FINGERPRINT < token-file
 | delete a scenario in use | a refusal |
 | fill the queue beyond its budget | a change that waits |
 | run a change whose file changed since | a failed approval |
+| update while a result runs or the cluster starts or stops | a change that waits, Approve off until then |
 
 Each row is tested in [`tests/test_agent.py`](../tests/test_agent.py) or [`tests/test_remote.py`](../tests/test_remote.py).
 

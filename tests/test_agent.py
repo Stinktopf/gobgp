@@ -109,7 +109,7 @@ def test_an_agent_updates_the_lab_only_while_nothing_runs_and_switches_after_a_r
     from lab.web import agent
 
     done = []
-    monkeypatch.setattr(agent.threading, "Timer", lambda s, f: SimpleNamespace(start=lambda: done.append("restart")))
+    monkeypatch.setattr(agent.update, "restart_later", lambda lock: done.append("restart") or lock.close())
     monkeypatch.setattr(agent.update, "update", lambda: done.append("update") or "abc")
     monkeypatch.setattr(agent.update, "switch", lambda b: done.append(f"switch {b}") or "def")
     monkeypatch.setattr(agent.jobs, "active", lambda: SimpleNamespace(name="r1"))
@@ -121,6 +121,52 @@ def test_an_agent_updates_the_lab_only_while_nothing_runs_and_switches_after_a_r
     monkeypatch.setattr(agent.update, "status", lambda fetch: {"branch": "master", "resettable": True})
     agent.update_lab()
     assert done == ["update", "restart", "switch master", "restart"]
+
+
+def test_an_update_keeps_the_cluster_claimed_until_the_server_starts_again(lab_files, monkeypatch):
+    from lab.web import agent
+
+    held = []
+    monkeypatch.setattr(agent.jobs, "active", lambda: None)
+    monkeypatch.setattr(agent.update, "restart_later", lambda lock: held.append((agent.cluster.holder(), lock)))
+    assert agent.updating(lambda: "abc") == "abc"
+    # The queue sees the cluster taken: no result starts on code the server does not have yet.
+    (holder, lock), = held
+    assert holder == "__maintenance__"
+    lock.close()
+    assert agent.cluster.holder() is None
+
+    def broken():
+        raise agent.update.UpdateError("local changes")
+    with pytest.raises(agent.update.UpdateError):
+        agent.updating(broken)
+    assert agent.cluster.holder() is None  # a failed update leaves the cluster free
+
+
+def test_an_update_waits_while_a_result_runs_and_cannot_be_approved_until_it_ends(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from lab.web import agent, approvals
+
+    _, entry = tokens.create("claude", "control", 0)
+    tokens.caller.set(entry)
+    waiting = agent.update_lab()["waiting"]
+    monkeypatch.setattr(agent.jobs, "active", lambda: SimpleNamespace(name="r1"))
+    assert approvals.waiting()[0]["blocked"] == "r1 runs. Pause the queue or wait until it ends, then update."
+    assert agent.decide(waiting, True) == {"state": "waiting", "outcome": "r1 runs. Pause the queue or wait until it ends, then update."}
+    assert approvals.get(waiting)["state"] == "waiting"  # not failed: it can still be approved once the result ends
+    # The page with the result running as such a page shows it: the button is off, its reason in the tooltip.
+    monkeypatch.setattr(agent.jobs, "active", lambda: None)
+    monkeypatch.setitem(approvals.BLOCKS, "update_lab", lambda **_: "r1 runs. Pause the queue or wait until it ends, then update.")
+    page = client.get("/settings").text
+    assert 'data-tip="r1 runs. Pause the queue or wait until it ends, then update."' in page and f"/settings/actions/{waiting}/approve" not in page
+    monkeypatch.setitem(approvals.BLOCKS, "update_lab", agent.update_blocked)
+    assert approvals.waiting()[0]["blocked"] == ""
+    # Nor while the cluster starts or stops, e.g. idle: the update waits for that too, it does not fail.
+    with agent.cluster.claim("__maintenance__"):
+        assert approvals.waiting()[0]["blocked"] == "The cluster starts or stops. Wait until it is done, then update."
+        assert agent.decide(waiting, True)["state"] == "waiting"
+    assert approvals.get(waiting)["state"] == "waiting"
 
 
 def test_what_an_agent_does_is_logged_with_its_token_and_the_result_names_it(app, lab_files):
@@ -338,3 +384,17 @@ def test_the_list_of_results_never_waits_for_metrics_to_be_computed(lab_files, m
     d.write_status({**d.status, "state": "finished"})
     listed = {r["name"]: r for r in agent.results()}
     assert listed["t-agent"]["verdict"] == {"passed": None, "reasons": ["its metrics are computed first: result tells it"]}
+
+
+def test_an_agent_reads_the_totals_at_rest_of_every_run_beside_its_metrics(monkeypatch):
+    from lab.results import RunKey
+    from lab.web import agent
+
+    run = {"status": "completed", "events": [{"name": "final", "t": 9, "stable": True,
+                                              "shape": {"r1": [10, 30, 1, 2, 7], "r2": [10, 20, 3, 4, 3]}}]}
+    fake = type("D", (), {"run": lambda self, k: run if k == RunKey("t", "v", "s", 1) else {"events": []}})()
+    monkeypatch.setattr(agent, "_result", lambda name: fake)
+    monkeypatch.setattr(agent.analysis, "run_summary", lambda d: {"t/v/s#1": {"cpu_s_mean": 1.5}, "t/v/s#2": {"cpu_s_mean": 1.6}})
+    rows = agent.runs("x")
+    assert rows[0]["totals"] == {"prefixes held": 20, "path length summed": 50, "from customers": 4, "from peers": 6, "from providers": 10}
+    assert "totals" not in rows[1]  # a run without a final check at rest

@@ -138,14 +138,14 @@ Every run is checked at its end against its reference, whatever its scenario che
 | Sessions dropped without a step | drops no step explains |
 | At rest where the simulator never rests | a run comes to rest where the simulator never did |
 | No final check | skipped, for tables above 2000 prefixes or a router that does not answer twice within 120 s |
-| Routes at rest worse or better than the baseline's | a commit-only variant chooses routes of another quality at rest than the baseline of the same seed (AS path length and neighbor relation, in a feed the path length a feeder gets). Routers that also differ in the A/A variant do not count. Where they differ there too, as OBGP's may, the routes of all routers added up compare instead: prefixes held, path lengths summed and routes from customers, peers and providers, beyond what the A/A variant deviates in any seed |
+| Routes at rest worse or better than the baseline's | a commit-only variant chooses routes of another quality at rest than the baseline of the same seed (AS path length and neighbor relation, in a feed the path length a feeder gets). Routers that also differ in the A/A variant do not count. Where they differ there too, as OBGP's may, the routes of all routers added up compare instead: prefixes held, path lengths summed and routes from customers, peers and providers. Paired by seed: per seed the variant's total minus the mean of the baseline's and the A/A variant's, the same commit, then the exact two-sided Wilcoxon signed-rank test over the seeds, Holm-corrected across the five totals at 5 %. The message gives the Hodges-Lehmann shift and its share of the baseline's total. Only a shift of at least 1 % of a total, 0.1 % of prefixes held, fails: OBGP's routes at rest follow the order of messages, which any change of the code moves a little. A total that shifts between the A/A variant and the baseline themselves is not judged. While the result still runs, a shift is told and judged once all its seeds are done. A shift is a property of the variant, so every one of its runs that varies tells it |
 
 Two notes tell how such a variant's routes at rest were compared. They fail no run.
 
 | Note | When |
 |---|---|
-| Routes at rest vary as in the baseline's own runs, their totals within | its routes differ from the baseline's only where the A/A variant's differ too, and their totals stay within what the A/A variant deviates |
-| No routes at rest to compare with the baseline | it or its baseline was not at rest or had no final check, or its final check predates the totals |
+| Routes at rest vary as in the baseline's own runs, their totals within | its routes differ from the baseline's only where the A/A variant's differ too, and no total shifts beyond the share that counts. Smaller shifts and totals not judged are named |
+| No routes at rest to compare with the baseline | it, its baseline or the A/A run of the same seed was not at rest, had no final check or is not done yet, or its final check predates the totals, or too few seeds are done for any p to reach 5 % after Holm, eight at least |
 
 As a result begins, the [simulator](simulator.md) plays every cell it can, 20 message orders per mode,
 and every run of a cell whose scenario chooses targets or whose variant chooses its OBGP routers at random.

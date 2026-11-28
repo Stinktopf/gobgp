@@ -282,7 +282,9 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
     if (e.name === "soft_reset") out.push(["Direction", { in: "routes asked for", out: "routes sent", both: "both" }[e.direction] ?? e.direction]);
     if (e.name === "expect" && !e.each) {
       out.push(["Result", e.passed ? "passed" : e.allowed ? "failed, as the scenario allows in this mode" : "failed"]);
-      for (const problem of e.problems || []) out.push(["Problem", problem]);
+      const found = e.problems || [];  // the first few, the rest counted: the whole list is in the run's log
+      for (const problem of found.slice(0, 5)) out.push(["Problem", problem]);
+      if (found.length > 5) out.push(["Problem", `and ${found.length - 5} more`]);
     }
     if (e.name === "degrade") {
       if (e.delay_ms) out.push(["Delay", `${e.delay_ms} ms`]);
@@ -491,7 +493,9 @@ const largest = (values) => values.reduce((m, v) => (v > m ? v : m), 1);
       const dot = UI.el("span", "size-2 shrink-0 rounded-full");
       dot.style.background = color(name);
       line.append(dot, UI.el("span", "font-mono", name), UI.el("span", passed || allowed ? "text-emerald-300" : "text-rose-300", passed ? "passed" : allowed ? "failed, allowed" : "failed"));
-      return [line, ...problems.map((p) => UI.el("div", "tip-row pl-4 text-slate-300", p))];
+      const shown = problems.slice(0, 5).map((p) => UI.el("div", "tip-row pl-4 text-slate-300", p));
+      if (problems.length > 5) shown.push(UI.el("div", "tip-row pl-4 text-slate-400", `and ${problems.length - 5} more`));
+      return [line, ...shown];
     });
   }
   function verdict(name, stable) {

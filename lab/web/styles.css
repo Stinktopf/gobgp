@@ -727,6 +727,9 @@
     @apply pointer-events-none fixed z-50 max-w-80 space-y-1 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs leading-snug font-normal text-white shadow-lg ring-1 ring-black/5 dark:bg-slate-800 dark:text-slate-100 dark:ring-white/10;
     animation: tip-in 0.12s ease-out both;
     text-wrap: pretty;  /* no word alone on the last line */
+    max-height: calc(100vh - 16px);  /* never taller than the window, ui.js keeps it inside */
+    overflow: hidden;
+    overflow-wrap: anywhere;  /* a long name, e.g. a Go function, breaks instead of leaving the box */
   }
 
   /* A choice of a few options, e.g. Graph | Map */

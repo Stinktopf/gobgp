@@ -524,6 +524,8 @@ class Experiment(Model):
                     raise ValueError(f"{w.param} = {v:g} in {w.scenario}: {str(error).splitlines()[-1].strip()}") from None
         for t in self.topologies:
             data = topology.load(t, shared=True)
+            if self.benchmark and self.benchmark.router != "busiest" and self.benchmark.router not in data["routers"]:
+                raise ValueError(f"the benchmark's router {self.benchmark.router} is not in {t}: busiest, or a router of every topology")
             for v in self.variants:
                 try:
                     v.modes_of(data["routers"])

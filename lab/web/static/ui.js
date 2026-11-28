@@ -472,8 +472,13 @@ document.addEventListener("click", (e) => {
   // with a short key, e.g. "Rest: after 2 s", line up as a table. A longer
   // key is a title, e.g. of a problem: a label with its text below, at full
   // width. An element may build its own (el.tip, a function).
+  // At most a dozen lines of at most 240 characters: a long list belongs on the page, not in a tip.
+  const MOST = 12, LONG = 240;
+  const cut = (line) => (line.length > LONG ? line.slice(0, line.lastIndexOf(" ", LONG) + 1 || LONG).replace(/[ ,]+$/, "") + " …" : line);
   function lines(text) {
-    const all = text.split("\n"), out = [];
+    let all = text.split("\n").map(cut);
+    if (all.length > MOST) all = [...all.slice(0, MOST - 1), `and ${all.length - MOST + 1} more lines`];
+    const out = [];
     const pair = (line) => line.match(/^([^:]{1,60}): (.+)$/);
     all.forEach((line, i) => {
       const kv = all.length > 1 && i > 0 && pair(line);
@@ -495,7 +500,7 @@ document.addEventListener("click", (e) => {
     const r = el.getBoundingClientRect(), w = tip.offsetWidth, h = tip.offsetHeight;
     const left = el.dataset.tipAlign === "end" ? r.right - w : r.left + r.width / 2 - w / 2;
     tip.style.left = `${Math.max(8, Math.min(left, innerWidth - w - 8))}px`;
-    tip.style.top = `${r.bottom + 6 + h > innerHeight ? r.top - h - 6 : r.bottom + 6}px`;
+    tip.style.top = `${Math.max(8, r.bottom + 6 + h > innerHeight ? r.top - h - 6 : r.bottom + 6)}px`;
     spot = [r.left + r.width / 2, r.top + r.height / 2];
   }
   function show(el) {
@@ -533,6 +538,7 @@ document.addEventListener("click", (e) => {
   document.addEventListener("focusin", (e) => { if (e.target.matches?.(":focus-visible")) over(e); });
   document.addEventListener("pointerout", (e) => { if (target && !target.contains(e.relatedTarget)) hide(); });
   document.addEventListener("focusout", hide);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && tip) hide(); });
   // On touch a tap shows the tip of an element that does nothing else, the next tap hides it.
   let tapped = null, touch = false;
   document.addEventListener("pointerdown", (e) => { touch = e.pointerType === "touch"; tapped = tip ? target : null; hide(); });

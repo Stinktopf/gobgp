@@ -19,8 +19,9 @@ from pydantic import ValidationError
 from .. import analysis, archive, cluster, config, estimate, host, marks, scenario, simulate, simulation, topology, update
 from ..config import Experiment
 from ..modes import MODES
-from ..problems import grouped, verdict
+from ..problems import SHAPE, grouped, verdict
 from ..problems import of as problems_of
+from ..problems import shape_totals as problems_shape_totals
 from ..results import Dataset, RunKey
 from . import approvals, groups, tokens
 from .common import METRICS, duration, jobs, load_problem
@@ -140,14 +141,19 @@ def summary(name: str, topology: str = "", scenario: str = "", variant: str = ""
 
 
 def runs(name: str, topology: str = "", scenario: str = "", variant: str = "", metrics: list[str] | None = None) -> list[dict]:
-    """The metrics of every finished run, filtered, for analyses of one's own."""
+    """The metrics of every finished run, filtered, for analyses of one's own, and its routes at rest added up
+    over all routers (totals: prefixes held, path length summed, routes from customers, peers and providers),
+    as the output check of a commit compares them."""
     d = _result(name)
     out = []
     for key, m in analysis.run_summary(d).items():
         t, v, s, i = _key(key)
         if (topology and t != topology) or (scenario and s != scenario) or (variant and v != variant):
             continue
-        out.append({"topology": t, "variant": v, "scenario": s, "run": int(i), "metrics": {k: x for k, x in m.items() if not metrics or k in metrics}})
+        row = {"topology": t, "variant": v, "scenario": s, "run": int(i), "metrics": {k: x for k, x in m.items() if not metrics or k in metrics}}
+        if totals := problems_shape_totals(d.run(RunKey(t, v, s, int(i)))):
+            row["totals"] = dict(zip(SHAPE, totals))
+        out.append(row)
     return out
 
 
@@ -426,10 +432,11 @@ def vocabulary() -> dict:
 ACTIONS: dict = {}
 
 
-def controlled(describe, always_ask: str = "", ask=None, details=None, bind=None):
+def controlled(describe, always_ask: str = "", ask=None, details=None, bind=None, blocked=None):
     """Marks a change; describe tells it in a few words, from its arguments. It waits for a person
     with a token that asks first, always when always_ask gives the reason, and when ask gives one,
-    e.g. a full queue. details tell its extent to the person, bind fingerprints the file it acts on."""
+    e.g. a full queue. details tell its extent to the person, bind fingerprints the file it acts on,
+    blocked why it cannot run now: then it waits on, also when a person approves it."""
     def wrap(fn):
         @functools.wraps(fn)
         def action(*args, **kwargs):
@@ -448,6 +455,8 @@ def controlled(describe, always_ask: str = "", ask=None, details=None, bind=None
             return fn(*args, **kwargs)
         action.run, action.bind = fn, bind
         ACTIONS[fn.__name__] = action
+        if blocked:
+            approvals.BLOCKS[fn.__name__] = blocked
         return action
     return wrap
 
@@ -518,6 +527,8 @@ def decide(action_id: str, approve: bool) -> dict:
     if approve and bind and entry.get("fingerprint") != bind(**entry["args"]):
         approvals.settle(action_id, "failed", "the file changed since the agent asked")
         return {"state": "failed", "outcome": "The file changed since the agent asked. Let it ask again."}
+    if approve and (why := approvals.blocked(entry)):
+        return {"state": "waiting", "outcome": why}
     if not approve:
         approvals.settle(action_id, "rejected", "")
         tokens.record(f"was refused: {entry['text']}")
@@ -568,21 +579,45 @@ def resume(name: str) -> dict:
     return {"queue": jobs.queue()}
 
 
+def update_blocked(**_) -> str:
+    """Why the lab cannot update now: a result runs on its code, or the cluster starts or stops."""
+    if active := jobs.active():
+        return f"{active.name} runs. Pause the queue or wait until it ends, then update."
+    if (holder := cluster.holder()) == "__maintenance__":
+        return "The cluster starts or stops. Wait until it is done, then update."
+    if holder:
+        return f"{holder} runs. Pause the queue or wait until it ends, then update."
+    return ""
+
+
+def updating(change) -> str:
+    """Runs change, an update of the code, and starts the web server again on it. Until then the
+    cluster stays claimed: no result starts on code the server does not have yet."""
+    if why := update_blocked():
+        raise ValueError(why)
+    lock = cluster.claim("__maintenance__")
+    try:
+        commit = change()
+    except BaseException:
+        lock.close()
+        raise
+    update.restart_later(lock)
+    return commit
+
+
 @controlled(lambda branch: f"update the lab{' to ' + branch if branch else ''}", always_ask="an update changes the lab's code",
-            details=_incoming, bind=lambda branch: approvals.head())
+            details=_incoming, bind=lambda branch: approvals.head(), blocked=update_blocked)
 def update_lab(branch: str = "") -> dict:
     """Takes the new commits from GitHub, or moves to a branch there, also after its
     history was rewritten, and starts the web server again. Only while no result runs."""
-    if active := jobs.active():
-        raise ValueError(f"{active.name} runs. Stop it or wait, then update.")
+    if why := update_blocked():
+        raise ValueError(why)
     s = update.status(fetch=True)
     try:
-        with cluster.claim("__maintenance__"):
-            commit = update.switch(branch or s["branch"]) if branch or s["resettable"] else update.update()
+        commit = updating(lambda: update.switch(branch or s["branch"]) if branch or s["resettable"] else update.update())
     except (update.UpdateError, cluster.Busy) as e:
         raise ValueError(str(e)) from None
     tokens.record(f"updated the lab to {commit}")
-    threading.Timer(1.0, update.restart).start()  # after this answer is sent
     return {"commit": commit, "restarting": True}
 
 

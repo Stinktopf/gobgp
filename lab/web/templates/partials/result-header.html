@@ -41,7 +41,7 @@
 {% set described = experiment.description | replace(": " ~ case, "") | replace(case, "") if case else experiment.description %}
 {% if described or case %}
 <div class="-mt-3 mb-6 flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
-  <p class="max-w-2xl text-[15px] text-slate-600 line-clamp-2 dark:text-slate-300" title="{{ described }}">{{ described }}</p>
+  <p class="max-w-2xl text-[15px] text-slate-600 line-clamp-2 dark:text-slate-300" data-tip="{{ described }}">{{ described }}</p>
   <div class="flex flex-wrap items-center gap-2">
     {% if case %}{% set seen = case | case_seen %}<a href="{{ case }}" class="link-pill" {% if seen %}data-tip="{{ seen }}"{% endif %}>{{ icon("replay") }}Case {{ case.split("/")[-1] }} in the simulator</a>{% endif %}
   </div>

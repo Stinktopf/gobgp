@@ -9,6 +9,7 @@ the same seed, without black holes BGP has not. On the way to rest it loops
 and holes no longer than BGP, and no router waits without a route."""
 
 import re
+import statistics
 
 from . import analysis
 from .results import Dataset, RunKey
@@ -54,6 +55,12 @@ PROPERTIES = {  # cause: title of its group
 # Causes that tell how the routes at rest were compared with the baseline: notes, no failure of a run.
 NOTES = ("output-varied", "output-unchecked")
 PLANNED = ("down", "restart", "degrade")  # steps that take sessions down, or may
+
+
+def listed(items: list[str], most: int = 5) -> str:
+    """A list as people read it on a page: the first few, then how many more."""
+    shown = ", ".join(items[:most])
+    return shown + (f", and {len(items) - most} more" if len(items) > most else "")
 
 
 def plain(message: str) -> str:
@@ -361,22 +368,72 @@ def shape_totals(run: dict) -> list[int] | None:
     return [sum(v[i] for v in final["shape"].values()) for i in range(len(SHAPE))]
 
 
-def shape_beyond(dataset: Dataset, key: RunKey, twin: str, aa: str | None, run: dict, base_run: dict) -> str | None:
-    """Where a candidate's totals at rest differ from the baseline's of the same seed by more than the
-    baseline's own A/A twin does in any seed, and by more than a thousandth, the totals that do; "" where none
-    does; None where the runs kept no totals or there is no A/A twin to tell timing."""
-    mine, theirs = shape_totals(run), shape_totals(base_run)
-    if mine is None or theirs is None or not aa:
+# A shift of a total smaller than this share of the baseline's total is told, not failed: OBGP's routes at rest
+# follow the order of messages, which any change of the code moves a little. Prefixes held weigh more.
+RELEVANT = {"prefixes held": 0.001}
+RELEVANT_DEFAULT = 0.01
+
+
+def shape_shift(dataset: Dataset, key: RunKey, twin: str, aa: str | None) -> dict | None:
+    """Whether a candidate's totals at rest shift from those of the baseline's commit, paired by seed: per seed the
+    candidate's total minus the mean of the baseline's and its A/A twin's, the same commit. Per total the exact
+    Wilcoxon signed-rank test over the seeds, Holm-corrected across the totals, and the Hodges-Lehmann shift.
+    The A/A twin against the baseline the same way is the null check: a total that shifts there is not judged.
+    A shift below RELEVANT of the baseline's total is "slight", told but no failure.
+    None where the runs kept no totals or there is no A/A twin. "few": too few seeds for any p to reach 5 %."""
+    if not aa:
         return None
-    noise = [0] * len(SHAPE)
+    done = sum(dataset.is_done(k) for k in dataset.keys()) if hasattr(dataset, "keys") else 0
+    memo = (str(getattr(dataset, "path", id(dataset))), key.topology, key.variant, key.scenario, twin, aa, done)
+    if memo in _SHIFTS:  # every run of the variant asks the same, a page asks for all of them
+        return _SHIFTS[memo]
+    _SHIFTS[memo] = out = _shape_shift(dataset, key, twin, aa)
+    return out
+
+
+_SHIFTS: dict[tuple, dict | None] = {}
+
+
+def _running(dataset: Dataset) -> bool:
+    """Whether the result still runs or waits to: more of its seeds will come."""
+    status = getattr(dataset, "status", None)
+    return isinstance(status, dict) and status.get("state") in ("running", "queued")
+
+
+def hodges_lehmann(differences: list[float]) -> float:
+    """The median of all pairwise means of the differences, the shift the signed-rank test estimates."""
+    return statistics.median((a + b) / 2 for i, a in enumerate(differences) for b in differences[i:])
+
+
+def _shape_shift(dataset: Dataset, key: RunKey, twin: str, aa: str) -> dict | None:
+    def totals(variant: str, i: int) -> list[int] | None:
+        k = RunKey(key.topology, variant, key.scenario, i)
+        return shape_totals(dataset.run(k)) if dataset.is_done(k) else None
+    seeds = []
     for i in range(1, dataset.experiment.runs + 1):
-        a, b = RunKey(key.topology, aa, key.scenario, i), RunKey(key.topology, twin, key.scenario, i)
-        if dataset.is_done(a) and dataset.is_done(b):
-            x, y = shape_totals(dataset.run(a)), shape_totals(dataset.run(b))
-            if x and y:
-                noise = [max(n, abs(u - v)) for n, u, v in zip(noise, x, y)]
-    off = [f"{name} {u} against {v}" for name, u, v, n in zip(SHAPE, mine, theirs, noise) if abs(u - v) > max(n, v / 1000)]
-    return ", ".join(off)
+        c, b, a = totals(key.variant, i), totals(twin, i), totals(aa, i)
+        if c and b and a:
+            seeds.append((c, b, a))
+    if not seeds:
+        return None
+    if 2 / 2 ** len(seeds) * len(SHAPE) >= 0.05:  # the smallest p of n pairs, after Holm across the totals
+        return {"few": True, "seeds": len(seeds)}
+    mine = [[c[j] - (b[j] + a[j]) / 2 for c, b, a in seeds] for j in range(len(SHAPE))]
+    null = [[a[j] - b[j] for _, b, a in seeds] for j in range(len(SHAPE))]
+    adjusted = analysis.holm([analysis.wilcoxon_p(d) or 1.0 for d in mine])
+    null_adjusted = analysis.holm([analysis.wilcoxon_p(d) or 1.0 for d in null])
+    unsteady = [name for name, p in zip(SHAPE, null_adjusted) if p < 0.05]
+    shifted, slight = [], []
+    for j, (name, p) in enumerate(zip(SHAPE, adjusted)):
+        if p >= 0.05 or name in unsteady:
+            continue
+        shift = hodges_lehmann(mine[j])
+        level = statistics.median(b[j] for _, b, _ in seeds) or 1
+        told = f"{name} by {shift:+g} ({100 * shift / level:+.2g} %, p = {p:.2g})"
+        (shifted if abs(shift / level) >= RELEVANT.get(name, RELEVANT_DEFAULT) else slight).append(told)
+    judged = [p for name, p in zip(SHAPE, adjusted) if name not in unsteady]
+    return {"few": False, "seeds": len(seeds), "shifted": shifted, "slight": slight, "unsteady": unsteady,
+            "p": min(judged) if judged else 1.0}
 
 
 def held_prefixes(final: dict) -> dict[str, set[str]] | None:
@@ -491,6 +548,7 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
         where = {"topology": key.topology, "variant": key.variant, "scenario": key.scenario, "run": key.index, "kind": "property"}
         bgp = reference(key.variant)
         found = []
+        lists: dict[str, tuple[list[str], str]] = {}  # cause: its whole list and the message around it, "{}" for the list
         final = analysis.final_of(run)
         if skipped := next((e.get("skipped") for e in run.get("events", []) if e["name"] == "final" and e.get("skipped")), None):
             found.append(("unchecked", f"the final check was skipped: {skipped}", False))
@@ -541,23 +599,42 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
                 found.append(("output-unchecked", f"no routes at rest to compare with {twin}: a run was not at rest or had no final check", None))
             elif differ:
                 # Beyond the timing: what the baseline's own commit, in its A/A variant of this seed, chose alike.
-                noise = set(rest_differs(dataset.run(aa_key), base_run) or []) \
-                    if aa and dataset.is_done(aa_key := RunKey(key.topology, aa, key.scenario, key.index)) else set()
-                if beyond := [r for r in differ if r not in noise]:
+                aa_key = RunKey(key.topology, aa, key.scenario, key.index) if aa else None
+                aa_differ = rest_differs(dataset.run(aa_key), base_run) if aa_key and dataset.is_done(aa_key) else None
+                noise = set(aa_differ or [])
+                if aa and aa_differ is None:
+                    # Without the A/A run of this seed, timing and the change are not told apart: no alarm before it.
+                    why = "is not done yet" if not dataset.is_done(aa_key) else "was not at rest or had no final check"
+                    found.append(("output-unchecked", f"{len(differ)} {what} other routes than in {twin}, the run of {aa} for this seed {why}", None))
+                elif beyond := [r for r in differ if r not in noise]:
                     timing = f", beyond {len(noise)} that differ in {aa}, the same commit as {twin}" if aa else ", no A/A variant to tell timing"
                     found.append(("output", f"{len(beyond)} {what} routes of another length or kind than in {twin}: {', '.join(beyond[:10])}{timing}", False))
                 elif hidden := [r for r in differ if r in noise]:
                     # Routes that vary between runs of the baseline itself, as OBGP's may: what they add up to still compares.
-                    beyond = shape_beyond(dataset, key, twin, aa, run, base_run)
-                    if beyond:
-                        found.append(("output", f"routes at rest add up to other totals than in {twin}, beyond what {aa} shows: {beyond}", False))
-                    elif beyond is not None:
+                    shift = shape_shift(dataset, key, twin, aa) if shape_totals(run) else None
+                    seeds = lambda d: f"{d['seeds']} seeds paired with {twin} and {aa}"  # noqa: E731
+                    if shift and shift["few"]:
+                        found.append(("output-unchecked", f"{len(hidden)} {what} other routes than in {twin} as they do between two runs of its commit "
+                                                          f"in {aa}, too few seeds yet to compare their totals: {seeds(shift)}", None))
+                    elif shift and shift["shifted"] and shift["seeds"] < dataset.experiment.runs and _running(dataset):
+                        # Judged once every seed is done: a p looked at after each run would turn red by chance on the way.
+                        found.append(("output-unchecked", f"routes at rest add up to other totals than in {twin} and {aa} so far, "
+                                                          f"judged after all {dataset.experiment.runs} seeds, {seeds(shift)}: {', '.join(shift['shifted'])}", None))
+                    elif shift and shift["shifted"]:
+                        found.append(("output", f"routes at rest add up to other totals than in {twin} and {aa}, {seeds(shift)}, "
+                                                f"Holm-corrected: {', '.join(shift['shifted'])}", False))
+                    elif shift:
+                        told = (f", their totals shift only slightly: {', '.join(shift['slight'])}" if shift["slight"] else
+                                f", their totals not shifted (smallest p {shift['p']:.2g})")
+                        unsteady = f", not judged as {aa} shifts from {twin} itself: {', '.join(shift['unsteady'])}" if shift["unsteady"] else ""
                         found.append(("output-varied", f"{len(hidden)} {what} other routes than in {twin} as they do between two runs of its commit "
-                                                       f"in {aa}, their totals within what those runs show", None))
+                                                       f"in {aa}{told}{unsteady}, {seeds(shift)}", None))
                     else:  # a final check without the totals, from before they were kept
                         found.append(("output-unchecked", f"{len(hidden)} {what} other routes than in {twin} as they do between two runs of its commit "
                                                           f"in {aa}: timing or the change, not told apart", None))
         if at_rest and final.get("loops"):
+            if final.get("looping"):
+                lists["loops"] = (list(final["looping"]), "packets to {} loop")
             found.append(("loops", f"packets to {', '.join(final.get('looping', [])) or str(final['loops']) + ' prefixes'} loop",
                           _predicted(dataset, key, run, set(), "loops")))
         partner = RunKey(key.topology, bgp, key.scenario, key.index) if bgp and key.variant != bgp else None
@@ -569,27 +646,34 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
             fewer = {r: theirs["held"][r] - h for r, h in final["held"].items() if theirs["held"].get(r, 0) > h}
             if fewer:
                 lost = lost_prefixes(final, theirs)  # which, where the runs kept it and few are missing
-                found.append(("reach", ", ".join(f"{r} {final['held'][r]} of {theirs['held'][r]}" + (f" ({', '.join(lost[r])})" if r in lost else "")
-                                                 for r in sorted(fewer)),
+                held = [f"{r} {final['held'][r]} of {theirs['held'][r]}" + (f" ({', '.join(lost[r])})" if r in lost else "") for r in sorted(fewer)]
+                lists["reach"] = (held, "{}")
+                found.append(("reach", ", ".join(held),
                               _predicted(dataset, key, run, set(fewer), "reach")))
             if extra := sorted(set(final.get("holed", [])) - set(theirs.get("holed", []))):
+                lists["holes"] = (extra, "packets to {} end at a router without a route")
                 found.append(("holes", f"packets to {', '.join(extra)} end at a router without a route", _predicted(dataset, key, run, set(), "holes")))
             if "valleys" in final and "valleys" in theirs and (
                     more := {r: n for r, n in final["valleys"].items() if n > theirs["valleys"].get(r, 0)}):
+                lists["policy"] = ([f"{r} routes {n} prefixes against the relations, BGP {theirs['valleys'].get(r, 0)}" for r, n in sorted(more.items())], "{}")
                 found.append(("policy", ", ".join(f"{r} routes {n} prefixes against the relations, BGP {theirs['valleys'].get(r, 0)}"
                                                   for r, n in sorted(more.items())), leak_predicted(dataset, key)))
             stale = {r: n for r, n in (final.get("stale") or {}).items() if n > (theirs.get("stale") or {}).get(r, 0)}
             if stale:
+                lists["stale"] = ([f"{r} keeps {n} withdrawn prefixes" for r, n in sorted(stale.items())], "{}")
                 found.append(("stale", ", ".join(f"{r} keeps {n} withdrawn prefixes" for r, n in sorted(stale.items())), False))
         elif at_rest and not waits:
             if missing and partner:
                 found.append(("reference", f"{', '.join(sorted(missing))} miss prefixes, and the BGP run of this seed did not come to rest to compare", False))
             if final.get("holed"):
+                lists["holes-alone"] = (list(final["holed"]), "packets to {} end at a router without a route")
                 found.append(("holes-alone", f"packets to {', '.join(final['holed'])} end at a router without a route", _predicted(dataset, key, run, set(), "holes")))
             if key.variant != bgp and (valleys := final.get("valleys")):
+                lists["policy-alone"] = ([f"{r} routes {n} prefixes against the relations" for r, n in sorted(valleys.items())], "{}")
                 found.append(("policy-alone", ", ".join(f"{r} routes {n} prefixes against the relations"
                                                   for r, n in sorted(valleys.items())), leak_predicted(dataset, key)))
             if stale := {r: n for r, n in (final.get("stale") or {}).items() if n}:
+                lists["stale-alone"] = ([f"{r} keeps {n} withdrawn prefixes" for r, n in sorted(stale.items())], "{}")
                 found.append(("stale-alone", ", ".join(f"{r} keeps {n} withdrawn prefixes" for r, n in sorted(stale.items())), False))
         # On the way to rest, beyond the resolution: two sampling intervals, of BGP's runs as well.
         resolution = 2 * max(dataset.experiment.sampling_of(v).interval for v in {key.variant, bgp} if v)
@@ -637,7 +721,11 @@ def broken(dataset: Dataset, known: dict | None = None) -> list[dict]:
             if predicted is False and unplayable and cause_ == "reach":
                 predicted = None
             told = [f[1] for f in restless_] if restless_ and cause_ == restless_[0][0] else [message]
-            out.append({**where, "cause": cause_, "message": message, "failures": told, "predicted": predicted,
+            # message and failures stay whole for agents and the API. A page shows brief, and the whole list as items.
+            items, around = lists.get(cause_, (None, ""))
+            brief = around.format(listed(items)) if items and len(items) > 5 else message
+            out.append({**where, "cause": cause_, "message": message, "brief": brief, "items": items if brief != message else None,
+                        "failures": told, "predicted": predicted,
                         **({"kind": "unmeasured"} if cause_ == "unmeasured" else {"kind": "note"} if cause_ in NOTES
                            else _unanswered(dataset, key, predicted))})
     return out
@@ -735,6 +823,8 @@ def rows(found: list[dict]) -> list[dict]:
         if p["kind"] == "check":
             line = row["lines"].setdefault(str(p["step"]).split(".")[0], {"step": str(p["step"]).split(".")[0], "t": p["t"], "problems": []})
             line["problems"] += [x for x in p["problems"] if x not in line["problems"]]
+        elif p.get("items"):  # a long list: its brief, and the whole list folded
+            row["lines"].setdefault(p["brief"], {"message": p["brief"], "all": p["items"]})
         else:
             for k, f in enumerate(p["failures"], 1):
                 # Attempts only for retries: a run without rest tells each way it showed as a line of its own.
